@@ -1,0 +1,2 @@
+# LeanCoreERP
+Lean ERP core
