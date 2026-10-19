@@ -1,0 +1,39 @@
+{
+  "package_code": "STD_ISO20022",
+  "package_version": "1.0.0",
+  "format_note": "item_prefixes cover all core items whose id starts with the prefix, artefacts name app artefacts of app/app-content.json. No item is VERIFIED, the package is DRAFT (18, section 6)",
+  "records": [
+    {
+      "item_prefixes": ["ISO-PM-"],
+      "status": "UNVERIFIED",
+      "source_ref": "UN/CEFACT payment means codes (UNCL4461) as used by EN 16931 and the ISO 20022 payment method, service level and local instrument codes. Neither list was read for this package",
+      "note": "Package choice of the composite external code. To verify: the four UNCL4461 codes against the current list, and the ISO codes TRF, DD, SEPA, CORE against the external code lists of the ISO 20022 registry"
+    },
+    {
+      "artefacts": ["sepa-ct-pain001-elements", "sepa-ct-pain002-elements"],
+      "status": "UNVERIFIED",
+      "source_ref": "EPC132-08, SEPA Credit Transfer Customer-to-PSP Implementation Guidelines, 2025 Version 1.0 (issued 2024-11-28, effective 2025-10-05)",
+      "standard_version": "pain.001.001.09, pain.002.001.10 (2019 message version)",
+      "note": "Rows parsed mechanically from the data dictionary of the PDF (195 and 74 elements). To verify: compare with the XSD of the messages published by the EPC and spot-check the SEPA usage rules. The guideline text does not list sub-elements it does not restrict. The EPC publishes updates (an address date change was mentioned by a secondary source): check for a newer guideline"
+    },
+    {
+      "artefacts": ["iso20022-core-mapping"],
+      "status": "UNVERIFIED",
+      "source_ref": "Specs 02, 03, 07, 09, 12 and 22 (core names), the element files, bank format guides for camt.053",
+      "standard_version": "see message-catalogue",
+      "note": "Authored mapping. Basis per entry: EPC 80 entries, BANK 33, KNOWLEDGE 27. The KNOWLEDGE entries (pain.008 and camt.054) have no source and must be checked against the EPC direct debit guideline and the ISO message definition reports before use. The camt.053 entries come from bank subsets, not the full ISO definition"
+    },
+    {
+      "artefacts": ["iso20022-code-lists"],
+      "status": "UNVERIFIED",
+      "source_ref": "EPC132-08 for the reject reasons, the character set and the address rule. The other lists are from general knowledge. The IBAN and RF algorithms were checked by calculation against well-known examples on 2026-10-19",
+      "standard_version": "ISO 20022 external code lists (version not stated)",
+      "note": "To verify: the status, balance, bank transaction and return reason lists against the ISO 20022 external code lists. The address rule date differs between the guideline (22 November 2026) and a secondary source (15 November 2026)"
+    },
+    {
+      "artefacts": ["message-catalogue"],
+      "status": "NOT_APPLICABLE",
+      "note": "A list of the messages and sources of this package. No claim about the standard"
+    }
+  ]
+}

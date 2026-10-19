@@ -1,0 +1,11 @@
+{
+  "resource": "vat-deduction-rates",
+  "scope": "COMPANY",
+  "note": "Initial rates from the optional inputs of package.json. A rate object is created only when its input is supplied. All rates are PROVISIONAL, valid from the first fiscal year start. A company that applies a profile with codes that name a key and supplies no rate gets the readiness warning of 07, 11.3 and TAX.DEDUCTION_RATE_NOT_FOUND on the first posting with such a code. Later rates and corrections are new versions (vat-deduction-rates:create-version), never edits",
+  "objects": [
+    { "item_id": "DK-DRATE-PRO_RATA", "ref": "rate_pro_rata", "key": "key_pro_rata", "when_input": "pro_rata_rate_pct", "rate_pct": "$input.pro_rata_rate_pct", "valid_from": "$input.first_fiscal_year_start", "rate_status": "PROVISIONAL", "basis_note": "Initial provisional pro rata rate (company input)" },
+    { "item_id": "DK-DRATE-ESTIMATE", "ref": "rate_estimate", "key": "key_estimate", "when_input": "estimate_rate_pct", "rate_pct": "$input.estimate_rate_pct", "valid_from": "$input.first_fiscal_year_start", "rate_status": "PROVISIONAL", "basis_note": "Initial estimated deduction (company input)" },
+    { "item_id": "DK-DRATE-SECTOR", "ref": "rate_sector", "key": "key_sector", "when_input": "sector_rate_pct", "rate_pct": "$input.sector_rate_pct", "valid_from": "$input.first_fiscal_year_start", "rate_status": "PROVISIONAL", "basis_note": "Initial sector rate (company input)" },
+    { "item_id": "DK-DRATE-AREA", "ref": "rate_area", "key": "key_area", "when_input": "area_rate_pct", "rate_pct": "$input.area_rate_pct", "valid_from": "$input.first_fiscal_year_start", "rate_status": "PROVISIONAL", "basis_note": "Initial area-based rate (company input)" }
+  ]
+}

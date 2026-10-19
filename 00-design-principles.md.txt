@@ -1,0 +1,97 @@
+# Finance Core: Design Principles
+
+Status: DRAFT v0.4 for review (ADR-001..192). Re-baselined after the consistency and scope review (14): defect rulings D1 to D10, scope decisions S1 to S3, K1 and K3, and the platform extension layer (15, 16). The independent review (17) pass is decided and applied (ADR-175 to ADR-192). Pending: ERD regeneration and final cross-check, no decision open. ADR-035 is ACCEPTED (2026-10-13). No implementation yet.
+
+## 1. Purpose and scope
+
+A multi-tenant, technology-neutral core that replaces the ERP backbone for SMEs. The core is a **data model plus an API**. It guarantees that data entering it is consistent and legally compliant. Applications (UIs, workflows, integrations) are built on top and are out of scope.
+
+Scope of the core: finance (GL, AP/AR sub-ledgers (integrated), VAT/tax including reverse charge, intra-EU, OSS/IOSS data, multi-currency, multi-company with intercompany), inventory, order management, compliance (retention, exports, tenant deletion) and migration, all specified in 02 to 13. Inventory and order management post to finance only through the core API (ADR-093). Customs declarations, partial input VAT deduction and consolidation runs are outside the first release (ADR-085, ADR-017).
+
+**Platform extension layer (15, 16).** The core stays a small set of shared data and transactions. Apps attach their own small facts through extension attributes (ADR-137), react to changes through the outbox change feed (ADR-138) and are identified through app registration (ADR-139). The core also exposes supply and demand facts, order line dates, item-partner terms, location types and business calendars (ADR-140 to ADR-144) so that ATP, MRP and credit checks need no copy of core data. Extension values are outside every hash and never used by a core rule.
+
+**What belongs in the core.** The review (14, section 5.1) proposed a fixed test for what belongs in the core. The user did **not** adopt it as a rule. Each item is judged on its own merits, and the decisions are recorded as ADRs (ADR-155 to ADR-159 for the thinning and consolidation decisions, ADR-160 to ADR-174 for the re-baseline rulings, ADR-175 to ADR-192 for the independent review).
+
+## 2. Layers of the data model
+
+| Layer | Content | Write path | Change rules |
+|---|---|---|---|
+| **Configuration** | Companies, CoA, fiscal calendars, number ranges, tax codes and rules, posting rules, dimension definitions, currencies, rates | CRUD API, versioned | Effective-dated; changes are audited; no hard delete once referenced (physical deletion only by the retention job and tenant deletion, ADR-073) |
+| **Master data** | Business partners, GL accounts, dimension values, bank accounts, tax registrations | CRUD API | Audited; deactivate instead of delete; PII isolated (see P8) |
+| **Transaction data** | Journal entries, open items, clearings, tax lines, revaluation runs, period events | **Command API only** (post, reverse, clear, close period, ...) | Posted records are never deleted. Business content is immutable (L1) with limited L2 changes. System-maintained S columns change only by core commands (see P3). Mistakes are corrected by reversal and new posting |
+
+## 3. Principles
+
+**P1. The core owns integrity, the caller does not.**
+Every write is validated server-side against configuration. A posted document is always balanced, in an open period, with active accounts, valid dimensions and a valid tax code. The caller cannot bypass this. The only relaxations are the **system-maintained exceptions** that are defined in the specs and recorded on the document: the controlled migration exceptions until the seal (ADR-131, ADR-152) and the closed list of cost exceptions marked with `cost_source` (ADR-150). System-maintained columns (lock class S) are changed by core commands under their own rules (ADR-146).
+
+**P2. Command-style writes for transaction data.**
+`post`, `reverse`, `clear`, `close-period` and similar are atomic operations that validate and persist in one database transaction. Plain CRUD exists only for configuration and master data. Drafts, parking and approval workflows live in the applications built on the core. The core receives complete documents and posts them directly or rejects them with structured errors.
+
+**P3. Hybrid immutability with field lock classes.**
+Every field in the transaction layer carries a lock class in the table specs:
+
+- **L1 Locked:** never changes after posting. Amounts (transaction, local, group and reporting currency), account, posting date, document date, currency, partner reference, tax code and amount, document number. Correction only by reversal plus new posting.
+- **L2 Open in open period:** may change while the fiscal period is open (or soft-closed, for authorised users). Examples: due date, payment terms, cost center and other dimensions, text, reference, payment block. Every change writes a field-level change record (who, when, old value, new value, reason code, correlation ID).
+- **L3 Frozen at period close:** when the period is hard-closed, L2 fields lock too.
+- **S System-maintained:** changed only by core commands, never through the change API, and outside the hash. Examples: document status, open-item clearing cache, period status, number counters, chain heads. Every S change is verifiable by recomputation (ADR-031). It is logged by the append-only record it is derived from (its own chained event, ADR-146), or in the change log with reason SYSTEM where no such record exists. An S change without a chain of its own is evidenced by its outbox audit event (ADR-146). S columns may change in any period status. Trigger and grant rules are defined per column class: L1 and L2 columns are rejected in hard-closed periods and need a `change_log` row, S columns are changed by system commands without a `change_log` row (ADR-146). `retention_until` is an S column.
+
+A change to a dimension (L2) must not break dimension rules. It is validated like a posting.
+
+**P4. Double-entry always.**
+Every posting balances per document, per company and per ledger, in transaction, local, group and reporting currency. Rounding differences go to configured rounding accounts, per currency.
+
+**P5. Tamper evidence.**
+Posted records are hash-chained, each record including the hash of its predecessor. Six chain types exist per company: LEDGER (per ledger, ADR-030), CLEARING (ADR-036), PERIOD_EVENT (ADR-041), VAT_RETURN (ADR-079), STOCK (ADR-099) and FULFILMENT (ADR-114). All chain heads live in one `chain_head` table keyed by tenant, company, chain type and scope (ADR-158). Database-level protection (no UPDATE/DELETE grants on L1 columns, no DELETE anywhere in the transaction layer, and triggers as a backstop. The only deletions are system and infrastructure exceptions: the purge of expired `outbox_event` rows by the retention job (ADR-159, ADR-172) and the deletion of extension values at anonymisation and tenant deletion (ADR-137, ADR-186)) enforces it in addition to the API. Chain verification is an API operation. Chain heads are anchored with external timestamps, daily and at every hard-close (ADR-046). The `outbox_event` stream is an ordered index over audit-relevant changes, **not** a chain: the evidence is the chains and logs it points to (ADR-159). Locks are taken in one authoritative order, chain heads sorted by (chain type, company, scope_key) and counters before heads (ADR-147, ADR-162). Anchors are requested in the close transaction and stamped after commit (ADR-177).
+
+**P6. Gapless numbering.**
+Document numbers are assigned at posting, inside the same transaction, per company, number series and fiscal year. The series is determined by the core from the document type (ADR-044). A posting that fails leaves no gap. Rejected or never-posted documents consume no legal number. Numbers follow posting order, not posting date order (ADR-025).
+
+**P7. Multi-tenant by design.**
+`tenant_id` is the first column of every key and every index. The only exceptions are the tenant registry, the platform-level `tenant_deletion_certificate` (ADR-124) and the global read-only reference tables for currencies, countries, EU membership and units (`ref_unit`) (ADR-069). Isolation is enforced in the data layer (row-level security or equivalent), not only in the API. Tenants can be exported and deleted as a unit after retention.
+
+**P8. GDPR and retention coexist via separation.**
+Ledger and open-item rows reference partners by `partner_id` only. Personal data lives in master data. Legal documents carry a minimal **legal snapshot** (name and address as required on the invoice or voucher) that is retained for the statutory period and then anonymised by a retention job. Orders and fulfilment documents carry **address snapshots** (ship-to, bill-to, ship-from) under the same retention and anonymisation rules (ADR-118, ADR-119). Extension attributes marked `is_pii` are cleared by anonymisation (ADR-137). Retention periods are configuration per company and country. Legal values must be verified per member state.
+
+**P9. Integrated sub-ledgers.**
+AP/AR items are GL lines on control accounts that carry partner, due date and clearing data in an optional side table of the line (ADR-033). There is no separate sub-ledger table to reconcile. Each GL account has an open-item mode: none, control (AR/AP) or GL open item (e.g. bank clearing). Direct postings to control accounts without a partner are rejected. Open-item-managed GL accounts need no partner (ADR-040). Clearing is a separate append-only record, not a document, unless a difference must be posted (ADR-036).
+
+**P10. Single ledger now, model ready.**
+`ledger_id` is on every journal line. Release 1 runs one ledger per company. Parallel ledgers are a later configuration change, not a schema change.
+
+**P11. Dimensions are configuration.**
+Cost center, project, profit center and business unit are standard dimension types (typed columns on the journal line, ADR-034, ADR-067). Tenants can define additional free dimensions (rows in `journal_line_dimension`). Each GL account can be configured with a rule per dimension type (mandatory, optional, forbidden). Dimension values are master data with validity periods. Each GL account likewise has a tax code rule (mandatory, optional, forbidden, ADR-029).
+
+**P12. Business events post through a rules engine, with an explicit journal API alongside.**
+Inventory and order management send business events. Configurable posting rules (account determination) turn them into journal entries. Manual and external journals use the explicit journal API. Both paths end in the same validation and posting logic. In release 1 the journal structure of each business event is fixed in the core and configuration chooses the accounts (account determination by item group, warehouse and item, ADR-095). A stock command and its derived journal commit in one transaction (ADR-094).
+
+**P13. Everything is traceable.**
+Each posted document stores `origin` (set by the core, never by the caller: EXTERNAL, ORDER, STOCK, VAT, MIGRATION, SYSTEM, ADR-176), source system (a free tracing field), source document reference, idempotency key, posting user/service identity, and correlation ID. Retrying the same command with the same idempotency key returns the original result and never double-posts.
+
+**P14. Time is explicit.**
+Configuration is effective-dated. Postings carry document date, posting date and system timestamp (UTC). Fiscal period status (open, soft-closed, hard-closed) is per company (ADR-022), stored with an append-only event log (ADR-041). Fiscal years and periods are opened explicitly (ADR-043). A per-company posting window limits allowed posting dates (ADR-025).
+
+**P15. EU regulatory readiness is a design input.**
+The model must be able to produce: SAF-T (OECD, with national variants), EN 16931 e-invoice data fields, VAT returns and EC Sales List data, OSS/IOSS data, and a complete audit export. Exact national requirements are loaded as configuration and templates, not hard-coded. The core exposes the data. File generation is done by apps.
+
+## 4. Out of scope (for the core)
+
+UI, drafts and approval workflows, document rendering/PDF, bank connectivity, payment file generation, reporting front-ends, e-invoice transport (Peppol access point), VAT return filing and SAF-T file generation, consolidation run (data model support only).
+
+## 5. Open items
+
+- Selection of the external timestamp authority and token format for chain anchoring (ADR-046).
+- Specs and ADR ranges: ledger core in 02 to 05 (ADR-030 to ADR-055), command contracts in 06 (ADR-056 to ADR-064, batch limit 500 as in ADR-062), configuration and master data in 07 (ADR-065 to ADR-074), VAT in 08 (ADR-075 to ADR-085), read and query APIs in 09 (ADR-086 to ADR-092), inventory in 10 (ADR-093 to ADR-103), order management in 11 (ADR-104 to ADR-117), compliance in 12 (ADR-118 to ADR-127), migration in 13 (ADR-128 to ADR-136), the review in 14 (ADR-145 to ADR-174), platform extensions in 15 (ADR-137 to ADR-139) and supply and demand data in 16 (ADR-140 to ADR-144).
+- **Re-baseline status:** the re-baseline of the specs 02 to 13 for the decisions of 14 (sections 8 to 11, ADR-145 to ADR-174) and of the platform extension specs 15 and 16 is done, and the independent review (17, four reviewers) is decided and applied (ADR-175 to ADR-192). ERD regeneration and the final cross-check are pending, no decision is open. The ERD has 18 pages (ERD pages 12 to 18 cover fulfilment, invoicing and matching, retention, exports and tenant lifecycle, migration, platform extensions and supply and demand). ADR-035 was ACCEPTED on 2026-10-13 (signed amounts, one transaction currency per document).
+- Country package format: specified in 18-country-packages (DRAFT v0.2, tested on DK, DE, SE; decisions of 2026-10-14: ADR-193 to ADR-202 accepted; DK country owner Per Amby, legal reviewer still to be named; partial input VAT deduction is in release 1 for DK (ADR-201), design pending).
+- Platform mapping: specified in 20 (ADR-208 to ADR-218, ACCEPTED 2026-10-19): PostgreSQL, isolation and roles, locks, hashing, outbox and jobs, API layer, search, timestamp service, object storage, package signing, availability. Open choices (cloud vendor, language, TSA vendor, thresholds) are listed in 20, section 14, and proofs of concept in 20, section 13.
+- Not yet specified: consolidation (data only, ADR-017), invoicing and payment as own domains.
+- Decisions of 14 not yet taken or unchanged: S4 to S8 are unchanged (landed cost allocation, data subject request cases, open item payment attributes, replenishment parameters and SAF-T assembly stay in the core). K2 is not adopted: `change_log`, `master_change_log` and `order_change_log` stay separate.
+- Per-country check (P15) of whether clearings or series changes need legal numbering rules (ADR-036, ADR-044).
+- **Decided (2026-10-13):** ADR-035 signed amounts and one transaction currency per document are accepted. Open items from the reviews that require a decision: none. Pending work (not decisions): the fix pass for 17, section 3 and 4 in specs 02 to 16, and the ERD update after pass 4.
+- Average rate and historical/fixed rate types (needed for consolidation P&L translation, equity, fixed assets).
+- Per-module period status (AP, AR, GL, inventory), later extension.
+- Retention periods per country (verify against current national law).
+- Whether number order must follow posting date order in specific countries (ADR-025 option).
+- VAT scenarios deferred beyond domestic: reverse charge, intra-EU supplies and EC Sales List, OSS/IOSS (rules and codes, not schema).
+- Cross-currency VAT: resolved by VAT reporting amounts per registration (ADR-083). Which rate each country prescribes is configuration, to verify per country (P15).

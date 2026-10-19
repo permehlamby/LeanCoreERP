@@ -1,0 +1,26 @@
+{
+  "return_type": "STANDARD",
+  "country_code": "DK",
+  "status": "DRAFT, UNVERIFIED",
+  "note": "App content. Labels are Danish and map the symbolic box codes of core/tax_return_box.json. The derived total is computed by the app from the box totals of the core (08, 6.4). Energy taxes and their lines are not in v0.2. Reconcile with the current TastSelv form (help texts of the form) before RELEASED",
+  "boxes": [
+    { "box_code": "DK_SALES_VAT", "label_da": "Salgsmoms (udgående moms)", "field_kind": "AMOUNT" },
+    { "box_code": "DK_GOODS_ABROAD_VAT", "label_da": "Moms af varekøb i udlandet (både EU og lande uden for EU)", "field_kind": "AMOUNT" },
+    { "box_code": "DK_SERVICES_ABROAD_VAT", "label_da": "Moms af ydelseskøb i udlandet med omvendt betalingspligt", "field_kind": "AMOUNT" },
+    { "box_code": "DK_PURCHASE_VAT", "label_da": "Købsmoms (indgående moms)", "field_kind": "AMOUNT" },
+    { "box_code": "DK_RUBRIK_A_GOODS", "label_da": "Rubrik A, varer", "field_kind": "BASE" },
+    { "box_code": "DK_RUBRIK_A_SERVICES", "label_da": "Rubrik A, ydelser", "field_kind": "BASE" },
+    { "box_code": "DK_RUBRIK_B_GOODS_LISTED", "label_da": "Rubrik B, varer (indberettes til EU-salg uden moms)", "field_kind": "BASE" },
+    { "box_code": "DK_RUBRIK_B_GOODS_OTHER", "label_da": "Rubrik B, oplysninger der ikke skal indberettes til EU-salg uden moms", "field_kind": "BASE" },
+    { "box_code": "DK_RUBRIK_B_SERVICES", "label_da": "Rubrik B, ydelser", "field_kind": "BASE" },
+    { "box_code": "DK_RUBRIK_C", "label_da": "Rubrik C", "field_kind": "BASE" }
+  ],
+  "derived": [
+    {
+      "code": "MOMS_I_ALT",
+      "label_da": "Moms i alt",
+      "formula": "DK_SALES_VAT + DK_GOODS_ABROAD_VAT + DK_SERVICES_ABROAD_VAT - DK_PURCHASE_VAT",
+      "note": "Positive: to pay. Negative: refund. Described as a calculated field in the form's help text (secondary source). Energy taxes would be added here when supported"
+    }
+  ]
+}

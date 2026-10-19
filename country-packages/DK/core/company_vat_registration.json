@@ -1,0 +1,19 @@
+{
+  "resource": "company-vat-registrations",
+  "objects": [
+    {
+      "item_id": "DK-REG-0001",
+      "ref": "$registration",
+      "country_code": "DK",
+      "vat_id": "$input.vat_id",
+      "scheme": "STANDARD",
+      "filing_frequency": "$input.filing_frequency",
+      "ec_list_frequency": "$input.ec_list_frequency",
+      "correction_method": "$input.correction_method",
+      "return_currency": "$input.local_currency",
+      "vat_rate_type": "BOOKING",
+      "valid_from": "$input.first_fiscal_year_start",
+      "status": "ACTIVE"
+    }
+  ]
+}

@@ -1,0 +1,1576 @@
+﻿{
+    "source":  {
+                   "title":  "SEPA Credit Transfer Scheme Customer-to-PSP Implementation Guidelines, EPC132-08, 2025 Version 1.0 (issued 2024-11-28, effective 2025-10-05)",
+                   "authority":  "European Payments Council",
+                   "url":  "https://www.europeanpaymentscouncil.eu/sites/default/files/kb/file/2025-10/EPC132-08%20SCT%20C2PSP%20IG%202025%20V1.0.pdf",
+                   "pdf_sha256":  "0719e0fd8482b69dcbceec2f6e8aa70306e6a3d740317fa5819c83c63aa6ef95",
+                   "section":  "2.1.1 Use of the Customer Credit Transfer Initiation (pain.001.001.09), dataset DS-01",
+                   "extraction":  "Text of the PDF extracted mechanically, element rows parsed from the data dictionary. Paths are relative to CstmrCdtTrfInitn. Occurrence is the SEPA Core multiplicity shown by the guideline, not the ISO multiplicity. Sub-elements the guideline does not display are not listed (the ISO 20022 standard applies to them)"
+               },
+    "message":  "pain.001.001.09",
+    "root":  "CstmrCdtTrfInitn",
+    "profile":  "SEPA_CT",
+    "count":  195,
+    "elements":  [
+                     {
+                         "ref":  "1.0",
+                         "path":  "GrpHdr",
+                         "mult":  "1..1",
+                         "type":  "GroupHeader85",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "1.1",
+                         "path":  "GrpHdr/MsgId",
+                         "mult":  "1..1",
+                         "type":  "Max35Text",
+                         "sepa_length":  "1..35",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "1.2",
+                         "path":  "GrpHdr/CreDtTm",
+                         "mult":  "1..1",
+                         "type":  "ISODateTime",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "1.3",
+                         "path":  "GrpHdr/Authstn",
+                         "mult":  "0..2",
+                         "type":  "Authorisation1Choice",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "1.4",
+                         "path":  "GrpHdr/NbOfTxs",
+                         "mult":  "1..1",
+                         "type":  "Max15NumericText",
+                         "sepa_length":  "",
+                         "sepa_usage":  "The validation of this data element depends on pre-agreed customer-to-PSP conditions."
+                     },
+                     {
+                         "ref":  "1.5",
+                         "path":  "GrpHdr/CtrlSum",
+                         "mult":  "1..1",
+                         "type":  "DecimalNumber",
+                         "sepa_length":  "",
+                         "sepa_usage":  "Mandatory. The validation of this data element depends on pre-agreed customer-to-PSP conditions."
+                     },
+                     {
+                         "ref":  "1.6",
+                         "path":  "GrpHdr/InitgPty",
+                         "mult":  "1..1",
+                         "type":  "PartyIdentification135",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "1.7",
+                         "path":  "GrpHdr/InitgPty/Nm",
+                         "mult":  "0..1",
+                         "type":  "Max140Text",
+                         "sepa_length":  "1..70",
+                         "sepa_usage":  "\u0027Name is limited to 70 characters in length."
+                     },
+                     {
+                         "ref":  "1.8",
+                         "path":  "GrpHdr/InitgPty/PstlAdr",
+                         "mult":  "0..1",
+                         "type":  "PostalAddress24",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "1.9",
+                         "path":  "GrpHdr/InitgPty/Id",
+                         "mult":  "0..1",
+                         "type":  "Party38Choice",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "1.10",
+                         "path":  "GrpHdr/InitgPty/Id/OrgId",
+                         "mult":  "1..1",
+                         "type":  "OrganisationIdentification29",
+                         "sepa_length":  "",
+                         "sepa_usage":  "Either AnyBIC\u0027, \u0027LEI or one occurrence of Other is allowed."
+                     },
+                     {
+                         "ref":  "1.11",
+                         "path":  "GrpHdr/InitgPty/Id/PrvtId",
+                         "mult":  "1..1",
+                         "type":  "PersonIdentification13",
+                         "sepa_length":  "",
+                         "sepa_usage":  "Either Date and Place of Birth or one occurrence of Other is allowed."
+                     },
+                     {
+                         "ref":  "1.12",
+                         "path":  "GrpHdr/InitgPty/CtryOfRes",
+                         "mult":  "0..1",
+                         "type":  "CountryCode",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "1.13",
+                         "path":  "GrpHdr/InitgPty/CtctDtls",
+                         "mult":  "0..1",
+                         "type":  "Contact4",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "1.14",
+                         "path":  "GrpHdr/FwdgAgt",
+                         "mult":  "0..1",
+                         "type":  "BranchAndFinancialInstitutionIdentification6",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.0",
+                         "path":  "PmtInf",
+                         "mult":  "1..n",
+                         "type":  "PaymentInstruction30",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.1",
+                         "path":  "PmtInf/PmtInfId",
+                         "mult":  "1..1",
+                         "type":  "Max35Text",
+                         "sepa_length":  "1..35",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.2",
+                         "path":  "PmtInf/PmtMtd",
+                         "mult":  "1..1",
+                         "type":  "PaymentMethod3Code",
+                         "sepa_length":  "",
+                         "sepa_usage":  "Only \"TRF\" is allowed."
+                     },
+                     {
+                         "ref":  "2.3",
+                         "path":  "PmtInf/BtchBookg",
+                         "mult":  "0..1",
+                         "type":  "BatchBookingIndicator",
+                         "sepa_length":  "",
+                         "sepa_usage":  "If present and contains true, batch booking is requested. If present and contains false, booking per transaction is requested. If element is not present, pre-agreed customer- to-PSP conditions apply."
+                     },
+                     {
+                         "ref":  "2.4",
+                         "path":  "PmtInf/NbOfTxs",
+                         "mult":  "1..1",
+                         "type":  "Max15NumericText",
+                         "sepa_length":  "",
+                         "sepa_usage":  "Mandatory The validation of this data element depends on pre-agreed customer-to-PSP conditions."
+                     },
+                     {
+                         "ref":  "2.5",
+                         "path":  "PmtInf/CtrlSum",
+                         "mult":  "1..1",
+                         "type":  "DecimalNumber",
+                         "sepa_length":  "",
+                         "sepa_usage":  "Mandatory. The validation of this data element depends on pre-agreed customer-to-PSP conditions."
+                     },
+                     {
+                         "ref":  "2.6",
+                         "path":  "PmtInf/PmtTpInf",
+                         "mult":  "0..1",
+                         "type":  "PaymentTypeInformation26",
+                         "sepa_length":  "",
+                         "sepa_usage":  "Payment Type Information must be present either here or under Credit Transfer Transaction Information."
+                     },
+                     {
+                         "ref":  "2.7",
+                         "path":  "PmtInf/PmtTpInf/InstrPrty",
+                         "mult":  "0..1",
+                         "type":  "Priority2Code",
+                         "sepa_length":  "",
+                         "sepa_usage":  "If present, pre - agreed customer - to - PSP conditions apply."
+                     },
+                     {
+                         "ref":  "2.8",
+                         "path":  "PmtInf/PmtTpInf/SvcLvl",
+                         "mult":  "0..1",
+                         "type":  "ServiceLevel8Choice",
+                         "sepa_length":  "",
+                         "sepa_usage":  "Usage is recommended. Only one occurrence is allowed."
+                     },
+                     {
+                         "ref":  "2.9",
+                         "path":  "PmtInf/PmtTpInf/SvcLvl/Cd",
+                         "mult":  "1..1",
+                         "type":  "ExternalServiceLevel1Code",
+                         "sepa_length":  "1..4",
+                         "sepa_usage":  "Only \"SEPA\" is allowed."
+                     },
+                     {
+                         "ref":  "2.10",
+                         "path":  "PmtInf/PmtTpInf/SvcLvl/Prtry",
+                         "mult":  "1..1",
+                         "type":  "Max35Text",
+                         "sepa_length":  "1..35",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.11",
+                         "path":  "PmtInf/PmtTpInf/LclInstrm",
+                         "mult":  "0..1",
+                         "type":  "LocalInstrument2Choice",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.12",
+                         "path":  "PmtInf/PmtTpInf/LclInstrm/Cd",
+                         "mult":  "1..1",
+                         "type":  "ExternalLocalInstrument1Code",
+                         "sepa_length":  "1..35",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.13",
+                         "path":  "PmtInf/PmtTpInf/LclInstrm/Prtry",
+                         "mult":  "1..1",
+                         "type":  "Max35Text",
+                         "sepa_length":  "1..35",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.14",
+                         "path":  "PmtInf/PmtTpInf/CtgyPurp",
+                         "mult":  "0..1",
+                         "type":  "CategoryPurpose1Choice",
+                         "sepa_length":  "",
+                         "sepa_usage":  "Depending on the agreement between the Originator and the Originator PSP, Category Purpose may be forwarded to the Beneficiary PSP."
+                     },
+                     {
+                         "ref":  "2.15",
+                         "path":  "PmtInf/PmtTpInf/CtgyPurp/Cd",
+                         "mult":  "1..1",
+                         "type":  "ExternalCategoryPurpose1Code",
+                         "sepa_length":  "1..4",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.16",
+                         "path":  "PmtInf/PmtTpInf/CtgyPurp/Prtry",
+                         "mult":  "1..1",
+                         "type":  "Max35Text",
+                         "sepa_length":  "1..35",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.17",
+                         "path":  "PmtInf/ReqdExctnDt",
+                         "mult":  "1..1",
+                         "type":  "DateAndDateTime2Choice",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.18",
+                         "path":  "PmtInf/ReqdExctnDt/Dt",
+                         "mult":  "1..1",
+                         "type":  "ISODate",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.19",
+                         "path":  "PmtInf/ReqdExctnDt/DtTm",
+                         "mult":  "1..1",
+                         "type":  "ISODateTime",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.20",
+                         "path":  "PmtInf/PoolgAdjstmntDt",
+                         "mult":  "0..1",
+                         "type":  "ISODate",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.21",
+                         "path":  "PmtInf/Dbtr",
+                         "mult":  "1..1",
+                         "type":  "PartyIdentification135",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.22",
+                         "path":  "PmtInf/Dbtr/Nm",
+                         "mult":  "1..1",
+                         "type":  "Max140Text",
+                         "sepa_length":  "1..70",
+                         "sepa_usage":  "Mandatory. Name is limited to 70 characters in length."
+                     },
+                     {
+                         "ref":  "2.23",
+                         "path":  "PmtInf/Dbtr/PstlAdr",
+                         "mult":  "0..1",
+                         "type":  "PostalAddress24",
+                         "sepa_length":  "",
+                         "sepa_usage":  "STRUCTURED ADDRESS: Usage is recommended. \u0027Town Name and Country are mandatory. Address Line is not allowed. It is recommended to provide as many structured elements as possible. HYBRID ADDRESS: \u0027Town Name and Country are mandatory. At least one occurrence of Address line is mandatory. UNSTRUCTURED ADDRESS (As of 22 November 2026, only the use of structured and hybrid addresses will be allowed - based on available information at the moment of publication): At least one occurrence of Address line is mandatory. Postal Address sub- elements other than Address Line and Country are forbidden. The use of Country is mandatory when either the Debtor Agent or Creditor Agent is located in a non-EEA SEPA country or territory."
+                     },
+                     {
+                         "ref":  "2.24",
+                         "path":  "PmtInf/Dbtr/PstlAdr/AdrTp",
+                         "mult":  "0..1",
+                         "type":  "AddressType3Choice",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.25",
+                         "path":  "PmtInf/Dbtr/PstlAdr/Dept",
+                         "mult":  "0..1",
+                         "type":  "Max70Text",
+                         "sepa_length":  "1..70",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.26",
+                         "path":  "PmtInf/Dbtr/PstlAdr/SubDept",
+                         "mult":  "0..1",
+                         "type":  "Max70Text",
+                         "sepa_length":  "1..70",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.27",
+                         "path":  "PmtInf/Dbtr/PstlAdr/StrtNm",
+                         "mult":  "0..1",
+                         "type":  "Max70Text",
+                         "sepa_length":  "1..70",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.28",
+                         "path":  "PmtInf/Dbtr/PstlAdr/BldgNb",
+                         "mult":  "0..1",
+                         "type":  "Max16Text",
+                         "sepa_length":  "1..16",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.29",
+                         "path":  "PmtInf/Dbtr/PstlAdr/BldgNm",
+                         "mult":  "0..1",
+                         "type":  "Max35Text",
+                         "sepa_length":  "1..35",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.30",
+                         "path":  "PmtInf/Dbtr/PstlAdr/Flr",
+                         "mult":  "0..1",
+                         "type":  "Max70Text",
+                         "sepa_length":  "1..70",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.31",
+                         "path":  "PmtInf/Dbtr/PstlAdr/PstBx",
+                         "mult":  "0..1",
+                         "type":  "Max16Text",
+                         "sepa_length":  "1..16",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.32",
+                         "path":  "PmtInf/Dbtr/PstlAdr/Room",
+                         "mult":  "0..1",
+                         "type":  "Max70Text",
+                         "sepa_length":  "1..70",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.33",
+                         "path":  "PmtInf/Dbtr/PstlAdr/PstCd",
+                         "mult":  "0..1",
+                         "type":  "Max16Text",
+                         "sepa_length":  "1..16",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.34",
+                         "path":  "PmtInf/Dbtr/PstlAdr/TwnNm",
+                         "mult":  "0..1",
+                         "type":  "Max35Text",
+                         "sepa_length":  "1..35",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.35",
+                         "path":  "PmtInf/Dbtr/PstlAdr/TwnLctnNm",
+                         "mult":  "0..1",
+                         "type":  "Max35Text",
+                         "sepa_length":  "1..35",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.36",
+                         "path":  "PmtInf/Dbtr/PstlAdr/DstrctNm",
+                         "mult":  "0..1",
+                         "type":  "Max35Text",
+                         "sepa_length":  "1..35",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.37",
+                         "path":  "PmtInf/Dbtr/PstlAdr/CtrySubDvsn",
+                         "mult":  "0..1",
+                         "type":  "Max35Text",
+                         "sepa_length":  "1..35",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.38",
+                         "path":  "PmtInf/Dbtr/PstlAdr/Ctry",
+                         "mult":  "0..1",
+                         "type":  "CountryCode",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.39",
+                         "path":  "PmtInf/Dbtr/PstlAdr/AdrLine",
+                         "mult":  "0..2",
+                         "type":  "Max70Text",
+                         "sepa_length":  "1..70",
+                         "sepa_usage":  "Up to two occurrences are allowed."
+                     },
+                     {
+                         "ref":  "2.40",
+                         "path":  "PmtInf/Dbtr/Id",
+                         "mult":  "0..1",
+                         "type":  "Party38Choice",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.41",
+                         "path":  "PmtInf/Dbtr/Id/OrgId",
+                         "mult":  "1..1",
+                         "type":  "OrganisationIdentification29",
+                         "sepa_length":  "",
+                         "sepa_usage":  "Either AnyBIC\u0027, \u0027LEI and/or one occurrence of Other is allowed."
+                     },
+                     {
+                         "ref":  "2.42",
+                         "path":  "PmtInf/Dbtr/Id/PrvtId",
+                         "mult":  "1..1",
+                         "type":  "PersonIdentification13",
+                         "sepa_length":  "",
+                         "sepa_usage":  "Either \u0027Date and Place of Birth\u0027 or one occurence of \u0027Other\u0027 is allowed"
+                     },
+                     {
+                         "ref":  "2.43",
+                         "path":  "PmtInf/Dbtr/CtryOfRes",
+                         "mult":  "0..1",
+                         "type":  "CountryCode",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.44",
+                         "path":  "PmtInf/Dbtr/CtctDtls",
+                         "mult":  "0..1",
+                         "type":  "Contact4",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.45",
+                         "path":  "PmtInf/DbtrAcct",
+                         "mult":  "1..1",
+                         "type":  "CashAccount38",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.46",
+                         "path":  "PmtInf/DbtrAcct/Id",
+                         "mult":  "1..1",
+                         "type":  "AccountIdentification4Choice",
+                         "sepa_length":  "",
+                         "sepa_usage":  "Only IBAN is allowed."
+                     },
+                     {
+                         "ref":  "2.47",
+                         "path":  "PmtInf/DbtrAcct/Id/IBAN",
+                         "mult":  "1..1",
+                         "type":  "IBAN2007Identifier",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.48",
+                         "path":  "PmtInf/DbtrAcct/Id/Othr",
+                         "mult":  "1..1",
+                         "type":  "GenericAccountIdentification1",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.49",
+                         "path":  "PmtInf/DbtrAcct/Tp",
+                         "mult":  "0..1",
+                         "type":  "CashAccountType2Choice",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.50",
+                         "path":  "PmtInf/DbtrAcct/Ccy",
+                         "mult":  "0..1",
+                         "type":  "ActiveOrHistoricCurrencyCode",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.51",
+                         "path":  "PmtInf/DbtrAcct/Nm",
+                         "mult":  "0..1",
+                         "type":  "Max70Text",
+                         "sepa_length":  "1..70",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.52",
+                         "path":  "PmtInf/DbtrAcct/Prxy",
+                         "mult":  "0..1",
+                         "type":  "ProxyAccountIdentification1",
+                         "sepa_length":  "",
+                         "sepa_usage":  "AT-P003 can only be provided here under the condition that the Originator is given the possibility to validate the IBAN linked to that Alias/Proxy, prior to the authentication of the instruction unless the Originator and the Originator PSP agreed upfront on another arrangement (e.g., through an amendment of the general terms and conditions). Furthermore, the Originator PSP must have an agreement with the Originator and the Beneficiary PSP with the Beneficiary in relation to the treatment and the use of the data provided under such Alias/Proxy i.e. whether it is to be used for the purpose to initiate the transaction and/or to forward it to the Beneficiary PSP and/ or the Beneficiary concerned. Sub-element Identification is limited to 320 characters in length."
+                     },
+                     {
+                         "ref":  "2.53",
+                         "path":  "PmtInf/DbtrAgt",
+                         "mult":  "1..1",
+                         "type":  "BranchAndFinancialInstitutionIdentification6",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.54",
+                         "path":  "PmtInf/DbtrAgt/FinInstnId",
+                         "mult":  "1..1",
+                         "type":  "FinancialInstitutionIdentification18",
+                         "sepa_length":  "",
+                         "sepa_usage":  "Either \u0027BICFI\u0027 or Other/Identification must be used."
+                     },
+                     {
+                         "ref":  "2.55",
+                         "path":  "PmtInf/DbtrAgt/FinInstnId/BICFI",
+                         "mult":  "0..1",
+                         "type":  "BICFIDec2014Identifier",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.56",
+                         "path":  "PmtInf/DbtrAgt/FinInstnId/ClrSysMmbId",
+                         "mult":  "0..1",
+                         "type":  "ClearingSystemMemberIdentification2",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.57",
+                         "path":  "PmtInf/DbtrAgt/FinInstnId/LEI",
+                         "mult":  "0..1",
+                         "type":  "LEIIdentifier",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.58",
+                         "path":  "PmtInf/DbtrAgt/FinInstnId/Nm",
+                         "mult":  "0..1",
+                         "type":  "Max140Text",
+                         "sepa_length":  "1..140",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.59",
+                         "path":  "PmtInf/DbtrAgt/FinInstnId/PstlAdr",
+                         "mult":  "0..1",
+                         "type":  "PostalAddress24",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.60",
+                         "path":  "PmtInf/DbtrAgt/FinInstnId/Othr",
+                         "mult":  "0..1",
+                         "type":  "GenericFinancialIdentification1",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.61",
+                         "path":  "PmtInf/DbtrAgt/FinInstnId/Othr/Id",
+                         "mult":  "1..1",
+                         "type":  "Max35Text",
+                         "sepa_length":  "1..35",
+                         "sepa_usage":  "Only \"NOTPROVIDED\" is allowed."
+                     },
+                     {
+                         "ref":  "2.62",
+                         "path":  "PmtInf/DbtrAgt/FinInstnId/Othr/SchmeNm",
+                         "mult":  "0..1",
+                         "type":  "FinancialIdentificationSchemeName1Choice",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.63",
+                         "path":  "PmtInf/DbtrAgt/FinInstnId/Othr/Issr",
+                         "mult":  "0..1",
+                         "type":  "Max35Text",
+                         "sepa_length":  "1..35",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.64",
+                         "path":  "PmtInf/DbtrAgt/BrnchId",
+                         "mult":  "0..1",
+                         "type":  "BranchData3",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.65",
+                         "path":  "PmtInf/DbtrAgtAcct",
+                         "mult":  "0..1",
+                         "type":  "CashAccount38",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.66",
+                         "path":  "PmtInf/InstrForDbtrAgt",
+                         "mult":  "0..1",
+                         "type":  "Max140Text",
+                         "sepa_length":  "1..140",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.67",
+                         "path":  "PmtInf/UltmtDbtr",
+                         "mult":  "0..1",
+                         "type":  "PartyIdentification135",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.68",
+                         "path":  "PmtInf/UltmtDbtr/Nm",
+                         "mult":  "0..1",
+                         "type":  "Max140Text",
+                         "sepa_length":  "1..70",
+                         "sepa_usage":  "Name is limited to 70 characters in length."
+                     },
+                     {
+                         "ref":  "2.69",
+                         "path":  "PmtInf/UltmtDbtr/PstlAdr",
+                         "mult":  "0..1",
+                         "type":  "PostalAddress24",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.70",
+                         "path":  "PmtInf/UltmtDbtr/Id",
+                         "mult":  "0..1",
+                         "type":  "Party38Choice",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.71",
+                         "path":  "PmtInf/UltmtDbtr/Id/OrgId",
+                         "mult":  "1..1",
+                         "type":  "OrganisationIdentification29",
+                         "sepa_length":  "",
+                         "sepa_usage":  "Either AnyBIC\u0027, \u0027LEI and/or one occurrence of Other is allowed."
+                     },
+                     {
+                         "ref":  "2.72",
+                         "path":  "PmtInf/UltmtDbtr/Id/PrvtId",
+                         "mult":  "1..1",
+                         "type":  "PersonIdentification13",
+                         "sepa_length":  "",
+                         "sepa_usage":  "Either Date and Place of Birth or one occurrence of Other is allowed."
+                     },
+                     {
+                         "ref":  "2.73",
+                         "path":  "PmtInf/UltmtDbtr/CtryOfRes",
+                         "mult":  "0..1",
+                         "type":  "CountryCode",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.74",
+                         "path":  "PmtInf/UltmtDbtr/CtctDtls",
+                         "mult":  "0..1",
+                         "type":  "Contact4",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.75",
+                         "path":  "PmtInf/ChrgBr",
+                         "mult":  "0..1",
+                         "type":  "ChargeBearerType1Code",
+                         "sepa_length":  "",
+                         "sepa_usage":  "Only \"SLEV\" is allowed. It is recommended that this element be specified at Payment Information level."
+                     },
+                     {
+                         "ref":  "2.76",
+                         "path":  "PmtInf/ChrgsAcct",
+                         "mult":  "0..1",
+                         "type":  "CashAccount38",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.77",
+                         "path":  "PmtInf/ChrgsAcctAgt",
+                         "mult":  "0..1",
+                         "type":  "BranchAndFinancialInstitutionIdentification6",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.78",
+                         "path":  "PmtInf/CdtTrfTxInf",
+                         "mult":  "1..n",
+                         "type":  "CreditTransferTransaction34",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.79",
+                         "path":  "PmtInf/CdtTrfTxInf/PmtId",
+                         "mult":  "1..1",
+                         "type":  "PaymentIdentification6",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.80",
+                         "path":  "PmtInf/CdtTrfTxInf/PmtId/InstrId",
+                         "mult":  "0..1",
+                         "type":  "Max35Text",
+                         "sepa_length":  "1..35",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.81",
+                         "path":  "PmtInf/CdtTrfTxInf/PmtId/EndToEndId",
+                         "mult":  "1..1",
+                         "type":  "Max35Text",
+                         "sepa_length":  "1..35",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.82",
+                         "path":  "PmtInf/CdtTrfTxInf/PmtId/UETR",
+                         "mult":  "0..1",
+                         "type":  "UUIDv4Identifier",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.83",
+                         "path":  "PmtInf/CdtTrfTxInf/PmtTpInf",
+                         "mult":  "0..1",
+                         "type":  "PaymentTypeInformation26",
+                         "sepa_length":  "",
+                         "sepa_usage":  "\u0027Payment Type Information\u0027 must be present either here or directly under Payment Information."
+                     },
+                     {
+                         "ref":  "2.84",
+                         "path":  "PmtInf/CdtTrfTxInf/PmtTpInf/InstrPrty",
+                         "mult":  "0..1",
+                         "type":  "Priority2Code",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.85",
+                         "path":  "PmtInf/CdtTrfTxInf/PmtTpInf/SvcLvl",
+                         "mult":  "0..1",
+                         "type":  "ServiceLevel8Choice",
+                         "sepa_length":  "",
+                         "sepa_usage":  "Usage is recommended. Only one occurrence is allowed."
+                     },
+                     {
+                         "ref":  "2.86",
+                         "path":  "PmtInf/CdtTrfTxInf/PmtTpInf/SvcLvl/Cd",
+                         "mult":  "1..1",
+                         "type":  "ExternalServiceLevel1Code",
+                         "sepa_length":  "1..4",
+                         "sepa_usage":  "Only \"SEPA\" is allowed."
+                     },
+                     {
+                         "ref":  "2.87",
+                         "path":  "PmtInf/CdtTrfTxInf/PmtTpInf/SvcLvl/Prtry",
+                         "mult":  "1..1",
+                         "type":  "Max35Text",
+                         "sepa_length":  "1..35",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.88",
+                         "path":  "PmtInf/CdtTrfTxInf/PmtTpInf/LclInstrm",
+                         "mult":  "0..1",
+                         "type":  "LocalInstrument2Choice",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.89",
+                         "path":  "PmtInf/CdtTrfTxInf/PmtTpInf/LclInstrm/Cd",
+                         "mult":  "1..1",
+                         "type":  "ExternalLocalInstrument1Code",
+                         "sepa_length":  "1..35",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.90",
+                         "path":  "PmtInf/CdtTrfTxInf/PmtTpInf/LclInstrm/Prtry",
+                         "mult":  "1..1",
+                         "type":  "Max35Text",
+                         "sepa_length":  "1..35",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.91",
+                         "path":  "PmtInf/CdtTrfTxInf/PmtTpInf/CtgyPurp",
+                         "mult":  "0..1",
+                         "type":  "CategoryPurpose1Choice",
+                         "sepa_length":  "",
+                         "sepa_usage":  "Depending on the agreement between the Originator and the Originator PSP, Category Purpose may be forwarded to the Beneficiary PSP."
+                     },
+                     {
+                         "ref":  "2.92",
+                         "path":  "PmtInf/CdtTrfTxInf/PmtTpInf/CtgyPurp/Cd",
+                         "mult":  "1..1",
+                         "type":  "ExternalCategoryPurpose1Code",
+                         "sepa_length":  "1..4",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.93",
+                         "path":  "PmtInf/CdtTrfTxInf/PmtTpInf/CtgyPurp/Prtry",
+                         "mult":  "1..1",
+                         "type":  "Max35Text",
+                         "sepa_length":  "1..35",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.94",
+                         "path":  "PmtInf/CdtTrfTxInf/Amt",
+                         "mult":  "1..1",
+                         "type":  "AmountType4Choice",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.95",
+                         "path":  "PmtInf/CdtTrfTxInf/Amt/InstdAmt",
+                         "mult":  "1..1",
+                         "type":  "ActiveOrHistoricCurrencyAndAmount",
+                         "sepa_length":  "",
+                         "sepa_usage":  "Only EUR is allowed. Amount must be 0.01 or more and 999999999.99 or less."
+                     },
+                     {
+                         "ref":  "2.96",
+                         "path":  "PmtInf/CdtTrfTxInf/Amt/EqvtAmt",
+                         "mult":  "1..1",
+                         "type":  "EquivalentAmount2",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.97",
+                         "path":  "PmtInf/CdtTrfTxInf/XchgRateInf",
+                         "mult":  "0..1",
+                         "type":  "ExchangeRate1",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.98",
+                         "path":  "PmtInf/CdtTrfTxInf/ChrgBr",
+                         "mult":  "0..1",
+                         "type":  "ChargeBearerType1Code",
+                         "sepa_length":  "",
+                         "sepa_usage":  "Only \"SLEV\" is allowed. It is recommended that this element be specified at Payment Information level."
+                     },
+                     {
+                         "ref":  "2.99",
+                         "path":  "PmtInf/CdtTrfTxInf/ChqInstr",
+                         "mult":  "0..1",
+                         "type":  "Cheque11",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.100",
+                         "path":  "PmtInf/CdtTrfTxInf/UltmtDbtr",
+                         "mult":  "0..1",
+                         "type":  "PartyIdentification135",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.101",
+                         "path":  "PmtInf/CdtTrfTxInf/UltmtDbtr/Nm",
+                         "mult":  "0..1",
+                         "type":  "Max140Text",
+                         "sepa_length":  "1..70",
+                         "sepa_usage":  "Name is limited to 70 characters in length."
+                     },
+                     {
+                         "ref":  "2.102",
+                         "path":  "PmtInf/CdtTrfTxInf/UltmtDbtr/PstlAdr",
+                         "mult":  "0..1",
+                         "type":  "PostalAddress24",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.103",
+                         "path":  "PmtInf/CdtTrfTxInf/UltmtDbtr/Id",
+                         "mult":  "0..1",
+                         "type":  "Party38Choice",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.104",
+                         "path":  "PmtInf/CdtTrfTxInf/UltmtDbtr/Id/OrgId",
+                         "mult":  "1..1",
+                         "type":  "OrganisationIdentification29",
+                         "sepa_length":  "",
+                         "sepa_usage":  "Either AnyBIC\u0027, \u0027LEI and/or one occurrence of Other is allowed."
+                     },
+                     {
+                         "ref":  "2.105",
+                         "path":  "PmtInf/CdtTrfTxInf/UltmtDbtr/Id/PrvtId",
+                         "mult":  "1..1",
+                         "type":  "PersonIdentification13",
+                         "sepa_length":  "",
+                         "sepa_usage":  "Either Date and Place of Birth or one occurrence of Other is allowed."
+                     },
+                     {
+                         "ref":  "2.106",
+                         "path":  "PmtInf/CdtTrfTxInf/UltmtDbtr/CtryOfRes",
+                         "mult":  "0..1",
+                         "type":  "CountryCode",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.107",
+                         "path":  "PmtInf/CdtTrfTxInf/UltmtDbtr/CtctDtls",
+                         "mult":  "0..1",
+                         "type":  "Contact4",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.108",
+                         "path":  "PmtInf/CdtTrfTxInf/IntrmyAgt1",
+                         "mult":  "0..1",
+                         "type":  "BranchAndFinancialInstitutionIdentification6",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.109",
+                         "path":  "PmtInf/CdtTrfTxInf/IntrmyAgt1Acct",
+                         "mult":  "0..1",
+                         "type":  "CashAccount38",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.110",
+                         "path":  "PmtInf/CdtTrfTxInf/IntrmyAgt2",
+                         "mult":  "0..1",
+                         "type":  "BranchAndFinancialInstitutionIdentification6",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.111",
+                         "path":  "PmtInf/CdtTrfTxInf/IntrmyAgt2Acct",
+                         "mult":  "0..1",
+                         "type":  "CashAccount38",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.112",
+                         "path":  "PmtInf/CdtTrfTxInf/IntrmyAgt3",
+                         "mult":  "0..1",
+                         "type":  "BranchAndFinancialInstitutionIdentification6",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.113",
+                         "path":  "PmtInf/CdtTrfTxInf/IntrmyAgt3Acct",
+                         "mult":  "0..1",
+                         "type":  "CashAccount38",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.114",
+                         "path":  "PmtInf/CdtTrfTxInf/CdtrAgt",
+                         "mult":  "0..1",
+                         "type":  "BranchAndFinancialInstitutionIdentification6",
+                         "sepa_length":  "",
+                         "sepa_usage":  "Only \u0027BICFI\u0027 is allowed. If the BIC is not indicated \u0027Creditor Agent\u0027 structure is not to be used."
+                     },
+                     {
+                         "ref":  "2.115",
+                         "path":  "PmtInf/CdtTrfTxInf/CdtrAgtAcct",
+                         "mult":  "0..1",
+                         "type":  "CashAccount38",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.116",
+                         "path":  "PmtInf/CdtTrfTxInf/Cdtr",
+                         "mult":  "1..1",
+                         "type":  "PartyIdentification135",
+                         "sepa_length":  "",
+                         "sepa_usage":  "Mandatory."
+                     },
+                     {
+                         "ref":  "2.117",
+                         "path":  "PmtInf/CdtTrfTxInf/Cdtr/Nm",
+                         "mult":  "1..1",
+                         "type":  "Max140Text",
+                         "sepa_length":  "1..70",
+                         "sepa_usage":  "Mandatory. Name is limited to 70 characters in length."
+                     },
+                     {
+                         "ref":  "2.118",
+                         "path":  "PmtInf/CdtTrfTxInf/Cdtr/PstlAdr",
+                         "mult":  "0..1",
+                         "type":  "PostalAddress24",
+                         "sepa_length":  "",
+                         "sepa_usage":  "STRUCTURED ADDRESS: Usage is recommended. \u0027Town Name and Country are mandatory. Address Line is not allowed. It is recommended to provide as many structured elements as possible. HYBRID ADDRESS: \u0027Town Name and Country are mandatory. At least one occurrence of Address line is mandatory. UNSTRUCTURED ADDRESS (As of 22 November 2026, only the use of structured and hybrid addresses will be allowed - based on available information at the moment of publication): At least one occurrence of Address line is mandatory. Postal Address sub- elements other than Address Line and Country are forbidden."
+                     },
+                     {
+                         "ref":  "2.119",
+                         "path":  "PmtInf/CdtTrfTxInf/Cdtr/PstlAdr/AdrTp",
+                         "mult":  "0..1",
+                         "type":  "AddressType3Choice",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.120",
+                         "path":  "PmtInf/CdtTrfTxInf/Cdtr/PstlAdr/Dept",
+                         "mult":  "0..1",
+                         "type":  "Max70Text",
+                         "sepa_length":  "1..70",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.121",
+                         "path":  "PmtInf/CdtTrfTxInf/Cdtr/PstlAdr/SubDept",
+                         "mult":  "0..1",
+                         "type":  "Max70Text",
+                         "sepa_length":  "1..70",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.122",
+                         "path":  "PmtInf/CdtTrfTxInf/Cdtr/PstlAdr/StrtNm",
+                         "mult":  "0..1",
+                         "type":  "Max70Text",
+                         "sepa_length":  "1..70",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.123",
+                         "path":  "PmtInf/CdtTrfTxInf/Cdtr/PstlAdr/BldgNb",
+                         "mult":  "0..1",
+                         "type":  "Max16Text",
+                         "sepa_length":  "1..16",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.124",
+                         "path":  "PmtInf/CdtTrfTxInf/Cdtr/PstlAdr/BldgNm",
+                         "mult":  "0..1",
+                         "type":  "Max35Text",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.125",
+                         "path":  "PmtInf/CdtTrfTxInf/Cdtr/PstlAdr/Flr",
+                         "mult":  "0..1",
+                         "type":  "Max70Text",
+                         "sepa_length":  "1..70",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.126",
+                         "path":  "PmtInf/CdtTrfTxInf/Cdtr/PstlAdr/PstBx",
+                         "mult":  "0..1",
+                         "type":  "Max16Text",
+                         "sepa_length":  "1..16",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.127",
+                         "path":  "PmtInf/CdtTrfTxInf/Cdtr/PstlAdr/Room",
+                         "mult":  "0..1",
+                         "type":  "Max70Text",
+                         "sepa_length":  "1..70",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.128",
+                         "path":  "PmtInf/CdtTrfTxInf/Cdtr/PstlAdr/PstCd",
+                         "mult":  "0..1",
+                         "type":  "Max16Text",
+                         "sepa_length":  "1..16",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.129",
+                         "path":  "PmtInf/CdtTrfTxInf/Cdtr/PstlAdr/TwnNm",
+                         "mult":  "0..1",
+                         "type":  "Max35Text",
+                         "sepa_length":  "1..35",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.130",
+                         "path":  "PmtInf/CdtTrfTxInf/Cdtr/PstlAdr/TwnLctnNm",
+                         "mult":  "0..1",
+                         "type":  "Max35Text",
+                         "sepa_length":  "1..35",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.131",
+                         "path":  "PmtInf/CdtTrfTxInf/Cdtr/PstlAdr/DstrctNm",
+                         "mult":  "0..1",
+                         "type":  "Max35Text",
+                         "sepa_length":  "1..35",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.132",
+                         "path":  "PmtInf/CdtTrfTxInf/Cdtr/PstlAdr/CtrySubDvsn",
+                         "mult":  "0..1",
+                         "type":  "Max35Text",
+                         "sepa_length":  "1..35",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.133",
+                         "path":  "PmtInf/CdtTrfTxInf/Cdtr/PstlAdr/Ctry",
+                         "mult":  "0..1",
+                         "type":  "CountryCode",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.134",
+                         "path":  "PmtInf/CdtTrfTxInf/Cdtr/PstlAdr/AdrLine",
+                         "mult":  "0..2",
+                         "type":  "Max70Text",
+                         "sepa_length":  "1..70",
+                         "sepa_usage":  "Up to two occurrences are allowed."
+                     },
+                     {
+                         "ref":  "2.135",
+                         "path":  "PmtInf/CdtTrfTxInf/Cdtr/Id",
+                         "mult":  "0..1",
+                         "type":  "Party38Choice",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.136",
+                         "path":  "PmtInf/CdtTrfTxInf/Cdtr/Id/OrgId",
+                         "mult":  "1..1",
+                         "type":  "OrganisationIdentification29",
+                         "sepa_length":  "",
+                         "sepa_usage":  "Either AnyBIC\u0027, \u0027LEI or one occurrence of Other is allowed."
+                     },
+                     {
+                         "ref":  "2.137",
+                         "path":  "PmtInf/CdtTrfTxInf/Cdtr/Id/PrvtId",
+                         "mult":  "1..1",
+                         "type":  "PersonIdentification13",
+                         "sepa_length":  "",
+                         "sepa_usage":  "Either Date and Place of Birth or one occurrence of Other is allowed."
+                     },
+                     {
+                         "ref":  "2.138",
+                         "path":  "PmtInf/CdtTrfTxInf/Cdtr/CtryOfRes",
+                         "mult":  "0..1",
+                         "type":  "CountryCode",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.139",
+                         "path":  "PmtInf/CdtTrfTxInf/Cdtr/CtctDtls",
+                         "mult":  "0..1",
+                         "type":  "Contact4",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.140",
+                         "path":  "PmtInf/CdtTrfTxInf/CdtrAcct",
+                         "mult":  "1..1",
+                         "type":  "CashAccount38",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.141",
+                         "path":  "PmtInf/CdtTrfTxInf/CdtrAcct/Id",
+                         "mult":  "1..1",
+                         "type":  "AccountIdentification4Choice",
+                         "sepa_length":  "",
+                         "sepa_usage":  "Only IBAN is allowed."
+                     },
+                     {
+                         "ref":  "2.142",
+                         "path":  "PmtInf/CdtTrfTxInf/CdtrAcct/Id/IBAN",
+                         "mult":  "1..1",
+                         "type":  "IBAN2007Identifier",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.143",
+                         "path":  "PmtInf/CdtTrfTxInf/CdtrAcct/Id/Othr",
+                         "mult":  "1..1",
+                         "type":  "GenericAccountIdentification1",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.144",
+                         "path":  "PmtInf/CdtTrfTxInf/CdtrAcct/Tp",
+                         "mult":  "0..1",
+                         "type":  "CashAccountType2Choice",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.145",
+                         "path":  "PmtInf/CdtTrfTxInf/CdtrAcct/Ccy",
+                         "mult":  "0..1",
+                         "type":  "ActiveOrHistoricCurrencyCode",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.146",
+                         "path":  "PmtInf/CdtTrfTxInf/CdtrAcct/Nm",
+                         "mult":  "0..1",
+                         "type":  "Max70Text",
+                         "sepa_length":  "1..70",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.147",
+                         "path":  "PmtInf/CdtTrfTxInf/CdtrAcct/Prxy",
+                         "mult":  "0..1",
+                         "type":  "ProxyAccountIdentification1",
+                         "sepa_length":  "",
+                         "sepa_usage":  "AT-E003 can only be provided here under the condition that the Originator is given the possibility to validate the IBAN linked to that Alias/Proxy, prior to the authentication of the instruction unless the Originator and the Originator PSP agreed upfront on another arrangement (e.g., through an amendment of the general terms and conditions). Furthermore, the Originator PSP must have an agreement with the Originator and the Beneficiary PSP with the Beneficiary in relation to the treatment and the use of the data provided under such Alias/Proxy i.e. whether it is to be used for the purpose to initiate the transaction and/or to forward it to the Beneficiary PSP and/ or the Beneficiary concerned. Sub-element Identification is limited to 320 characters in length."
+                     },
+                     {
+                         "ref":  "2.148",
+                         "path":  "PmtInf/CdtTrfTxInf/UltmtCdtr",
+                         "mult":  "0..1",
+                         "type":  "PartyIdentification135",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.149",
+                         "path":  "PmtInf/CdtTrfTxInf/UltmtCdtr/Nm",
+                         "mult":  "0..1",
+                         "type":  "Max140Text",
+                         "sepa_length":  "1..70",
+                         "sepa_usage":  "Name is limited to 70 characters in length."
+                     },
+                     {
+                         "ref":  "2.150",
+                         "path":  "PmtInf/CdtTrfTxInf/UltmtCdtr/PstlAdr",
+                         "mult":  "0..1",
+                         "type":  "PostalAddress24",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.151",
+                         "path":  "PmtInf/CdtTrfTxInf/UltmtCdtr/Id",
+                         "mult":  "0..1",
+                         "type":  "Party38Choice",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.152",
+                         "path":  "PmtInf/CdtTrfTxInf/UltmtCdtr/Id/OrgId",
+                         "mult":  "1..1",
+                         "type":  "OrganisationIdentification29",
+                         "sepa_length":  "",
+                         "sepa_usage":  "Either AnyBIC\u0027, \u0027LEI or one occurrence of Other is allowed."
+                     },
+                     {
+                         "ref":  "2.153",
+                         "path":  "PmtInf/CdtTrfTxInf/UltmtCdtr/Id/PrvtId",
+                         "mult":  "1..1",
+                         "type":  "PersonIdentification13",
+                         "sepa_length":  "",
+                         "sepa_usage":  "Either Date and Place of Birth or one occurrence of Other is allowed."
+                     },
+                     {
+                         "ref":  "2.154",
+                         "path":  "PmtInf/CdtTrfTxInf/UltmtCdtr/CtryOfRes",
+                         "mult":  "0..1",
+                         "type":  "CountryCode",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.155",
+                         "path":  "PmtInf/CdtTrfTxInf/UltmtCdtr/CtctDtls",
+                         "mult":  "0..1",
+                         "type":  "Contact4",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.156",
+                         "path":  "PmtInf/CdtTrfTxInf/InstrForCdtrAgt",
+                         "mult":  "0..n",
+                         "type":  "InstructionForCreditorAgent1",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.157",
+                         "path":  "PmtInf/CdtTrfTxInf/InstrForDbtrAgt",
+                         "mult":  "0..1",
+                         "type":  "Max140Text",
+                         "sepa_length":  "1..140",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.158",
+                         "path":  "PmtInf/CdtTrfTxInf/Purp",
+                         "mult":  "0..1",
+                         "type":  "Purpose2Choice",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.159",
+                         "path":  "PmtInf/CdtTrfTxInf/Purp/Cd",
+                         "mult":  "1..1",
+                         "type":  "ExternalPurpose1Code",
+                         "sepa_length":  "1..4",
+                         "sepa_usage":  "In case the transaction is a transfer back related to an earlier executed SEPA Credit Transfer (SCT) Transaction, the code must be \"RRCT\" or another code meaningful for identifying the SCT as a transfer back. \"RRTP\" must be used if the SCT is the result of a received Request-to-Pay message."
+                     },
+                     {
+                         "ref":  "2.160",
+                         "path":  "PmtInf/CdtTrfTxInf/Purp/Prtry",
+                         "mult":  "1..1",
+                         "type":  "Max35Text",
+                         "sepa_length":  "1..35",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.162",
+                         "path":  "PmtInf/CdtTrfTxInf/Tax",
+                         "mult":  "0..1",
+                         "type":  "TaxInformation8",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.164",
+                         "path":  "PmtInf/CdtTrfTxInf/RmtInf",
+                         "mult":  "0..1",
+                         "type":  "RemittanceInformation16",
+                         "sepa_length":  "",
+                         "sepa_usage":  "Either Structured or Unstructured may be present"
+                     },
+                     {
+                         "ref":  "2.165",
+                         "path":  "PmtInf/CdtTrfTxInf/RmtInf/Ustrd",
+                         "mult":  "0..1",
+                         "type":  "Max140Text",
+                         "sepa_length":  "1..140",
+                         "sepa_usage":  "Only one occurrence of Unstructured is allowed. Unstructured may carry structured remittance information, as agreed between the Originator and the Beneficiary. If the commercial trade name of the payee is different from its legal name (AT-E001 The name of the Beneficiary), then the commercial trade name must be provided here. The location of where the transaction took place (if different from AT-E004 The address of the Beneficiary) as well as the transaction date and time can also be provided here. Each piece of information must be followed by a slash to clearly differentiate from the other information included under this data element (a special character other than a slash can be used instead (e.g., +) in case the slash is used for other purposes). [Example: The Shopping Paradise/Boulevard des Marchands 123/2020-12-24T11:37/Purchase Nr 1234567890AZ - information, please refer to EPC088-22 EPC Guidance Document  Improve Transparency for Retail Payment End-Users."
+                     },
+                     {
+                         "ref":  "2.166",
+                         "path":  "PmtInf/CdtTrfTxInf/RmtInf/Strd",
+                         "mult":  "0..1",
+                         "type":  "StructuredRemittanceInformation16",
+                         "sepa_length":  "",
+                         "sepa_usage":  "Only one occurrence of Structured is allowed."
+                     },
+                     {
+                         "ref":  "2.167",
+                         "path":  "PmtInf/CdtTrfTxInf/RmtInf/Strd/RfrdDocInf",
+                         "mult":  "0..n",
+                         "type":  "ReferredDocumentInformation7",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.168",
+                         "path":  "PmtInf/CdtTrfTxInf/RmtInf/Strd/RfrdDocAmt",
+                         "mult":  "0..1",
+                         "type":  "RemittanceAmount2",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.169",
+                         "path":  "PmtInf/CdtTrfTxInf/RmtInf/Strd/CdtrRefInf",
+                         "mult":  "0..1",
+                         "type":  "CreditorReferenceInformation2",
+                         "sepa_length":  "",
+                         "sepa_usage":  "When present, the Debtor PSP is not obliged to validate the reference information. When used both Type and Reference must be present."
+                     },
+                     {
+                         "ref":  "2.170",
+                         "path":  "PmtInf/CdtTrfTxInf/RmtInf/Strd/CdtrRefInf/Tp",
+                         "mult":  "1..1",
+                         "type":  "CreditorReferenceType2",
+                         "sepa_length":  "",
+                         "sepa_usage":  "Mandatory if \u0027Creditor Reference Information\u0027 is used."
+                     },
+                     {
+                         "ref":  "2.171",
+                         "path":  "PmtInf/CdtTrfTxInf/RmtInf/Strd/CdtrRefInf/Tp/CdOrPrtry",
+                         "mult":  "1..1",
+                         "type":  "CreditorReferenceType1Choice",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.172",
+                         "path":  "PmtInf/CdtTrfTxInf/RmtInf/Strd/CdtrRefInf/Tp/CdOrPrtry/Cd",
+                         "mult":  "1..1",
+                         "type":  "DocumentType3Code",
+                         "sepa_length":  "",
+                         "sepa_usage":  "Only \"SCOR\" is allowed."
+                     },
+                     {
+                         "ref":  "2.173",
+                         "path":  "PmtInf/CdtTrfTxInf/RmtInf/Strd/CdtrRefInf/Tp/CdOrPrtry/Prtry",
+                         "mult":  "1..1",
+                         "type":  "Max35Text",
+                         "sepa_length":  "1..35",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.174",
+                         "path":  "PmtInf/CdtTrfTxInf/RmtInf/Strd/CdtrRefInf/Tp/Issr",
+                         "mult":  "0..1",
+                         "type":  "Max35Text",
+                         "sepa_length":  "",
+                         "sepa_usage":  "Mandatory if Reference is populated with an identifier issued or governed by a known institution. E.g. ISO should be mentioned here if Reference is populated with a RF Creditor Reference (ISO 11649)."
+                     },
+                     {
+                         "ref":  "2.175",
+                         "path":  "PmtInf/CdtTrfTxInf/RmtInf/Strd/CdtrRefInf/Ref",
+                         "mult":  "1..1",
+                         "type":  "Max35Text",
+                         "sepa_length":  "1..35",
+                         "sepa_usage":  "Mandatory if \u0027Creditor Reference Information\u0027 is used. If a Creditor Reference contains a check digit, the receiving PSP is not required to validate this. If the receiving PSP validates the check digit and if this validation fails, the PSP may continue its processing and send the transaction to the next party in the chain. RF Creditor Reference must be used (ISO 11649) in case ISO is mentionded under Issuer\u0027."
+                     },
+                     {
+                         "ref":  "2.176",
+                         "path":  "PmtInf/CdtTrfTxInf/RmtInf/Strd/Invcr",
+                         "mult":  "0..1",
+                         "type":  "PartyIdentification135",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.177",
+                         "path":  "PmtInf/CdtTrfTxInf/RmtInf/Strd/Invcee",
+                         "mult":  "0..1",
+                         "type":  "PartyIdentification135",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.178",
+                         "path":  "PmtInf/CdtTrfTxInf/RmtInf/Strd/TaxRmt",
+                         "mult":  "0..1",
+                         "type":  "TaxInformation7",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.179",
+                         "path":  "PmtInf/CdtTrfTxInf/RmtInf/Strd/GrnshmtRmt",
+                         "mult":  "0..1",
+                         "type":  "Garnishment3",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.180",
+                         "path":  "PmtInf/CdtTrfTxInf/RmtInf/Strd/AddtlRmtInf",
+                         "mult":  "0..3",
+                         "type":  "Max140Text",
+                         "sepa_length":  "1..140",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.181",
+                         "path":  "PmtInf/CdtTrfTxInf/SplmtryData",
+                         "mult":  "0..n",
+                         "type":  "SupplementaryData1",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     }
+                 ]
+}

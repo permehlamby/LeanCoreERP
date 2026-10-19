@@ -1,0 +1,42 @@
+{
+  "format_version": "1.0",
+  "package_code": "STD_SAFT_OECD",
+  "package_version": "1.0.0",
+  "kind": "STANDARD",
+  "state": "DRAFT",
+  "standard": {
+    "name": "OECD Standard Audit File for Tax (SAF-T)",
+    "version": "2.00",
+    "schema": "SAF-T_Schema_v_2.00.xsd",
+    "namespace": "urn:OECD:StandardAuditFile-Taxation/2.00",
+    "variant_code": "OECD_BASE",
+    "note": "The variant OECD_BASE of the SAFT_DATASET export job (12, 8). National variants are country packages that require this one"
+  },
+  "requires": [],
+  "sources": [
+    {
+      "title": "Guidance for the Standard Audit File - Tax, Version 2.0, Appendix B: Schema",
+      "authority": "OECD",
+      "url": "https://web-archive-storage.oecd.org/aemint-web-archive-prod/web-archive/cc/ccd3b76ffdaf3c1f3e185a390dba41be2876b0e826925278bbb3e62ad37442bf.pdf",
+      "used_for": ["app/saft/oecd-2.00-schema-elements.json", "app/saft/oecd-2.00-core-mapping.json"]
+    }
+  ],
+  "owner": "Platform team",
+  "legal_reviewer": "to be named",
+  "scope": "Header, MasterFiles (accounts, customers, suppliers, tax table, units, products), GeneralLedgerEntries, SourceDocuments (sales invoices, purchase invoices, payments). Not covered: Taxonomies, AnalysisTypeTable, MovementTypeTable, PhysicalStock, Owners, Assets, MovementOfGoods, AssetTransactions (see CHANGELOG.md)",
+  "scope_map": {
+    "tenant": ["external_code_mapping"],
+    "company": []
+  },
+  "inputs": [],
+  "content": {
+    "core": ["core/external_code_mapping.json"],
+    "policy": null,
+    "app": "app/app-content.json",
+    "verification": "verification.json"
+  },
+  "findings_for_core": [
+    { "ref": "G1", "text": "The company has no address (07, 5.4). The OECD schema requires Address with City and PostalCode in Header/Company, and a billing address of the seller on invoices" },
+    { "ref": "G2", "text": "The company has no contact person or telephone. The OECD schema requires Contact with ContactPerson (first and last name) and Telephone in Header/Company" }
+  ]
+}

@@ -1,0 +1,15 @@
+{
+  "resource": "company-settings",
+  "objects": [
+    {
+      "item_id": "DK-SET-0001",
+      "ref": "set_initial",
+      "tax_rounding_mode": "PER_DOCUMENT",
+      "tax_amount_tolerance": "0.05",
+      "rate_override_tolerance_pct": "1.0000",
+      "soft_close_requires_reason": false,
+      "effective_from": "APPLY_TIME",
+      "note": "Defaults of the platform. tax_rounding_mode is a Danish rule candidate (UNVERIFIED). Tolerances are design defaults, not law"
+    }
+  ]
+}

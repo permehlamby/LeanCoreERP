@@ -1,0 +1,17 @@
+{
+  "resource": "retention-rules",
+  "note": "The period (5 years) is supported by secondary sources for the bookkeeping act. The start point differs between sources: end of the financial year, or the document date. v0.1 uses FISCAL_YEAR_END and lists RECORD_DATE as the open alternative (CHANGELOG F-DK-4). The paragraph of the act is not confirmed. Snapshot rules are never shorter than the ledger rule (12, 4.1 consistency rule). READ_LOG is a platform design default, not law",
+  "defaults": { "country_code": "DK", "retention_years": 5, "start_event": "FISCAL_YEAR_END", "legal_basis": "Bogføringsloven (lov nr. 700 af 24/05/2022), opbevaring. Paragraf ikke bekræftet", "effective_from": "APPLY_TIME" },
+  "objects": [
+    { "item_id": "DK-RET-LEDGER", "record_class": "LEDGER" },
+    { "item_id": "DK-RET-VATRET", "record_class": "VAT_RETURN" },
+    { "item_id": "DK-RET-STOCK", "record_class": "STOCK" },
+    { "item_id": "DK-RET-ORDER", "record_class": "ORDER" },
+    { "item_id": "DK-RET-FULFIL", "record_class": "FULFILMENT" },
+    { "item_id": "DK-RET-INVISS", "record_class": "INVOICE_ISSUE" },
+    { "item_id": "DK-RET-LSNAP", "record_class": "LEGAL_SNAPSHOT" },
+    { "item_id": "DK-RET-ASNAP", "record_class": "ADDRESS_SNAPSHOT" },
+    { "item_id": "DK-RET-AUDIT", "record_class": "AUDIT_LOG" },
+    { "item_id": "DK-RET-READ", "record_class": "READ_LOG", "retention_years": 1, "start_event": "RECORD_DATE", "legal_basis": "Platform design default, not law" }
+  ]
+}

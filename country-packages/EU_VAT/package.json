@@ -1,0 +1,28 @@
+{
+  "format_version": "1.0",
+  "package_code": "EU_VAT",
+  "package_version": "1.0.0",
+  "kind": "REGIME",
+  "state": "DRAFT",
+  "requires": [
+    { "package_code": "STD_EN16931", "range": "^1", "reason": "The scenario catalogue pairs each scenario with an EN 16931 VAT category and exemption reason code" }
+  ],
+  "regime": {
+    "name": "EU VAT scenarios (VAT Directive 2006/112/EC) as expressed in the core",
+    "note": "A thin package (18, Q10): the two tax classes that country packages need, and the scenario catalogue of 08, section 3 with the derived EU keys of ADR-200 and the EN 16931 pairing. The actual codes, rates, boxes and rules of a country are in its country package. EU membership by date is a platform table (07, 4), not package content"
+  },
+  "owner": "Platform team (provisional: the platform team owns the regime package until a VAT community of practice takes it, 18, Q4)",
+  "legal_reviewer": "to be named",
+  "scope": "Tax classes GOODS and SERVICES. Scenario catalogue (documentation, app content). Not in this package: country VAT codes, rates and boxes, OSS and IOSS return structures (they are rows keyed by country and rate, 08, 6.1), customs",
+  "scope_map": {
+    "tenant": ["tax_class"],
+    "company": []
+  },
+  "inputs": [],
+  "content": {
+    "core": ["core/tax_class.json"],
+    "policy": null,
+    "app": "app/app-content.json",
+    "verification": "verification.json"
+  }
+}

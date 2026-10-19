@@ -1,0 +1,350 @@
+﻿{
+    "note":  "Code lists used by the mapping. Each list names its basis. Lists marked KNOWLEDGE are not read from a source and are UNVERIFIED. The core stores none of them except through external_code_mapping (payment means)",
+    "lists":  {
+                  "sepa_ct_reject_reasons":  {
+                                                 "basis":  "EPC",
+                                                 "source":  "EPC132-08 2025 V1.0, 2.2.2 Message Element Specifications. The reasons of the rulebook are mapped to these ISO codes. Other ISO codes may be used by the debtor PSP",
+                                                 "values":  [
+                                                                {
+                                                                    "meaning":  "Account identifier incorrect (invalid IBAN)",
+                                                                    "code":  "AC01",
+                                                                    "name":  "IncorrectAccountNumber",
+                                                                    "app_action":  "Release the payment_block, mark the partner bank account for review. Do not change the account automatically"
+                                                                },
+                                                                {
+                                                                    "meaning":  "Operation or transaction code incorrect",
+                                                                    "code":  "AG02",
+                                                                    "name":  "InvalidBankOperationCode",
+                                                                    "app_action":  "Release the payment_block and show the reason to the treasury user"
+                                                                },
+                                                                {
+                                                                    "meaning":  "Duplicate payment",
+                                                                    "code":  "AM05",
+                                                                    "name":  "Duplication",
+                                                                    "app_action":  "Check whether the first payment was executed (statement) before any retry"
+                                                                },
+                                                                {
+                                                                    "meaning":  "Not tagged as Extended Remittance Information transaction but contains ERI",
+                                                                    "code":  "CERI",
+                                                                    "name":  "CheckERI",
+                                                                    "app_action":  "Release the payment_block and show the reason to the treasury user"
+                                                                },
+                                                                {
+                                                                    "meaning":  "Creditor PSP is not registered under this BIC in the CSM",
+                                                                    "code":  "CNOR",
+                                                                    "name":  "CreditorBankIsNotRegistered",
+                                                                    "app_action":  "Release the payment_block and show the reason to the treasury user"
+                                                                },
+                                                                {
+                                                                    "meaning":  "Debtor PSP is not registered under this BIC in the CSM",
+                                                                    "code":  "DNOR",
+                                                                    "name":  "DebtorBankIsNotRegistered",
+                                                                    "app_action":  "Release the payment_block and show the reason to the treasury user"
+                                                                },
+                                                                {
+                                                                    "meaning":  "The Extended Remittance Information option is not supported",
+                                                                    "code":  "ERIN",
+                                                                    "name":  "ERIOptionNotSupported",
+                                                                    "app_action":  "Release the payment_block and show the reason to the treasury user"
+                                                                },
+                                                                {
+                                                                    "meaning":  "Invalid file format",
+                                                                    "code":  "FF01",
+                                                                    "name":  "InvalidFileFormat",
+                                                                    "app_action":  "Release the payment_block and show the reason to the treasury user"
+                                                                },
+                                                                {
+                                                                    "meaning":  "Reason not specified",
+                                                                    "code":  "MS03",
+                                                                    "name":  "NotSpecifiedReasonAgentGenerated",
+                                                                    "app_action":  "Release the payment_block and show the reason to the treasury user"
+                                                                },
+                                                                {
+                                                                    "meaning":  "Tagged as ERI transaction but contains no ERI",
+                                                                    "code":  "NERI",
+                                                                    "name":  "NoERI",
+                                                                    "app_action":  "Release the payment_block and show the reason to the treasury user"
+                                                                },
+                                                                {
+                                                                    "meaning":  "PSP identifier incorrect (invalid BIC)",
+                                                                    "code":  "RC01",
+                                                                    "name":  "BankIdentifierIncorrect",
+                                                                    "app_action":  "Release the payment_block and show the reason to the treasury user"
+                                                                },
+                                                                {
+                                                                    "meaning":  "Regulatory reason",
+                                                                    "code":  "RR01",
+                                                                    "name":  "MissingDebtorAccountOrIdentification",
+                                                                    "app_action":  "Release the payment_block and show the reason to the treasury user"
+                                                                },
+                                                                {
+                                                                    "meaning":  "Regulatory reason",
+                                                                    "code":  "RR02",
+                                                                    "name":  "MissingDebtorNameOrAddress",
+                                                                    "app_action":  "Release the payment_block and show the reason to the treasury user"
+                                                                },
+                                                                {
+                                                                    "meaning":  "Regulatory reason",
+                                                                    "code":  "RR03",
+                                                                    "name":  "MissingCreditorNameOrAddress",
+                                                                    "app_action":  "Release the payment_block and show the reason to the treasury user"
+                                                                },
+                                                                {
+                                                                    "meaning":  "Regulatory reason",
+                                                                    "code":  "RR04",
+                                                                    "name":  "RegulatoryReason",
+                                                                    "app_action":  "Release the payment_block and show the reason to the treasury user"
+                                                                },
+                                                                {
+                                                                    "meaning":  "File received after cut-off time",
+                                                                    "code":  "TM01",
+                                                                    "name":  "CutOffTime",
+                                                                    "app_action":  "Release the payment_block and re-run with a later execution date"
+                                                                }
+                                                            ]
+                                             },
+                  "pain002_status":  {
+                                         "basis":  "KNOWLEDGE",
+                                         "note":  "The SEPA reject dataset uses RJCT only. The other values are the ISO payment status codes a bank may send in a full status report. Bank-specific usage differs",
+                                         "values":  [
+                                                        {
+                                                            "code":  "RCVD",
+                                                            "meaning":  "Received"
+                                                        },
+                                                        {
+                                                            "code":  "ACTC",
+                                                            "meaning":  "AcceptedTechnicalValidation"
+                                                        },
+                                                        {
+                                                            "code":  "ACCP",
+                                                            "meaning":  "AcceptedCustomerProfile"
+                                                        },
+                                                        {
+                                                            "code":  "ACSP",
+                                                            "meaning":  "AcceptedSettlementInProcess"
+                                                        },
+                                                        {
+                                                            "code":  "ACSC",
+                                                            "meaning":  "AcceptedSettlementCompleted"
+                                                        },
+                                                        {
+                                                            "code":  "ACWC",
+                                                            "meaning":  "AcceptedWithChange"
+                                                        },
+                                                        {
+                                                            "code":  "PDNG",
+                                                            "meaning":  "Pending"
+                                                        },
+                                                        {
+                                                            "code":  "PART",
+                                                            "meaning":  "PartiallyAccepted"
+                                                        },
+                                                        {
+                                                            "code":  "RJCT",
+                                                            "meaning":  "Rejected"
+                                                        }
+                                                    ]
+                                     },
+                  "sepa_dd_sequence_type":  {
+                                                "basis":  "KNOWLEDGE",
+                                                "values":  [
+                                                               {
+                                                                   "code":  "FRST",
+                                                                   "meaning":  "First collection under a mandate"
+                                                               },
+                                                               {
+                                                                   "code":  "RCUR",
+                                                                   "meaning":  "Recurrent collection"
+                                                               },
+                                                               {
+                                                                   "code":  "OOFF",
+                                                                   "meaning":  "One-off collection"
+                                                               },
+                                                               {
+                                                                   "code":  "FNAL",
+                                                                   "meaning":  "Final collection"
+                                                               }
+                                                           ]
+                                            },
+                  "sepa_dd_local_instrument":  {
+                                                   "basis":  "KNOWLEDGE",
+                                                   "values":  [
+                                                                  {
+                                                                      "code":  "CORE",
+                                                                      "meaning":  "SEPA Core direct debit"
+                                                                  },
+                                                                  {
+                                                                      "code":  "B2B",
+                                                                      "meaning":  "SEPA Business-to-Business direct debit"
+                                                                  }
+                                                              ]
+                                               },
+                  "camt_balance_type":  {
+                                            "basis":  "KNOWLEDGE",
+                                            "values":  [
+                                                           {
+                                                               "code":  "OPBD",
+                                                               "meaning":  "Opening booked"
+                                                           },
+                                                           {
+                                                               "code":  "CLBD",
+                                                               "meaning":  "Closing booked"
+                                                           },
+                                                           {
+                                                               "code":  "OPAV",
+                                                               "meaning":  "Opening available"
+                                                           },
+                                                           {
+                                                               "code":  "CLAV",
+                                                               "meaning":  "Closing available"
+                                                           },
+                                                           {
+                                                               "code":  "ITBD",
+                                                               "meaning":  "Interim booked"
+                                                           },
+                                                           {
+                                                               "code":  "ITAV",
+                                                               "meaning":  "Interim available"
+                                                           }
+                                                       ]
+                                        },
+                  "camt_entry_status":  {
+                                            "basis":  "KNOWLEDGE",
+                                            "values":  [
+                                                           {
+                                                               "code":  "BOOK",
+                                                               "meaning":  "Booked"
+                                                           },
+                                                           {
+                                                               "code":  "PDNG",
+                                                               "meaning":  "Pending"
+                                                           },
+                                                           {
+                                                               "code":  "INFO",
+                                                               "meaning":  "Information only"
+                                                           }
+                                                       ]
+                                        },
+                  "camt_credit_debit":  {
+                                            "basis":  "BANK",
+                                            "source":  "mBank camt.053.001.08 description, Mambu camt.053 page (search result only)",
+                                            "values":  [
+                                                           {
+                                                               "code":  "CRDT",
+                                                               "meaning":  "Credit, money in"
+                                                           },
+                                                           {
+                                                               "code":  "DBIT",
+                                                               "meaning":  "Debit, money out"
+                                                           }
+                                                       ]
+                                        },
+                  "bank_transaction_code_subset":  {
+                                                       "basis":  "KNOWLEDGE",
+                                                       "note":  "Domain, family and sub-family of the ISO bank transaction code list. Banks add their own codes (national lists such as the CGI-MP country recommendations). Fee, interest and other families are listed per bank, not here",
+                                                       "values":  [
+                                                                      {
+                                                                          "family":  "RCDT",
+                                                                          "domain":  "PMNT",
+                                                                          "meaning":  "SEPA credit transfer received",
+                                                                          "subfamily":  "ESCT"
+                                                                      },
+                                                                      {
+                                                                          "family":  "ICDT",
+                                                                          "domain":  "PMNT",
+                                                                          "meaning":  "SEPA credit transfer issued",
+                                                                          "subfamily":  "ESCT"
+                                                                      },
+                                                                      {
+                                                                          "family":  "RDDT",
+                                                                          "domain":  "PMNT",
+                                                                          "meaning":  "SEPA Core direct debit collection received (creditor side)",
+                                                                          "subfamily":  "ESDD"
+                                                                      },
+                                                                      {
+                                                                          "family":  "IDDT",
+                                                                          "domain":  "PMNT",
+                                                                          "meaning":  "SEPA Core direct debit debited (debtor side)",
+                                                                          "subfamily":  "ESDD"
+                                                                      }
+                                                                  ]
+                                                   },
+                  "return_reasons_direct_debit":  {
+                                                      "basis":  "KNOWLEDGE",
+                                                      "values":  [
+                                                                     {
+                                                                         "code":  "AC04",
+                                                                         "name":  "ClosedAccountNumber"
+                                                                     },
+                                                                     {
+                                                                         "code":  "AC06",
+                                                                         "name":  "BlockedAccount"
+                                                                     },
+                                                                     {
+                                                                         "code":  "AM04",
+                                                                         "name":  "InsufficientFunds"
+                                                                     },
+                                                                     {
+                                                                         "code":  "MD01",
+                                                                         "name":  "NoMandate"
+                                                                     },
+                                                                     {
+                                                                         "code":  "MD06",
+                                                                         "name":  "RefundRequestByEndCustomer"
+                                                                     },
+                                                                     {
+                                                                         "code":  "MD07",
+                                                                         "name":  "EndCustomerDeceased"
+                                                                     },
+                                                                     {
+                                                                         "code":  "MS02",
+                                                                         "name":  "NotSpecifiedReasonCustomerGenerated"
+                                                                     }
+                                                                 ]
+                                                  }
+              },
+    "rules":  {
+                  "character_set":  {
+                                        "basis":  "EPC",
+                                        "source":  "EPC132-08 2025 V1.0, 1.4",
+                                        "text":  "Latin set: a-z A-Z 0-9 / - ? : ( ) . , apostrophe plus and space. References, identifications and identifiers use only this set, must not start or end with a slash and must not contain two slashes. Other characters only by bilateral agreement. XML itself is UTF-8"
+                                    },
+                  "address":  {
+                                  "basis":  "EPC",
+                                  "source":  "EPC132-08 2025 V1.0, 1.7 and the usage rule of PstlAdr",
+                                  "text":  "From 22 November 2026 only structured and hybrid addresses are allowed, unstructured are not. Structured: Town Name and Country mandatory, no Address Line. Hybrid: Town Name, Country and at least one Address Line. A search result (secondary, not verified) says an EPC update moves the date to 15 November 2026"
+                              },
+                  "field_lengths":  {
+                                        "basis":  "EPC",
+                                        "text":  "MsgId, PmtInfId, EndToEndId, InstrId: 35. Names: 70. Remittance unstructured: 140. Creditor reference: 35. Address line: 70 (two lines). BIC: 8 or 11"
+                                    },
+                  "iban_check":  {
+                                     "basis":  "KNOWLEDGE",
+                                     "algorithm":  "Move the first four characters to the end, replace letters by numbers (A=10 to Z=35), the number modulo 97 must be 1",
+                                     "test_vectors":  [
+                                                          {
+                                                              "iban":  "DE89 3704 0044 0532 0130 00",
+                                                              "valid":  true
+                                                          },
+                                                          {
+                                                              "iban":  "GB82 WEST 1234 5698 7654 32",
+                                                              "valid":  true
+                                                          }
+                                                      ],
+                                     "verified_by":  "Computed in the package build on 2026-10-19: both vectors pass"
+                                 },
+                  "rf_creditor_reference":  {
+                                                "basis":  "KNOWLEDGE",
+                                                "standard":  "ISO 11649",
+                                                "algorithm":  "Reference = RF + two check digits + up to 21 alphanumeric characters. Check digits: append RF00 to the content, replace letters by numbers (A=10 to Z=35), take the number modulo 97, check = 98 minus the remainder, two digits",
+                                                "test_vectors":  [
+                                                                     {
+                                                                         "content":  "539007547034",
+                                                                         "check":  "18",
+                                                                         "reference":  "RF18539007547034"
+                                                                     }
+                                                                 ],
+                                                "verified_by":  "Computed in the package build on 2026-10-19: the vector gives 18"
+                                            }
+              }
+}

@@ -1,0 +1,1263 @@
+# ADR Log: Finance Core
+
+Format: Context, Decision, Consequences. All status ACCEPTED unless marked PROPOSED. Range: ADR-001 to ADR-192 (ADR-175 to ADR-187 record the binding decisions of the independent review, 17, section 4; ADR-188 to ADR-192 record those of fix pass 4, 17, section 5).
+
+---
+
+## ADR-001: Technology-neutral logical model first
+**Status:** ACCEPTED
+**Context:** Database and API technology are not yet decided.
+**Decision:** Define the logical data model, table specs and API contract independent of vendor. Use features only where an equivalent exists on all candidate platforms (PostgreSQL, SQL Server): constraints, transactions, row-level isolation, triggers.
+**Consequences:** The physical mapping ADR comes later. Spec must avoid platform-specific types.
+
+## ADR-002: Multi-tenant SaaS with tenant key in every key
+**Status:** ACCEPTED
+**Decision:** `tenant_id` leads every primary key, foreign key and index. Isolation enforced in the data layer.
+**Consequences:** Composite keys everywhere. Cross-tenant queries are impossible by construction.
+
+## ADR-003: Append-only posting with field lock classes
+**Status:** ACCEPTED
+**Context:** Legal requirements demand a reliable audit trail. Business requires some posted-document fields (due date, cost center) to stay changeable in open periods.
+**Decision:** Posted documents are never deleted. Corrections to L1 fields via reversal and re-posting. L2 fields can change while the period is open, with field-level change records. L3: all fields lock at hard close.
+**Consequences:** Every column in transaction tables is classified in table specs. A change API exists for L2 fields (command with reason code) and re-validates dimension rules. Reporting reads current L2 values and can read history from the change log.
+
+## ADR-004: Command API for transaction data
+**Status:** ACCEPTED
+**Decision:** Transaction data is written only by atomic commands (`post`, `reverse`, `change-open-fields`, `clear`, `close-period`, and similar). No drafts in core. Documents are validated and posted in one call. CRUD for configuration and master data.
+**Consequences:** Apps own drafts and workflow. The core returns structured, machine-readable validation errors. Idempotency key mandatory on all commands.
+
+## ADR-005: Integrated sub-ledgers
+**Status:** ACCEPTED
+**Decision:** AP/AR open items are attributes of journal lines on control accounts (partner, due date, clearing reference). No separate sub-ledger tables.
+**Consequences:** Aging, dunning basis and payment matching are queries/commands on journal lines. Clearing is a separate append-only record linking items.
+
+## ADR-006: Tamper evidence via hash chain
+**Status:** ACCEPTED (details in ADR-030, ADR-046)
+**Decision:** Posted documents are hash-chained per tenant, company and ledger: each node stores `prev_hash` and `row_hash` over its L1 fields. A verification command recomputes the chain. Chain heads are anchored periodically outside the database (ADR-046).
+**Resolved:** Granularity is the document (ADR-030). Hash is unkeyed SHA-256, no key management in the core (ADR-046). Reopened periods and revaluation reruns only append new documents, nothing is rewritten (ADR-021, ADR-023).
+**Consequences:** One serialisation point per chain at the chain head row, locked in the same order as number ranges. Separate chains protect clearings (ADR-036) and period events (ADR-041), anchored the same way.
+**Amended (ADR-099, ADR-114, ADR-079, ADR-158):** the chain list above is not complete. Six chain types exist per company: LEDGER, CLEARING, PERIOD_EVENT, VAT_RETURN, STOCK, FULFILMENT. All are anchored and all heads live in one `chain_head` table (ADR-158).
+
+## ADR-007: Gapless numbering at posting time
+**Status:** ACCEPTED
+**Decision:** Per company, series and fiscal year. Assigned inside the posting transaction. Serialisation via number-range table row lock.
+**Consequences:** Write contention per series. Acceptable for SME volumes. Series can be split (e.g. by document type) to reduce contention.
+
+## ADR-008: GDPR via separation and legal snapshot
+**Status:** ACCEPTED
+**Decision:** Transaction tables reference partners by ID. Legal snapshot (minimal) stored on the document. Retention job anonymises snapshot and partner PII after configured retention, provided no legal hold.
+**Consequences:** Partner master data can be anonymised without breaking ledger integrity. Retention configuration per company and country.
+
+## ADR-009: Single ledger, `ledger_id` present
+**Status:** ACCEPTED
+**Decision:** Column present on all journal lines. Release 1 constrains to one ledger per company.
+
+## ADR-010: Dimensions: standard types plus free dimensions
+**Status:** ACCEPTED
+**Decision:** Cost center, project, profit center/segment as standard types. N tenant-defined dimension types. Per-account dimension rules (mandatory/optional/forbidden). Exact storage shape decided in table specs.
+
+## ADR-011: Chart of accounts per tenant with templates and reporting mapping
+**Status:** ACCEPTED
+**Decision:** Each company owns its CoA, seeded from country templates. A mapping to a standard reporting structure supports SAF-T and group reporting.
+
+## ADR-012: Posting rules engine plus explicit journal API
+**Status:** ACCEPTED
+**Decision:** Business events (from inventory/order modules) are translated to journals through configurable posting rules. The journal API accepts explicit journals. Both use the same validation.
+
+## ADR-013: No drafts in the core
+**Status:** ACCEPTED
+**Decision:** Drafts exist only in applications built on the core. The core's document status is `posted` or `reversed`.
+**Consequences:** Offer a side-effect-free `:validate` endpoint so apps can pre-check drafts (open item).
+**Amended (ADR-061, ADR-105):** the open item is resolved by VALIDATE mode (ADR-061). Orders are stored from the moment they are binding, with a lifecycle OPEN, CLOSED, CANCELLED (ADR-105), which refines "document status is `posted` or `reversed`" for order documents.
+
+## ADR-014: Organisational hierarchy
+**Status:** ACCEPTED
+**Decision:** Tenant > Group > Company (legal entity) > Branch/Business unit.
+- **Company** is the unit for books, number series, fiscal calendar, period status, VAT registrations, retention rules and local currency.
+- **Group** is a reporting and consolidation container. A company belongs to one group at a time (effective-dated membership).
+- **Branch/Business unit** is a reporting level and a dimension. It has no own books, numbering or periods.
+**Consequences:** `company_id` is part of every transaction key (after `tenant_id`). Cross-company access within a tenant is controlled by authorisation, not by schema.
+
+## ADR-015: Company-level settings
+**Status:** ACCEPTED
+**Decision:** The following are configured per company and may differ within a tenant: local currency, fiscal calendar, chart of accounts, country, VAT registrations, retention rules, number series, period status.
+**Consequences:** Group CoA mapping and group currency are needed for cross-company reporting (ADR-017). Posting rules and tax determination are resolved in the context of the company.
+
+## ADR-016: Intercompany posting as one atomic command
+**Status:** ACCEPTED
+**Decision:** An intercompany command (e.g. `intercompany-documents:post`) creates linked documents in the sending and receiving company in one transaction.
+- Both documents carry the same `ic_transaction_id`. The counterpart is found through it, there is no pointer column (amended, avoids cyclic FKs that SQL Server cannot defer, ADR-001).
+- **Period rule:** if the posting date falls in a closed period in either company, the whole command is rejected. There is no shifting to a later period, so both sides always share the same posting date.
+- **IC accounts:** each company has one IC receivable/payable account per counterpart company (configured per company pair). The balance per counterpart is visible on the account itself.
+- **Currency:** one transaction currency for both sides. The group-currency amount is calculated once and copied to both sides, so IC lines always eliminate to zero at group level. Local-currency amounts use each company's own rate and may differ.
+**Consequences:**
+- Each side is a normal posted document in its own company: own number, period check and CoA.
+- Reversal is atomic and reverses both sides.
+- L1 fields of both sides are locked. L2 changes on one side don't propagate automatically.
+- Companies in different tenants are not supported.
+- FX revaluation of IC open items is per company (ADR-021).
+
+## ADR-017: Consolidation support in the data model only
+**Status:** ACCEPTED
+**Decision:** Release 1 stores what consolidation needs but does not run it:
+- Mapping of each company's accounts to a group CoA.
+- Group-currency amount on every journal line (rate type and rate stored).
+- Intercompany flag and counterpart company on IC lines.
+- Group membership with effective dates.
+**Consequences:** Elimination, minority interests and currency translation are a later module on top of these fields.
+
+## ADR-018: Group membership changes
+**Status:** ACCEPTED
+**Decision:** Group membership is effective-dated. Posted data is never restated when a company joins or leaves a group. Group reporting reads membership as of the reporting date.
+**Consequences:** A company sold mid-year stays in group reports up to its exit date. Its IC balances at that date become external balances, which is a reporting rule, not a data change.
+
+## ADR-019: Exchange rate types and rate table
+**Status:** ACCEPTED
+**Decision:** Two rate types in release 1: `SPOT` (daily transaction rate) and `CLOSING` (period-end rate). Rates are configuration: per tenant, rate type, currency pair and valid-from date. The core never fetches rates. Apps or integrations load them through the config API.
+- **Rate lookup:** a posting uses the table rate for its posting date. If none exists, it falls back to the most recent earlier rate within N days (configurable per tenant). If none is found within N days, the posting is rejected.
+- **Override:** a caller may supply an explicit rate on a posting. It must be within a configured tolerance of the table rate. The override and the table rate are both stored on the line.
+**Consequences:** Rate table changes are audited and effective-dated. A rate that has been used in a posted document cannot be changed or deleted. Average and historical rate types are out of scope for release 1 (open item).
+**Amended (ADR-055, ADR-083):** the rate types are now SPOT, CLOSING, VAT (ADR-083) and DERIVED (ADR-055, used on system closing lines). Only SPOT, CLOSING and VAT are loaded as rates.
+
+## ADR-020: Four amount fields per journal line
+**Status:** ACCEPTED
+**Decision:** Each journal line stores:
+1. Transaction currency amount
+2. Local currency amount (company currency)
+3. Group currency amount
+4. Reporting currency amount (company-level second currency, e.g. EUR for SAF-T). It may be empty if not configured.
+Each amount is stored with its currency code and the rate used. All four are L1 (locked).
+**Consequences:** The document must balance in all four currencies. Rounding differences are posted to configured rounding accounts, per currency. IC lines follow ADR-016 for the group amount.
+
+## ADR-021: Period-end revaluation with auto-reversal
+**Status:** ACCEPTED
+**Decision:** A `revaluation:run` command, per company and period, does the following:
+- Values open items in foreign currency and balance sheet accounts flagged "revalue" at the `CLOSING` rate. **P&L accounts are never revalued.**
+- Adjusts **all three non-transaction amounts** (local, group and reporting currency) so each stays consistent with the closing rate.
+- Posts unrealised gain/loss to configured accounts, per currency where it applies.
+- Posts an automatic reversal dated the first day of the next period.
+- **Realised** FX is posted when items are cleared (difference between the booking rate and the clearing rate).
+**Consequences:**
+- Revaluation documents are system-generated with a type flag and are excluded from further revaluation.
+- A rerun for the same company and period reverses the earlier run before posting the new one, and is allowed only while the period is open.
+  **Amended (ADR-051, 05 section 3.6):** a rerun is allowed while the period is OPEN or SOFT_CLOSED with the soft-close authorisation.
+- Revaluation is per company. For IC lines (ADR-016), the group-currency amount is adjusted at the closing rate on both sides with the same rate, so elimination still nets to zero.
+- Posting shape, run records, same-transaction automatic reversal and rerun mechanics are in ADR-050 and ADR-051.
+
+## ADR-022: Period status model
+**Status:** ACCEPTED
+**Decision:** Each fiscal period, per company, has one of three statuses:
+- **Open:** posting and L2 changes allowed.
+- **Soft-closed:** posting only for identities holding the authorisation "post to soft-closed period", L2 changes only for identities holding "change in soft-closed period" (two permissions, amended, ADR-063). Everyone else is rejected.
+- **Hard-closed:** L3 applies. No postings, no L2 changes. Only reversal-and-repost into an open period is possible, with the correction carrying a later posting date.
+Status changes are commands (`periods:soft-close`, `periods:hard-close`, `periods:reopen`) and are audited (who, when, reason).
+**Hard-close validation:** rejected if any system job is pending. For revaluation the check is a recomputation: hard-close is rejected if the recomputed revaluation differs from the ACTIVE run, including when no run exists but there is something to revalue (amended, ADR-053). A hard-close also requires the predecessor period to be hard-closed (ADR-043). No further checks in release 1, because balance and partner rules are already guaranteed at posting time (P1, P9).
+**Consequences:** Period status is per company and applies to all modules in release 1. Per-module status is a later extension (open item).
+
+## ADR-023: Reopening a period
+**Status:** ACCEPTED
+**Decision:** `periods:reopen` may move a hard-closed period back to soft-closed or open only if:
+- No later period in the same company is hard-closed.
+- The fiscal year of the period is not year-end closed.
+- A reason code and free-text reason are supplied.
+The reopen is recorded in an append-only period event log. Documents posted while the period was reopened are new records in the hash chain (ADR-006). Nothing is rewritten.
+**Consequences:** Reopen is a privileged operation with its own authorisation. IC pairs (ADR-016) require both companies to be open for the posting date, so a reopen in one company alone doesn't allow a new IC posting.
+
+## ADR-024: Year-end close
+**Status:** ACCEPTED
+**Decision:** `year-end:close` per company and fiscal year:
+- Requires that all regular periods of the year are hard-closed and that the closing period (the highest special period) is open (amended, ADR-055).
+- Posts a numbered, system-generated closing document into the closing period. It zeroes each P&L account and dimension combination against the configured retained-earnings account (amended, ADR-055).
+- Creates no opening balances: the balance of a balance sheet account at any date is the sum of its lines up to that date (amended, ADR-054). Open items persist with original dates and rates (ADR-049).
+- Hard-closes the closing period and marks the fiscal year as closed.
+**Consequences:**
+- The closing document is L1 locked. A reopen of the year requires `year-end:reopen`, which is blocked if the new year has any posting, except the automatic reversal documents of the closed year's last revaluation (amended). Reopen reverses the closing document and reopens the closing period. This command is privileged and audited.
+- A closed year's P&L is read by excluding YEAR_END documents (ADR-054).
+- Foreign-currency open items are carried at their original rates. Revaluation continues in the new year (ADR-021).
+- **Amended (ADR-130, ADR-152, ADR-145, ADR-148):** "creates no opening balances" holds for year-end close. Migration (13) posts OPENING documents at cutover. `year-end:reopen` is the only way to reverse a YEAR_END document (ADR-145). `year-end:close` also writes PERIOD_HARD_CLOSE events for the closing period and the year (ADR-148).
+
+## ADR-025: Posting window
+**Status:** ACCEPTED
+**Decision:** Per company, configuration defines the earliest and latest allowed posting date (the posting window). Posting is allowed into any period inside the window whose status permits it. Periods outside the window are rejected regardless of status.
+**Number order:** number series follow posting order, not posting date order (ADR-007). Within a series, a document with an earlier posting date can carry a higher number. This is accepted for release 1 and documented.
+**Consequences:** The window is effective-dated and audited. A posting into a future period is allowed within the window. Option for later: a per-country rule that restricts the window to one open period so numbers follow date order.
+
+## ADR-026: Tax code determination by rules, with caller override
+**Status:** ACCEPTED
+**Decision:** Tax codes are configuration per company, effective-dated: code, rate, type (output/input/exempt/zero-rated), VAT account, return box mapping. A **tax determination rule table** maps these keys to a tax code:
+- company country
+- partner country and VAT status (registered / not registered)
+- transaction type (sales/purchase)
+- item or service tax class
+- date
+The caller may omit the tax code (the core determines it) or supply one (the core validates it against the rules and the date). A supplied code that differs from the determined code is accepted only if it is a configured permitted alternative, and the difference is recorded on the line.
+**Release 1 scope:** domestic VAT: input and output, multiple rates, exempt. Rule keys already include partner country and VAT status so that reverse charge, intra-EU supplies and OSS/IOSS can be added as rules and codes later, without schema change. (Amended: the scenarios beyond domestic are specified in 08 as rules and codes with the additions of ADR-075 to ADR-085.)
+**Consequences:** If no rule matches, the posting is rejected with a structured error. Rule changes never affect posted documents.
+
+## ADR-027: Tax lines as separate journal lines
+**Status:** ACCEPTED
+**Decision:** Each tax amount is a separate journal line on the configured VAT account, linked to its base line(s). A tax line stores tax code, rate, base amount and tax amount, in all four currencies (ADR-020). All are L1.
+**Rounding:** a company-level setting, per document (default) or per line. The caller may supply the tax amount, which must match within a configured rounding tolerance. Differences go to the configured tax rounding account.
+**Consequences:**
+- Tax lines carry the tax code and rate valid at posting. Later rate changes never alter them.
+- Reversal reverses the tax lines with the base lines.
+- Cross-currency: tax is calculated in transaction currency and converted per ADR-019. Confirm per country that the local-currency tax amount is the one reported (open item).
+
+## ADR-028: VAT return data exposed by API, filing outside the core
+**Status:** ACCEPTED
+**Decision:** Configuration maps each tax code to return boxes per country. A read API returns, per company and period, totals per box with the underlying document lines (drill-down). A settlement command posts the settlement of VAT accounts to the VAT payable/receivable account for a period (amended: `vat-returns:settle` from a frozen return snapshot, ADR-079 and ADR-080).
+**Consequences:** Filing, SAF-T and EC Sales List file generation are done by apps built on the core (they consume this data). `vat-returns:settle` is blocked for hard-closed periods and is itself a posted, numbered document.
+**Amended (ADR-080):** the command is `vat-returns:settle`, posted from a frozen return snapshot. Reversal of the settlement is possible only before the filing is recorded (ADR-153).
+
+**Amended (ADR-169):** the reversal command is `vat-returns:reverse-settlement` with event `vat.settlement_reversed`.
+
+## ADR-029: Tax code rule per account
+**Status:** ACCEPTED
+**Decision:** Each GL account has a tax code rule: mandatory, optional or forbidden. A posting that violates the rule is rejected. This mirrors the dimension rule in P11.
+
+---
+
+Entries ADR-030 to ADR-174 come from the specs 02-journal-document-core, 03-clearing, 04-number-range-and-period, 05-revaluation-and-year-end, 06-command-contracts, 07-configuration-and-master-data, 08-vat, 09-read-apis, 10-inventory, 11-order-management, 12-compliance, 13-migration, 14-consistency-and-scope-review (ADR-145 to ADR-174), 15-platform-extensions (ADR-137 to ADR-139) and 16-supply-demand-and-planning-data (ADR-140 to ADR-144). Where an earlier ADR is refined, the earlier text stays valid unless stated. Earlier ADRs that a later ADR changes carry an "Amended" note.
+
+## ADR-030: Document-level hash chain
+**Status:** ACCEPTED
+**Context:** ADR-006 left granularity open. A line-level chain multiplies hashing and head contention.
+**Decision:** The chain node is the `journal_document` header. `row_hash` covers the header L1 columns and a digest over all line L1 columns, including tax detail, tax-base links and the open-item partner. L2 and S columns, dimensions, legal snapshot and change log are outside the hash. `hash_version` identifies algorithm and canonical field list.
+**Consequences:** One chain head row per (tenant, company, ledger), locked at posting. Line integrity is covered through the digest. Legal snapshot can be anonymised without breaking the chain.
+**Amended (ADR-158):** the head row is a row of the single `chain_head` table, key (tenant, company, chain type LEDGER, scope = ledger id).
+
+## ADR-031: Lock class S, system-maintained fields
+**Status:** ACCEPTED
+**Context:** A few posted fields change by core commands only: document status, reversed-by link, open-item clearing cache, period status, number counters, chain heads.
+**Decision:** Add lock class S next to L1 to L3. S fields change only through core commands, never through the change-open-fields API, and are excluded from the hash. Changes are logged: in `change_log` with reason `SYSTEM`, or, for clearing columns, by the append-only `clearing_item` (ADR-037). `chains:verify` recomputes S fields where they are derivable.
+**Consequences:** Column-level UPDATE grants per command role. Every S column is listed in the table specs.
+**Amended (ADR-146):** trigger and grant rules are defined per column class. S columns are changed by system commands in any period status without a `change_log` row, each change carrying its own chained event. `retention_until` is an S column.
+
+## ADR-032: Tax detail as 1:1 extension of tax lines
+**Status:** ACCEPTED
+**Decision:** Refines ADR-027. Tax lines are rows of `journal_line` (line_type TAX). A 1:1 table `journal_line_tax` holds tax code version, rate, type, base amounts in four currencies and the determined-versus-supplied code. A many-to-many table `journal_line_tax_base` links a tax line to the base lines it taxes, because per-document rounding makes one tax line cover several bases.
+**Consequences:** Balance, hash and reversal logic have one path. Tax code version is stored per line, so later rate or mapping changes never alter posted tax data.
+
+## ADR-033: Open-item attributes in a side table
+**Status:** ACCEPTED
+**Decision:** Refines ADR-005. Open-item attributes live in `journal_line_open_item`, 1:1 optional with `journal_line`. Row existence marks an open item. `journal_line` holds only L1 and L2 columns. The side table carries the S columns of the clearing cache.
+**Consequences:** Aging and open-item queries join `journal_line` for account and amounts. Because `posting_date`, `fiscal_year` and `fiscal_period` are copied onto `journal_line` as L1, GL and period queries need no header join.
+
+## ADR-034: Dimension storage and change log shape
+**Status:** ACCEPTED
+**Decision:** Closes the deferral in ADR-010. Cost center, project, profit center and business unit are typed columns on `journal_line`. Free dimensions are rows in `journal_line_dimension`. One generic append-only `change_log` records field-level L2 changes. Clearing a free dimension value sets it to null (tombstone). The transaction layer has no DELETE grant anywhere.
+**Consequences:** Common reporting cuts avoid joins. The rules engine treats free dimensions uniformly.
+
+## ADR-035: Signed amounts and one transaction currency per document
+**Status:** ACCEPTED (2026-10-13)
+**Context:** Needed to fix the shape of the four amount fields (ADR-020).
+**Decision:** One signed amount per currency on each line, debit positive, credit negative, no separate debit and credit columns. One transaction currency per document. Debit and credit for SAF-T and reports are derived in the read API.
+**Consequences:** A document with lines in several transaction currencies is not supported. A payment with a fee in another currency is two documents (payment and fee), linked by clearing or reference. A clearing exchange difference is its own document (ADR-036). Balance checks run per document in TC, LC, GC and RC. All hash definitions, open-item and clearing rules, and the order and VAT specs already assume this. Confirmed by the user, replacing the earlier PROPOSED status.
+
+## ADR-036: Clearing as its own chained record, not a document
+**Status:** ACCEPTED
+**Context:** ADR-005 says clearing is a separate append-only record. P6 allows legal numbers only for postings.
+**Decision:** A `clearing` row with `clearing_item` rows records which open items were cleared, for what amounts in four currencies. A clean match posts nothing and consumes no legal number. A journal document of type CLEARING is posted only when residual lines are needed. The clearing has its own gapless `chain_seq` per company and its own hash chain, which includes the hash of the difference document.
+**Amended (ADR-158):** the clearing chain head is a row of the single `chain_head` table (chain type CLEARING).
+**Consequences:** Exports of "which payment settled which invoice" read the clearing chain. Add to the P15 per-country review whether any target country requires clearings in the legal number series.
+
+## ADR-037: Clearing items are the log of open-item status
+**Status:** ACCEPTED
+**Decision:** Refines ADR-031. `clearing_status` and cleared amounts on `journal_line_open_item` are a denormalised cache of `clearing_item`. They are not written to `change_log`. `chains:verify` recomputes them.
+**Consequences:** Clearing and reset commands update the cache in the same transaction.
+
+## ADR-038: Realised FX at clearing through residual lines
+**Status:** ACCEPTED
+**Decision:** Refines ADR-021. Realised FX is computed from the booked local, group and reporting amounts of the cleared items. No rate lookup at clearing. A non-zero residual becomes two lines in the difference document: `FX_REALISED` on the FX account and `CLEARING_DIFF` on the cleared account, the latter cleared in the same clearing.
+**Consequences:** Differences in transaction currency are not FX. They reject the clearing. Short payments clear partially, discounts and write-offs are ordinary documents that are then cleared.
+
+## ADR-039: Un-clearing by reset record
+**Status:** ACCEPTED
+**Decision:** `clearings:reset` creates a `RESET` clearing mirroring the original with opposite sign, own sequence number and later date. A clearing can be reset once. A difference document is mirrored by a CLEARING_RESET document. A document with cleared lines cannot be reversed until its clearing is reset.
+**Consequences:** The original clearing is never changed. Reversal of documents never has hidden side effects on clearings.
+**Amended (ADR-109):** the receipt reversal of order management resets the GR/IR clearings it created, as a visible step of that command. A plain journal reversal still never resets clearings.
+
+## ADR-040: Open-item-managed GL accounts
+**Status:** ACCEPTED
+**Decision:** Amends P9. Each GL account has an open-item mode: NONE, CONTROL (AR/AP control account, partner mandatory) or GL_OPEN_ITEM (e.g. bank clearing, GR/IR, no partner). `partner_id` and `due_date` on the open-item table are optional and mandatory only for CONTROL.
+**Consequences:** Clearing works for both kinds. Cross-account and cross-partner clearing (AR/AP netting) is deferred, with no schema hooks in R1.
+
+## ADR-041: Period status as stored cache of a chained event log
+**Status:** ACCEPTED
+**Decision:** Refines ADR-022 and ADR-023. `fiscal_period.status` and `fiscal_year.status` are S columns, written in the same transaction as an append-only `period_event` row. The event log is hash-chained per tenant and company, with its own chain head. `chains:verify` recomputes status from events.
+**Consequences:** The posting check reads one period row. Reopens and year-end reopens cannot be hidden.
+**Amended (ADR-158, ADR-148):** the chain head is a row of the single `chain_head` table (chain type PERIOD_EVENT). Every hard-close, including the one done by `year-end:close`, writes a PERIOD_HARD_CLOSE event.
+
+## ADR-042: Fiscal calendar structure
+**Status:** ACCEPTED
+**Decision:** The fiscal year starts in any month and has 12 regular monthly periods plus up to four special periods that share the date range of period 12. Special periods are selected explicitly and the posting date lies in period 12's range. The first year of a company may be short (periods before the start month are not created). No free period definitions, 4-4-5 calendars or extended years in R1.
+
+## ADR-043: Explicit fiscal year opening
+**Status:** ACCEPTED
+**Decision:** Refines ADR-022 and ADR-025. `fiscal-years:open` creates year, all periods and all number counters in one audited command. Postings never create them. A year may be opened beyond the posting window, which remains the control for posting. Hard-close requires the predecessor period to be hard-closed.
+
+## ADR-044: Number series by assignment, counter per series and year
+**Status:** ACCEPTED
+**Decision:** Refines ADR-007. A config table assigns (company, document type, optional ledger) to a number series, effective-dated and insert only. The core picks the series. One counter row per series and fiscal year is the only lock point and is created at year open or series creation. Documents store a numeric `sequence_no` and the formatted `document_number` (prefix, optional year, separator, zero padding). A new assignment for a type with numbers already issued takes effect only after the end of that fiscal year.
+**Consequences:** One continuous sequence per document type per year. The gapless check runs on `sequence_no`.
+
+## ADR-045: Soft-close override recorded on the document
+**Status:** ACCEPTED
+**Decision:** Refines ADR-022. `soft_close_override` is an L1 column on `journal_document`, true when the posting used the authorisation "post to soft-closed period". The authorisation model itself is outside the core. The core records the authorisation used.
+
+## ADR-046: Hash algorithm and anchoring of chain heads
+**Status:** ACCEPTED
+**Decision:** Completes ADR-006. All chains (ledger, clearing, period events) use unkeyed SHA-256. **Amended:** "all chains" means all six chain types of the company: LEDGER, CLEARING, PERIOD_EVENT, VAT_RETURN, STOCK, FULFILMENT (ADR-079, ADR-099, ADR-114, ADR-158). Chain heads are anchored by an `anchors:create` command: a SHA-256 digest of the head is sent to an external timestamp authority and the returned token is stored in `chain_anchor`. Cadence: daily per chain, plus at every period hard-close and year-end close.
+**Consequences:** The core database holds no signing key. Verification needs only the data and the anchors. Tamper evidence against a party with database write access rests on the external timestamps.
+
+## ADR-047: Zero-amount tax lines
+**Status:** ACCEPTED
+**Decision:** Refines ADR-027. Every taxed base gets a tax line, including EXEMPT and ZERO_RATED bases with a zero tax amount, so return box totals and SAF-T tax data come from the tax tables alone.
+
+## ADR-048: Reversal mirrors the original 1:1
+**Status:** ACCEPTED
+**Decision:** A reversal document copies every original line with the same `line_no`, opposite sign and `reversed_line_no` set, including tax, rounding and FX lines. No recomputation, so the reversal offsets the original exactly in all four currencies.
+**Amended (ADR-145):** `reversal_of_document_id` is allowed for all mirror documents with a reason code. Derived documents are reversed only through their owning command.
+
+## ADR-049: Clearing rules for revaluation, year-end and reversal
+**Status:** ACCEPTED
+**Decision:** (1) A clearing dated after a revaluation run is allowed. Hard-close waits until the revaluation is rerun or reversed (ADR-022). (2) Open-item rows persist across year-end. Opening-balance documents carry balances only, never open-item detail (ADR-024). (Amended: migration OPENING documents for open items are created through open items and stock opening, ADR-130.) (3) Revaluation values only the remaining open amount of an item (line amount minus cleared amount) and excludes fully cleared items (ADR-021). (4) The clearing chain is one per company.
+
+## ADR-050: Revaluation postings and run records
+**Status:** ACCEPTED
+**Decision:** Refines ADR-021. A run is recorded in `revaluation_run`, with the closing rates used (`revaluation_run_rate`) and one row per revalued open item or account balance (`revaluation_run_item`). The ledger gets one `REVAL_ADJUSTMENT` line per account, partner and currency (per account and currency for accounts without partner) plus unrealised gain and loss lines. The open items and their S columns are never changed. The valuation basis is computed as of the valuation date from line amounts and `clearing_item`, excluding earlier revaluation documents. Adjustment lines carry no partner on the ledger. The partner link is in the run items, and partner balance at closing rate joins them. Gain and loss accounts are configured per company with optional per-currency overrides.
+**Consequences:** Accounts flagged for revaluation must not have mandatory dimension rules, because adjustment lines carry none.
+
+## ADR-051: Automatic reversal in the same transaction, rerun by reversing both documents
+**Status:** ACCEPTED
+**Decision:** Refines ADR-021. The REVAL_REVERSAL document is posted in the same transaction as the REVALUATION document, dated the first day of the next period. The next period must exist, be open and be inside the posting window, else the run is rejected. A rerun reverses the old REVALUATION document and the old automatic reversal, posts a new pair, and marks the old run SUPERSEDED. Runs are for regular periods only, at most one ACTIVE run per period.
+**Consequences:** No deferred reversal job exists. Four extra documents per rerun, nothing rewritten.
+
+## ADR-052: Detail records covered by the chain through `detail_digest`
+**Status:** ACCEPTED
+**Decision:** `journal_document.detail_digest` (L1, nullable) holds a digest of detail records attached to a document that are not lines. It is part of the document hash. Used first by revaluation (`items_digest` of the run).
+**Consequences:** Run items and rates cannot be altered without breaking the ledger chain. `chains:verify` recomputes the digest.
+
+## ADR-053: Revaluation staleness check at hard-close
+**Status:** ACCEPTED
+**Decision:** Amends ADR-022. `periods:hard-close` for a regular period with revalue-flagged accounts recomputes the revaluation (`revaluation:preview`, side-effect free) and compares its digest with the ACTIVE run. A difference, or no run with a non-empty preview, rejects the hard-close.
+**Consequences:** Unrealised FX cannot be silently omitted. Companies with foreign-currency exposure must run revaluation every period.
+**Amended (ADR-148):** the stale check applies to every posting in scope, including postings into special periods 13+ dated in period 12's range, not only to the hard-close.
+**Amended (ADR-148, ADR-177):** the stale check runs at the hard-close of every relevant period only (including special periods 13+ and the closing period), not on every posting. Hard-close is serialised against postings by the head locks of ADR-177.
+
+## ADR-054: No opening balances
+**Status:** ACCEPTED
+**Decision:** Amends ADR-024. No opening-balance document and no snapshot table. The balance of a balance sheet account at a date is the sum of all its lines up to that date. A fiscal year's P&L to a date is the sum of its lines with that fiscal year, excluding YEAR_END documents. A derived balance cache may be added later as a pure optimisation, outside the hash chain.
+**Consequences:** Balance queries scan history by (account, posting date), supported by the line index. Open items are unaffected by year-end (ADR-049).
+**Amended (ADR-130, ADR-152):** "no opening-balance document" holds for year-end. A migrated company gets OPENING documents at cutover (balance targeting, ADR-130) and a `HISTORY_SUMMARY` P&L history (ADR-129). Balances then read as before, summing all lines.
+
+## ADR-055: Year-end closing entry per P&L account and dimension
+**Status:** ACCEPTED
+**Decision:** Amends ADR-024. `year-end:close` posts a YEAR_END document into the closing period (the highest special period, so calendars used with year-end close need at least one). Each non-zero P&L account and dimension combination gets a `CLOSING` line with the opposite sign and the same dimension values, in LC, GC and RC, plus one `CLOSING` line on the retained earnings account without dimensions. Rate type DERIVED, transaction currency is the company currency. Dimension validity and account active flags are not checked on closing lines. The command hard-closes the closing period and the year, and creates anchors for all chains of the company. Config rejects a retained earnings account with mandatory dimension rules. `year-end:reopen` reverses the closing document and reopens the closing period.
+**Consequences:** P&L reports for closed years exclude YEAR_END documents. If all P&L groups are zero, no closing document is posted and the year closes anyway.
+
+## ADR-056: Commands are synchronous, atomic and return the complete result
+**Status:** ACCEPTED
+**Decision:** Every command validates and persists in one database transaction and returns either the final records (including generated lines, numbers and chain data) or structured errors. No partial results, no drafts. `tenant_id` comes from the authenticated identity. The contract is logical and technology-neutral (ADR-001), field-level detail in 06-command-contracts.
+
+## ADR-057: Caller sends transaction-currency amounts only
+**Status:** ACCEPTED
+**Decision:** Refines ADR-020 and ADR-027. A posting request carries amounts in transaction currency, optional rate overrides within tolerance (ADR-019), and base lines. The core derives local, group and reporting amounts, tax lines and rounding lines. The caller supplies the gross control line and the net base lines, and the core checks the balance.
+**Consequences:** One source of truth for rates, rounding and tax. Callers cannot send tax or rounding lines.
+**Amended (ADR-131, ADR-150):** migration commits take legacy booked values in all four currencies as supplied (ADR-131). The closed list of exceptions for costs is in ADR-150.
+
+## ADR-058: Phased validation with collected errors
+**Status:** ACCEPTED
+**Decision:** One pipeline P0 to P7 for all commands: permission, schema and idempotency, reference resolution, calendar, business rules, derivation, consistency, persist. Independent errors within a phase are collected and returned together (maximum 100), each with a stable code, a request path, parameters, phase and a retryable flag. A check with unresolved inputs reports nothing, so there are no knock-on errors. The core returns codes and parameters only, no localised text.
+
+## ADR-059: Idempotency through a command log
+**Status:** ACCEPTED
+**Decision:** Refines ADR-004. `command_log` records successful commands only, with a request fingerprint and result references. The same key and fingerprint replays the result, rebuilt from current data. The same key with a different fingerprint is a conflict. Rejected commands leave no record. Commands that create several records of one type store derived keys (`<key>#n`) on them. Entity-level unique keys remain as backstop. Retention is a tenant setting, default 90 days. After a purge, a reused key is rejected rather than reposted.
+
+## ADR-060: Compare-and-set on L2 changes
+**Status:** ACCEPTED
+**Decision:** `change-open-fields` carries the expected old value of each field and is all-or-nothing. A mismatch rejects the whole command and returns the current value. No version columns.
+
+## ADR-061: VALIDATE mode
+**Status:** ACCEPTED
+**Decision:** Resolves the `:validate` open item of ADR-013. Every command that creates or changes transaction data supports `mode` = VALIDATE: the same pipeline up to the consistency checks, no number consumed, no log entry, non-binding. The response of a posting shows the full derived document with null numbers and hashes.
+
+## ADR-062: Batch posting as a wrapper of independent commands
+**Status:** ACCEPTED
+**Decision:** `journal-documents:post-batch` runs each item as an ordinary atomic, idempotent post, sequentially in array order, each with its own idempotency key and pipeline. There is no batch transaction and no batch-level log entry. The response gives a per-item result and a summary. Default maximum 500 items per batch (open point Q11 in 06).
+**Consequences:** No long-held number-range or chain-head locks. A retry replays posted items and re-evaluates rejected ones.
+
+**Amended (06, 07, 15):** the wrapper pattern also serves master data (`{resource}:upsert-batch`) and extension values (`extensions:set-batch`). The limit is the tenant setting `max_batch_items` (default 500), and each wrapper has its own limit setting and the permission of the wrapped command.
+
+## ADR-063: Two soft-close permissions
+**Status:** ACCEPTED
+**Decision:** Amends ADR-022 and ADR-045. `post.soft_closed` allows postings (reversal, clearing, revaluation) dated in a SOFT_CLOSED period and is recorded as `soft_close_override` on the document. `change.soft_closed` allows L2 changes there and is recorded on the change log rows.
+
+## ADR-064: Legal snapshot built by the core
+**Status:** ACCEPTED
+**Decision:** Refines ADR-008. The legal snapshot of a document is copied from the partner's master data as of the posting date. Callers cannot supply or override it. Invoice and credit-note types require a header partner.
+
+## ADR-065: Configuration versioned, master data current-state
+**Status:** ACCEPTED
+**Decision:** Refines P2. Configuration tables (tax code versions, determination rules, return box mapping, account roles, company settings, group membership, group chart mapping) are insert-only version rows with a validity: `valid_from` DATE for real-world validity compared with the posting date, `effective_from` TS for when a rule starts to apply to commands. Master data tables are single current rows with `row_version`, and every change is appended to a generic `master_change_log`. Personal-data fields are logged as "changed" without values, so anonymisation leaves nothing behind in the log. A new version cannot start in a hard-closed period.
+
+## ADR-066: Account-role table for system accounts
+**Status:** ACCEPTED
+**Decision:** A fixed list of roles (rounding, tax rounding, realised FX, unrealised FX gain and loss, retained earnings, IC receivable and payable, VAT settlement) maps to accounts per company, optionally per currency or counterpart company, effective-dated and insert-only. A command that needs an unassigned role is rejected. A company cannot be activated without the roles its features need. Realises the per-currency override of unrealised FX accounts decided for ADR-050.
+**Amended (ADR-149):** the role list is extended by the inventory, order and VAT roles and the required open-item mode per role is fixed in a role table. The key of `account_role_assignment` includes the nullable `vat_registration_id`.
+
+## ADR-067: Tenant-wide dimension values with optional company restriction
+**Status:** ACCEPTED
+**Decision:** Refines ADR-010. Dimension values live at tenant level with validity dates. An optional `company_id` restricts a value to one company, null means all companies of the tenant. Standard dimension types (cost center, project, profit center, business unit) exist in every tenant and map to the typed columns on `journal_line`.
+
+## ADR-068: Tenant-level business partner with roles and separate personal data
+**Status:** ACCEPTED
+**Decision:** Refines ADR-008. One `business_partner` per real party with customer and supplier roles, an optional link to a company of the tenant (intercompany), and no personal data. Personal data lives in `business_partner_pii` and `partner_bank_account`, which the retention job anonymises for every partner kind. VAT ids are anonymised only for persons. Per-company data (terms, blocks, status) sits in `partner_company_relation`. Duplicates are blocked, never merged, because ledger references cannot be rewritten.
+
+## ADR-069: Global reference tables
+**Status:** ACCEPTED
+**Decision:** Currencies (with decimal places), countries and EU membership are global, read-only and carry no `tenant_id`. The only exception to ADR-002 besides the tenant registry.
+
+**Amended (07 A6, 10):** `ref_unit` is also a global reference table. `tenant_deletion_certificate` (ADR-124) is outside tenant keys as well. The list of exceptions to ADR-002 is: tenant registry, `tenant_deletion_certificate`, `ref_currency`, `ref_country`, `ref_country_eu_membership` and `ref_unit`.
+
+## ADR-070: Configuration packages instead of template tables
+**Status:** ACCEPTED
+**Decision:** Refines ADR-011. Country templates are versioned packages applied through `config-packages:apply`, create-only and idempotent per package version, validated as a whole in VALIDATE mode, and recorded in `applied_config_package`. Packages are maintained outside the data model. Format and maintenance process are specified before the first onboarding.
+
+## ADR-071: row_version concurrency for configuration and master data
+**Status:** ACCEPTED
+**Decision:** Complements ADR-060. Human-edited config and master rows carry `row_version` and updates send `expected_version`. Transaction data keeps compare-and-set on field values.
+
+## ADR-072: Tax class and extensible tax determination
+**Status:** ACCEPTED
+**Decision:** Refines ADR-026. The tax class of a line is the line's supplied class, else the account's default class, and is stored on the tax detail. Determination keys are: transaction type, origin country, destination country, partner VAT status, account, tax class. Origin and destination are stated per line with document defaults and defaults by direction. Every key is a nullable column on the rule table (null = any), the most specific rule wins, ties break by priority, and overlapping rules of equal specificity and priority are rejected when written. Resolved origin, destination and partner VAT status are stored on the tax line. New keys, such as sub-country jurisdictions, are added as nullable columns without changing existing rules. Use of these keys for reverse charge, intra-EU supplies and OSS/IOSS is for the VAT domain.
+
+## ADR-073: No hard delete in configuration and master data
+**Status:** ACCEPTED
+**Decision:** The API has create, read, update and deactivate. "Delete" is deactivation. Physical deletion happens only through the retention job and tenant deletion. Companies are never deleted, merged or moved between tenants.
+
+## ADR-074: Exchange rate derivation
+**Status:** ACCEPTED
+**Decision:** Refines ADR-019. Direct rates are loaded per tenant, type and pair. The core derives the inverse and, through an optional tenant pivot currency, cross rates, in the order direct, inverse, cross. The rate used is stored on the line, and every contributing table row is marked used and becomes immutable.
+
+## ADR-075: VAT scenarios as rules and codes
+**Status:** ACCEPTED
+**Decision:** Refines ADR-026. Domestic VAT, reverse charge, intra-EU B2B, OSS and IOSS, import and export are expressed with the determination keys (07), code attributes (`reverse_charge`, `ec_list_category`, `supply_kind`, evidence requirement) and return mappings. There are no scenario-specific tables. The scenario catalogue in 08 is indicative. Rules and codes come from country packages and are verified per country (P15).
+
+## ADR-076: VAT registrations and VAT periods built from fiscal periods
+**Status:** ACCEPTED
+**Decision:** `company_vat_registration` defines country, VAT id, scheme (standard, OSS Union, OSS non-Union, IOSS), filing frequency, EC list frequency, correction method, return currency and VAT rate type. A VAT period is a run of consecutive fiscal periods (1, 3, 6 or 12 months). A tax code belongs to one registration.
+
+## ADR-077: Tax date on tax lines
+**Status:** ACCEPTED
+**Decision:** Each tax line stores an L1 `tax_date`: the line's supplied date, else the document's, else the document date. It decides the VAT period. Cash accounting is deferred. If needed later, an append-only tax-point event gives the date from which a line enters a return, without changing existing columns.
+
+## ADR-078: Reverse charge as a pair of tax lines
+**Status:** ACCEPTED
+**Decision:** A tax code version with `reverse_charge` produces an output and a deductible tax line with opposite signs on separate accounts, both linked to the same base lines and mapped to their own return boxes (`line_side`). The partner's control account is unaffected.
+
+## ADR-079: Frozen, hash-chained return snapshots
+**Status:** ACCEPTED
+**Decision:** Refines ADR-028. `vat-returns:prepare` creates an immutable snapshot per registration, return type (STANDARD, EC_LIST, OSS, IOSS) and VAT period, with result rows and the list of included tax lines. A tax line is currently reported at most once per registration and return type. Snapshots form a hash chain per company, anchored with the other chains. Preparation requires all fiscal periods of the VAT period to be at least soft-closed and the previous VAT period to be prepared.
+
+## ADR-080: VAT settlement from a snapshot
+**Status:** ACCEPTED
+**Decision:** Replaces `vat:settle` of ADR-028 by `vat-returns:settle`. The settlement document is posted from the snapshot's tax lines to the VAT accounts and the `VAT_SETTLEMENT` role of the registration, and binds the snapshot digest through `detail_digest`. A settlement document can be reversed only before the filing is recorded.
+
+**Amended (ADR-169):** the reversal command is `vat-returns:reverse-settlement` (permission `vat.settle`) with event `vat.settlement_reversed` and error `VAT.NOT_SETTLED`.
+
+## ADR-081: VAT evidence rows
+**Status:** ACCEPTED
+**Decision:** Changeable (L2) evidence references (customs declaration, proof of export, transport document, partner VAT check) attach to tax lines and are outside the hash. A missing required evidence is a warning at preparation.
+
+## ADR-082: Correction method per registration
+**Status:** ACCEPTED
+**Decision:** A registration chooses ADJUST_NEXT (late lines go into the next return), SUPPLEMENTARY (a snapshot of new lines for the old period) or REPLACEMENT (a full snapshot that supersedes the earlier one, recorded with S columns). Settlement of a replacement posts only the difference to the replaced settlement. Country packages choose the method.
+
+## ADR-083: VAT reporting amounts on tax lines
+**Status:** ACCEPTED
+**Decision:** Refines ADR-019 and ADR-027. Tax lines carry L1 reporting amounts (currency, base, tax, rate, rate date) valued per registration with the booking rate or the new rate type VAT at the tax date. Returns sum the reporting amounts. Settlement posts the ledger amounts, so the difference stays visible and is not posted. Closes the open item on cross-currency VAT. Which rate a country prescribes is configuration, verified per country.
+
+## ADR-084: VAT accounts accept only tax logic
+**Status:** ACCEPTED
+**Decision:** Accounts used by a tax code version or the settlement role are flagged `tax_account` (S, set by the system, never reset). Lines on them must be tax lines or settlement lines, or mirrors of those. Direct postings are rejected, so ledger and returns stay reconcilable by construction.
+
+## ADR-085: Customs and partial deduction are outside release 1
+**Status:** ACCEPTED
+**Decision:** The core stores the VAT treatment and evidence references for imports and exports. Declarations, customs value, duties, deferment accounts and the postponed-accounting trigger belong to inventory and order management. Partial input VAT deduction is deferred: an input tax code is fully deductible or a separate non-deductible code posts the tax to the expense.
+
+## ADR-086: Read API shape
+**Status:** ACCEPTED
+**Decision:** Every entity has `get` and `list` with typed filters, deterministic sorting (key tie-break) and cursor paging. Named report operations cover what clients cannot do reliably: `balances:query`, `trial-balances:query`, `account-ledgers:query`, `open-items:query`, `aging:query`, `partner-balances:query`, `documents:get-context`, `audit-events:query`, `chains:status`. Statement layouts and report front-ends stay in apps. Amounts are decimal strings in a four-currency block with explicit currencies.
+
+## ADR-087: Consistent snapshots and ledger position
+**Status:** ACCEPTED
+**Decision:** A read is served from one consistent snapshot. Responses state the `ledger_seq` per ledger they reflect, cursors cap at the first page's position, and `min_ledger_seq` gives read-your-writes on replicas (`READ.STALE_SNAPSHOT`, retryable). Reports take business dates, not times. L2 fields are read as they are now with the change history queryable. A response states `l2_stable` (all touched periods hard-closed, hence exactly reproducible by L3).
+
+## ADR-088: Balance rules
+**Status:** ACCEPTED
+**Decision:** One balance query. Rule AUTO: balance sheet accounts cumulative, P&L accounts fiscal-year-to-date excluding YEAR_END documents (ADR-054). Rule RAW for reconciliation. Reads may span any companies of the tenant with `read.cross_company`. Amounts are never summed across different currency codes: rows split by the currency combination. No translation, consolidation or elimination (ADR-017). Results over 10,000 groups are refused, large extractions belong to the export jobs of the compliance domain.
+
+## ADR-089: Open items as of a date from clearing records
+**Status:** ACCEPTED
+**Decision:** Remaining amounts as of a date are computed from lines and `clearing_item` with `clearing_date`, never from the S cache, so historic aging is exact. `clearing_item` carries `clearing_date`. Valuation is at booked amounts in R1.
+
+## ADR-090: Personal-data reads: permissions, omission and logging
+**Status:** ACCEPTED
+**Decision:** `read.pii` for partner personal data and `read.legal_snapshot` for the legal snapshot of documents, a narrower permission so invoice rendering does not need access to the partner master. Fields are omitted, not masked, without permission. Every personal-data read is written to an insert-only `read_access_log` (one row per partner or document, field group, optional `purpose_code`) in the transaction of the read. Retention is a tenant setting. Partner name and address search runs in the core and is logged.
+**Amended (ADR-127, ADR-151):** exports log one row per job, `partner_id` is nullable and the field-group list is wider (ADR-151).
+
+## ADR-091: Audit events as a computed view
+**Status:** ACCEPTED
+**Decision:** `audit-events:query` unions the audit tables (change log, command log, clearings, period events, revaluation runs, VAT returns, master change log, packages, anchors, read access log) into one normalised event shape linked by `correlation_id`. Nothing is duplicated. Time, actor or entity filters are required.
+**Amended (ADR-159):** `audit-events:query` reads the append-only `outbox_event` stream (`is_audit` = true) instead of a union view. The detailed logs stay the evidence.
+
+## ADR-092: Logical `contains` operator
+**Status:** ACCEPTED
+**Decision:** A literal, case- and accent-insensitive substring filter (minimum 3 characters) on allowlisted text fields. On ledger resources it requires a scope (company plus a date range of at most 12 months, an account, a partner or a document number range). The index technology is decided in the platform mapping ADR, because it is not portable (ADR-001). Search columns of personal data are personal data: the retention job clears them and they are never hashed.
+
+## ADR-093: Inventory module on the core, posting only through the finance pipeline
+**Status:** ACCEPTED
+**Decision:** Refines P1 and P12. Inventory tables are company-scoped (items tenant-level). A stock document with value derives a journal that goes through the normal finance pipeline (06) in the same transaction. Inventory never writes finance tables itself. Stock cannot be transferred between companies: that is an intercompany sale and purchase in order management.
+
+## ADR-094: Atomic business-event coupling
+**Status:** ACCEPTED
+**Decision:** A stock command and its derived journal commit together or not at all. A rejection of the derived journal (closed period, missing account, dimension rule) rejects the stock command with the finance error codes.
+**Consequences:** Stock value and the GL inventory accounts cannot diverge by construction. The stock command takes finance locks too, so the lock order is extended (item rows first).
+**Amended (ADR-106, ADR-147):** the order rows are the first lock, then the stock `item_company` rows. The single authoritative lock order is ADR-147.
+
+## ADR-095: Perpetual inventory with account determination
+**Status:** ACCEPTED
+**Decision:** Refines ADR-012. Every valued stock document posts a journal immediately. The journal structure per event is fixed in the core (receipt Dr inventory Cr GR/IR, issue Dr COGS Cr inventory, adjustments, transfers, landed cost, negative stock settlement). A versioned `account_determination` table maps the roles (INVENTORY, COGS, GR_IR, PRICE_VARIANCE, ADJUSTMENT_GAIN, ADJUSTMENT_LOSS, NEG_STOCK_VARIANCE, LANDED_COST_CLEARING, STOCK_TRANSFER_CLEARING) to accounts by item group, warehouse and item, with the matching rules of tax determination. GR/IR is a GL open-item account (ADR-040). No free-form rule engine in R1.
+
+## ADR-096: Valuation by moving average and FIFO, costing by processing order
+**Status:** ACCEPTED
+**Decision:** Costs are always computed from base quantity and local currency, never supplied. Movements may be dated into any postable period, but costing follows processing order and nothing is recosted retroactively. An issue that empties a cost key takes the whole remaining value. Negative stock is rejected by default and allowed per item and warehouse, valued at the last unit cost and settled by a variance when a receipt covers it. A receipt reversal that would create negative stock is rejected unless negative stock is allowed. Landed costs are allocated to receipts, the consumed part goes to cost of goods sold. Standard cost is not in R1.
+**Amended (ADR-150):** "never supplied" has a closed list of exceptions (returns valued at the original movement, ADR-111, receipt valued at the earlier invoice value, ADR-115, price differences from invoices, supplied value on adjustments and stock opening, migration, ADR-131), marked on the document with `cost_source`.
+
+## ADR-097: Inventory cost scope on the group
+**Status:** ACCEPTED
+**Decision:** `company_group.inventory_cost_scope` is COMPANY (cost per company, item and batch) or WAREHOUSE (cost per warehouse, item and batch). It is locked once any member company has a stock document, and a membership change that would give a company with stock a different scope is rejected.
+
+## ADR-098: Stock ledger with running balances and an item lock
+**Status:** ACCEPTED
+**Decision:** There is no stock balance table. Each movement stores the running quantity and value after it for its cost key and its stock key. A balance is the latest row of the key, one indexed lookup. The `item_company` row is locked first by every stock command, serialising stock activity per item and company, which prevents over-issue. FIFO layers have an S column `exhausted`, verified against the append-only consumption rows.
+**Amended (ADR-106, ADR-147):** the `item_company` lock is first among the stock locks but comes after the order rows. See the authoritative order in ADR-147.
+
+## ADR-099: Hash-chained stock ledger
+**Status:** ACCEPTED
+**Decision:** Stock documents are chain nodes per company with a chain head, anchored with the other chains (chain type STOCK). The derived journal document binds the stock document's hash through `detail_digest` (ADR-052).
+
+## ADR-100: Lot and serial tracking
+**Status:** ACCEPTED
+**Decision:** Tenant-level `item_tracking` per item. Serial movements are quantity one, a serial is on hand in at most one company. Expiry-tracked lots record the expiry, recalled lots cannot be issued, expired lots can be issued with a warning that is recorded on the movement. (The expired-lot rule is decided in ADR-103, which is the authoritative text.)
+
+## ADR-101: Reservations as events, count-based adjustments, landed costs by allocation
+**Status:** ACCEPTED
+**Decision:** Reservations are append-only events and available quantity is on hand (status AVAILABLE) minus active reservations. Stocktake sessions are owned by apps. The core offers count-based adjustment lines that set a stock key to a counted quantity under the item lock, with compare-and-set on the expected book quantity. Landed cost allocation splits the on-hand and consumed parts.
+**Amended (ADR-157):** automatic reservation at order creation is an optional company setting, default off.
+
+## ADR-102: Inventory dimension defaults and units
+**Status:** ACCEPTED
+**Decision:** Dimensions of derived journal lines come from the warehouse default, else the item group default, per dimension, and are skipped where the account forbids them. A tenant-level unit conversion table covers same-dimension units, per-item rows override it for packaging units. Quantity scale is per item base unit. Stock documents use number series like journal documents.
+
+## ADR-103: Expired lots issue with a warning
+**Status:** ACCEPTED
+**Decision:** Issuing an expired lot is allowed with the warning `INVENTORY.LOT_EXPIRED` and recorded as `lot_expired` on the movement. Enforcement of first-expired-first-out and blocking of expired goods is an app concern.
+
+## ADR-104: Separate sales and purchase order tables
+**Status:** ACCEPTED
+**Decision:** Sales and purchase orders, deliveries and receipts, returns and invoice link records are separate, mirrored tables. The address snapshot and the order change log are shared with an `order_kind` discriminator.
+
+## ADR-105: Confirmed orders only, amended by commands
+**Status:** ACCEPTED
+**Decision:** Refines ADR-013. The core stores orders from the moment they are binding, with a lifecycle (OPEN, CLOSED, CANCELLED), no drafts, quotes or approval states. An order and its lines are current rows with `row_version`, changed only by commands under lifecycle and quantity rules, with a field-level change log and an event log. Status columns are S columns, the event log is the truth. Lines are never closed automatically, only by fulfilment and invoicing or explicit short-close.
+
+## ADR-106: Computed order progress
+**Status:** ACCEPTED
+**Decision:** Delivered, received, invoiced, returned and credited quantities are sums of append-only fulfilment, return and invoice rows, with negative mirror rows for reversals, computed under the order row lock. The order row is the first lock in the global lock order. Reservations consume at delivery.
+**Amended (ADR-147):** derivation runs after all locks are taken. The authoritative lock order is ADR-147.
+
+## ADR-107: Core-built sales invoices, matched supplier invoices
+**Status:** ACCEPTED
+**Decision:** A sales invoice is built by the core from order and delivery lines (prices from the order, tax by determination, AR control and revenue by account determination, due date from the payment terms) and may cover several orders of one customer with equal currency and terms. A supplier invoice is supplied by the caller and matched to order and receipt lines in two- or three-way mode, with price and quantity tolerances, a gross control total and a unique supplier invoice number.
+**Amended (ADR-156, ADR-155):** sales invoice building is a per-company mode, CORE_BUILDS (as described here) or APP_SUPPLIES (apps send complete lines with order and delivery references, same validation, tax determination and posting). Supplier invoice matching is thinned to a line tolerance (ADR-155).
+
+## ADR-108: Supplier price differences split like landed costs
+**Status:** ACCEPTED
+**Decision:** The difference between invoice value and receipt value is split into the part for goods on hand (inventory cost adjustment) and the part for goods already issued (cost of goods sold). Non-stock and service items are expensed at the invoice price, dropship lines take the whole difference to cost of goods sold.
+
+## ADR-109: GR/IR clearing at matching
+**Status:** ACCEPTED
+**Decision:** Receipts credit GR/IR and supplier invoices debit it, at the same value for the matched quantity. The two open items are cleared by the clearing domain in the same transaction, without difference lines. A receipt reversal resets the clearings it created.
+
+## ADR-110: Dropship confirmation as virtual receipt and delivery
+**Status:** ACCEPTED
+**Decision:** A confirmation links a sales and a purchase line, counts as delivered and received, and posts cost of goods sold against GR/IR at the purchase value without a stock movement. Revenue follows the sales invoice, supplier cost follows the supplier invoice.
+
+## ADR-111: Returns valued at the original movement
+**Status:** ACCEPTED
+**Decision:** Return documents refer to the original delivery or receipt line. The derived `STOCK_RETURN` movements take their value from the referenced original movement through a validated reference (a controlled exception to computed costs, ADR-096). Credit notes use the original invoice prices and tax codes. Amount credit notes without a return are allowed with a reason and reverse tax proportionally on the original codes, to be verified per country.
+
+## ADR-112: Atomic intercompany order flow
+**Status:** ACCEPTED
+**Decision:** An intercompany order creates a linked sales and purchase order in two companies. Delivery with receipt, and the invoice pair, are posted atomically across both companies under the rules of ADR-016. Group amounts are computed once and copied.
+
+## ADR-113: Tax geography on order lines
+**Status:** ACCEPTED
+**Decision:** Origin and destination default per order line from the delivering or receiving warehouse country and the ship-to or ship-from country, are overridable, and flow into the tax determination at invoicing. The default tax point is the delivery date for goods invoiced from a delivery and the invoice date otherwise, to be verified per country.
+
+## ADR-114: Hash-chained fulfilment documents
+**Status:** ACCEPTED
+**Decision:** Deliveries, receipts, returns and dropship confirmations, with their reversals, form one hash chain per company (chain type FULFILMENT), anchored with the other chains. The fulfilment document's hash is bound into the derived stock document (`detail_digest` on `stock_document`) or journal document. Orders are not chained.
+
+## ADR-115: Invoice before receipt for stock items
+**Status:** ACCEPTED
+**Decision:** A company setting allows two-way purchase lines for stock items. The invoice posts a GR/IR debit for the unreceived quantity. The later receipt values the covered quantity at the invoiced value and clears that debit, so stock enters at actual invoiced cost without a price difference at receipt.
+
+## ADR-116: Matching tolerances with overrides
+**Status:** ACCEPTED
+**Decision:** Price and quantity tolerances are set per company (versioned) and overridden per supplier and item group (versioned, most specific wins). A tolerance override of an individual invoice needs `purchase.match_override` and a reason.
+**Amended (ADR-155):** the per-supplier and item-group overrides (`purchase_tolerance_override`) and the permission `purchase.match_override` are removed. Only the quantity limit of order plus line tolerance remains. A price deviation is always posted as a price-difference line and recorded on the match record.
+
+## ADR-117: Credit limits and exposure as a read API
+**Status:** ACCEPTED
+**Decision:** A credit limit is stored on the customer's company relation and, tenant-wide, on the business partner. It is never enforced by the core. `credit-exposures:query` compares it with the exposure grouped as AR open items, delivered goods not invoiced and open orders, by default as estimated gross amounts converted to the limit currency, per company or summed over the tenant. For persons the credit limits are personal data. Apps decide on holds.
+
+## ADR-118: Retention by anonymisation, ledger kept until tenant deletion
+**Status:** ACCEPTED
+**Decision:** Refines P8 and ADR-008. At the end of retention the retention job anonymises personal data only: partner personal data, partner bank accounts, VAT ids and credit limits of persons, legal snapshots, address snapshots and their search columns. Ledger, stock, order and VAT rows contain no personal data and stay with intact hash chains until the tenant is deleted. Purging old fiscal years is not in release 1.
+
+## ADR-119: Retention rules and stored retention dates
+**Status:** ACCEPTED
+**Decision:** A versioned `retention_rule` per company, record class and country gives the retention years and the start event. Where several countries are configured the longest period applies. `retention_until` is stored on legal snapshots and address snapshots at creation, and as a system-maintained maximum on the partner (amended, ADR-146, ADR-147: an S column, updated by a batch job and not per posting). A rule change affects new records only. Every retention period is configuration to be verified per country.
+
+## ADR-120: Legal holds with scopes
+**Status:** ACCEPTED
+**Decision:** A legal hold has the scope tenant, company, partner or document set, with reason, authority and case reference. The anonymisation job and tenant deletion skip or reject whatever a hold covers. A company hold also protects partners referenced by that company, because partner personal data is shared across companies.
+
+## ADR-121: Data subject requests and processing restriction
+**Status:** ACCEPTED
+**Decision:** `data_subject_request` records requests of persons (access, rectification, erasure, restriction, objection, portability) with deadline, decision and outcome. A restriction status on the partner blocks new orders and invoices and limits reads of personal data, while settlements and statutory documents continue. Erasure anonymises at the earliest permitted date. Posted legal snapshots are not rewritten by rectification.
+
+## ADR-122: Asynchronous exports as open files plus manifest
+**Status:** ACCEPTED
+**Decision:** Exports are asynchronous jobs of five types (tenant export, audit package, SAF-T data set, e-invoice data set, partner data export) that read one consistent snapshot and write CSV or NDJSON files with a JSON manifest (row counts, SHA-256 per file, chain heads, anchors) to external object storage. The core stores job, manifest and references, never bulk data. Artifacts are encrypted with a key reference supplied per job and expire. The package contains the verification specification, so verification does not depend on the platform. Realises the deferred async job of the read limits of ADR-088 (corrected from ADR-092).
+
+## ADR-123: SAF-T and e-invoice as data sets
+**Status:** ACCEPTED
+**Decision:** The core provides the data in open formats, mapped group by group to the OECD SAF-T base structure and to the EN 16931 semantic model, using a versioned `external_code_mapping` table and additional configuration and master data attributes (VAT category and exemption reason per tax code, electronic address and registration ids, payment means, item standard identifier, buyer reference). File generation, national variants and transport stay with apps (P15). Mappings are verified against the standard versions before implementation.
+
+## ADR-124: Tenant deletion workflow
+**Status:** ACCEPTED
+**Decision:** Deleting a tenant needs an acknowledged full export newer than the last posting, no legal hold, a quiescent tenant, two distinct approvers other than the requester and a waiting period (default 30 days, minimum 7, cancellable). If statutory retention has not ended for all data, a recorded acknowledgement of retention responsibility is required. A platform-level deletion certificate with final chain heads, last anchors, row counts and the export hash survives the tenant.
+
+## ADR-125: Issued document evidence
+**Status:** ACCEPTED
+**Decision:** Insert-only `invoice_issue_record` rows record which invoice file was issued, its SHA-256, format, channel and time. The core neither renders nor stores the file.
+
+## ADR-126: Opaque actor identities
+**Status:** ACCEPTED
+**Decision:** The core stores user and service identities as opaque identifiers only. The mapping to real persons lives outside the core, so deleting the mapping pseudonymises audit trails. Free-text fields are not personal data by design and apps must not place personal data in them. This is a policy, with no technical detection: personal data typed into free text would never be anonymised.
+
+## ADR-127: Anonymisation schedule and retention extension
+**Status:** ACCEPTED
+**Decision:** Refines ADR-118 and ADR-119. The scheduled anonymisation job runs in DRY_RUN for a tenant-configurable period (default four weeks) and then executes automatically, with no per-run approval. Rule changes never alter stored retention dates. A privileged `retention:extend` command lengthens `retention_until` of existing snapshots and partners for a record class and company, never shortens it, with reason and legal basis. Export reads of personal data are logged as one `read_access_log` row per job and field group.
+
+## ADR-128: Migration batch layer with external ETL
+**Status:** ACCEPTED
+**Decision:** Extraction and transformation stay in an external ETL. The core offers a thin batch layer: staging of validated canonical records, control totals declared by the ETL, an in-core reconciliation with zero tolerance, a commit in resumable chunks (each chunk one atomic transaction, a batch that fits one chunk commits atomically) under controlled exceptions, and a final seal after post-commit verification. The company stays in DRAFT until the seal. (Chunk order, checks and "atomic per chunk" are fixed in ADR-152.) A failed commit resumes after the fix or is rolled back by reversal. In production tenants commit and seal need a second approver. One batch per company.
+
+**Amended (ADR-185):** DRAFT company exception, abort in COMMITTING, terminal ROLLED_BACK and removal of `legacy_id_map` rows at rollback. Rollback is a mirror-producing command (ADR-180).
+
+## ADR-129: P&L history for comparatives
+**Status:** ACCEPTED
+**Decision:** History comparatives are P&L period summaries only. Each history period is a `HISTORY_SUMMARY` document balanced against a suspense account `HISTORY_RESULT`, which the opening document zeroes. History fiscal years before the cutover year are hard-closed and closed at the seal by the normal year-end mechanism. With history the cutover fiscal year is a full year, its months before the cutover are history periods. Without history a short first year can be used (ADR-042). No balance sheet comparatives, no original historic documents.
+
+**Amended (ADR-175, ADR-185):** history-year closing entries are document type CLOSING, excluded from P&L reads like YEAR_END, so comparatives are preserved. History periods inside the cutover year are marked by `history_until_period`.
+
+## ADR-130: Opening balances by balance targeting and migration clearing
+**Status:** ACCEPTED
+**Decision:** Opening lines for non-subledger accounts are `declared target − current ledger balance`. Subledger-managed accounts (open-item accounts, inventory accounts, GR/IR) are opened only through open items, stock opening and migrated fulfilment documents, each balanced against `MIGRATION_CLEARING`. That account must be zero at the seal, which proves the subledgers reconcile to the legacy trial balance.
+
+## ADR-131: Controlled migration exceptions
+**Status:** ACCEPTED
+**Decision:** Posting window, period status, derived amounts, the partner rule on control accounts, the VAT account rule, mandatory dimensions and computed costs are relaxed only for documents created by a migration commit, which carry `migration_batch_id`. Legacy booked values are taken as supplied in all four currencies. The exceptions apply to documents of a batch in status OPEN, COMMITTING or COMMITTED and end at the seal (ADR-152), after which migration documents are ordinary immutable chained documents and mistakes are corrected by reversal and repost.
+
+**Amended (ADR-185, ADR-175):** a DRAFT company is a controlled exception for an unsealed batch, migration OPENING and OPENING_ITEMS documents are split per transaction currency, and history closing entries are of type CLOSING.
+
+## ADR-132: Migrated orders and fulfilment
+**Status:** ACCEPTED
+**Decision:** Open orders are migrated with the open quantity as the ordered quantity and the legacy references. Delivered-not-invoiced goods become migrated deliveries without stock effect. Received-not-invoiced goods become migrated receipts without stock effect, with a GR/IR open item in an opening document, so supplier invoice matching works unchanged. Migrated documents are marked `origin` MIGRATED and belong to the fulfilment chain.
+
+## ADR-133: Legacy id map
+**Status:** ACCEPTED
+**Decision:** A `legacy_id_map` table maps (source system, entity type, legacy id) to the core id. It is written by master data requests carrying `legacy_ref` and by migration commits, makes loads idempotent, and is queryable in both directions. Legacy ids contain no personal data.
+
+## ADR-134: Rehearsal tenants
+**Status:** ACCEPTED
+**Decision:** Rehearsals run in tenants marked `purpose` REHEARSAL, loaded by the ETL like production, and discarded by tenant deletion with relaxed rules (no external anchoring, one approver, no waiting period). The core does not clone tenants in release 1. The reconciliation report of the last rehearsal is the go-live gate by procedure, not enforced by the core.
+
+## ADR-135: Legacy tax summary for cutover inside a VAT period
+**Status:** ACCEPTED
+**Decision:** Refines ADR-079. The legacy tax of the partial VAT period at cutover is declared as summary rows (box, EC list and OSS rows, with VAT account and legacy ledger amounts) and stored. The first VAT return preparation for that period includes them once, marking their contribution as legacy, and the settlement clears the migrated opening balances on the VAT accounts. Opening balances on VAT accounts are allowed only for this purpose and are reconciled against the summary.
+
+## ADR-136: Batch variants for master data
+**Status:** ACCEPTED
+**Decision:** Refines ADR-062 for configuration and master data. `{resource}:upsert-batch` runs independent atomic upserts sequentially, keyed by `legacy_ref` through the legacy id map, with per-item results and idempotency, up to a tenant-set size. No batch transaction.
+
+**Amended (ADR-174):** upsert on an existing row requires `expected_version`; only the batch variant is exempt.
+
+## ADR-137: Extension attributes
+**Status:** ACCEPTED
+**Context:** Apps need to attach small process facts to core records without schema changes in the core. Scope review 14 (G1, Q1, Q2), spec 15.
+**Decision:** Typed, namespaced extension attributes (TEXT, DECIMAL, DATE, BOOLEAN, REF), governed by the owning app, stored in one generic value table with one column per type, validated by the core and filterable in the read API. Allowed on master data, orders and open items only, not on posted journal, stock, fulfilment documents or clearings. Extension values are outside every hash and never read by a core rule. Every change is audited.
+**Consequences:** Larger app structures stay in app-owned tables that refer to core ids. Anonymisation clears `is_pii` values. Tenant deletion removes definitions and values.
+
+## ADR-138: Change feed through an outbox
+**Status:** ACCEPTED
+**Context:** Apps can only poll reads and have no reliable way to react to changes. Scope review 14 (G2, K3, Q3, Q4), spec 15.
+**Decision:** An `outbox_event` row is written in the same transaction as every state change. The position is monotonic per tenant and allocated last, under a counter lock (`outbox_head`). Delivery is at-least-once by polling (`events:list` since position), consumer offsets are stored in the core. Events carry references and no personal data. Audit events are retained per retention rules, pure app events are purged after configured days once all registered consumers have read past. The outbox is also the audit index (ADR-159). Chains and logs stay the evidence.
+**Consequences:** Event-producing commits are serialised per tenant at the last step. Transport (webhooks, queues) stays outside the core.
+
+## ADR-139: App registration
+**Status:** ACCEPTED
+**Context:** Extension namespaces and the change feed need an identity for apps. Scope review 14 (G8, Q5), spec 15.
+**Decision:** Apps are identified by an `app_code` claim supplied by the identity provider. `app_registration` holds app id, extension namespaces (only the owner writes, all read), allowed event types and optional company scope. Consumer offsets are stored in the core. Authentication and permissions stay with the identity provider.
+**Consequences:** A command with a missing or inactive `app_code` is rejected with `APP.NOT_REGISTERED`.
+
+## ADR-140: Supply and demand as a snapshot read
+**Status:** ACCEPTED
+**Context:** ATP and MRP need current supply and demand facts. Scope review 14 (G3, Q6), spec 16.
+**Decision:** `supply-demand:query` returns facts per item, warehouse and time bucket (DAY, WEEK, MONTH): stock by status, reservations, open sales lines (dated by `confirmed_date`, else `requested_date`), open purchase lines and TRANSIT stock. Snapshot read, nothing stored. No stored plan, no netting and no promising in the core.
+**Consequences:** Apps own planning logic. The read agrees with `availability:query` and `open-orders:query`.
+
+## ADR-141: Line-level dates on orders
+**Status:** ACCEPTED
+**Context:** Sales lines had a requested date, purchase only a header date, and neither side a promised date. Scope review 14 (G4, Q7), spec 16.
+**Decision:** `requested_date` and `confirmed_date` are L2 on sales and purchase order lines, changed by `change-line-dates` with compare-and-set, logged in `order_change_log` and emitted as an outbox event. `confirmed_date` has its own permission `order.promise`.
+**Consequences:** The core stores the facts and never compares the dates as a rule. The purchase header `expected_receipt_date` becomes the default for lines.
+
+## ADR-142: `item_partner` terms
+**Status:** ACCEPTED
+**Context:** Purchasing, MRP and ATP need supplier and customer item terms. Scope review 14 (G5, Q8), spec 16.
+**Decision:** A versioned master table `item_partner`, key (item, partner, valid_from), holds partner item number, lead time, minimum order quantity, order multiple, origin country and a preferred flag, for suppliers and customers. No prices. The terms are information for apps and are never enforced.
+**Consequences:** An order can show the terms valid when it was placed. The table is extendable by apps.
+
+## ADR-143: Location types
+**Status:** ACCEPTED
+**Context:** Transfers are immediate and the core has no in-transit or quarantine concept. Scope review 14 (G6, Q9), spec 16.
+**Decision:** `warehouse_location.location_type` is STANDARD, TRANSIT or QUARANTINE, L1 and fixed after the first movement. In-transit is modelled with existing transfers and a TRANSIT location. TRANSIT stock is valued but not available and is shown as in transit. QUARANTINE is not reservable or sellable and accepts only stock status QUARANTINE or BLOCKED.
+**Consequences:** No separate in-transit document or process. Migrated in-transit stock is opened into a TRANSIT location.
+
+## ADR-144: Business calendars
+**Status:** ACCEPTED
+**Context:** ATP, MRP and due dates need working days. Scope review 14 (G7, Q10), spec 16.
+**Decision:** A versioned `business_calendar` per country or company (weekday mask and exception dates), assignable to company and warehouse, with the helpers `calendar:add-working-days` and `calendar:working-days-between`. No posting, clearing, tax or period rule depends on a calendar.
+**Consequences:** Country packages may ship holiday data as configuration. The core does not compute holidays.
+
+## ADR-145: Reversal only through the owning command (D1)
+**Status:** ACCEPTED
+**Context:** Reversal rules were incomplete: derived documents could be reversed directly, which breaks atomic stock and order coupling, and the reversal of a YEAR_END document would enter the closed year's P&L. Scope review 14 (D1).
+**Decision:** Derived documents (STOCK_*, DROPSHIP_COST, VAT_SETTLE, HISTORY_SUMMARY, OPENING*, order-built invoices, clearing reset, YEAR_END) are reversible only through the owning command. `journal-documents:reverse` rejects them. `reversal_of_document_id` is allowed for all mirror documents, with a reason code. YEAR_END is reversed only via `year-end:reopen`.
+**Consequences:** Amends ADR-048 and ADR-055. Stock and order coupling (ADR-094) cannot be bypassed by a journal reversal.
+
+## ADR-146: Trigger and grant rules per column class (D2)
+**Status:** ACCEPTED
+**Context:** The trigger rules contradicted S columns: clearing and reversal status are legitimately changed in hard-closed periods and are not logged in `change_log` (ADR-037). `retention_until` was L1 but is updated by `retention:extend`. Scope review 14 (D2).
+**Decision:** L1 and L2 columns are rejected in hard-closed periods and require a `change_log` row. S columns are changed by system commands without a `change_log` row, each change with its own chained event. `retention_until` is reclassified to S.
+**Consequences:** Amends ADR-031, ADR-119 and the trigger text in 02. Grants are per column class and command role.
+
+**Amended (E8, ADR-186):** an S change that has no append-only record of its own to derive from (for example a retention change) is evidenced by its outbox audit event, which then serves as the "own event". A chained event is required only where a chain exists for the entity.
+
+## ADR-147: One authoritative lock order (D3)
+**Status:** ACCEPTED
+**Context:** The lock order in 04 listed three of six chain heads, left `fulfilment` and VAT chains without a position, and disagreed with 10 and 11. `retention_until` written by every posting was a hot row. Scope review 14 (D3).
+**Decision:** The lock order is: order rows, stock `item_company` rows, chain heads sorted by chain type (LEDGER, CLEARING, PERIOD_EVENT, VAT_RETURN, STOCK, FULFILMENT) and then scope, open items sorted by id, and `outbox_head` last (ADR-138). Derivation (balances, tolerances, progress) runs after the locks. `retention_until` is updated by a batch job, not per posting.
+**Consequences:** Amends ADR-094, ADR-098 and ADR-106. GR/IR open items are pre-locked at receipt and invoice time.
+
+**Amended (ADR-162, ADR-177, ADR-178, ADR-179):** the sort tuple of chain heads is (chain type, company, scope_key), not (chain type, scope_key), because intercompany postings lock two LEDGER heads of different companies. Number counters are locked before chain heads. `periods:hard-close`, `year-end:close` and `revaluation:run` take the CLEARING head in addition. Reads never lock `outbox_head`.
+
+## ADR-148: Stale check on every posting in scope (D4)
+**Status:** ACCEPTED
+**Context:** Postings into special periods 13+ dated in period 12's range came after period 12's hard-close check and could make the active revaluation run stale. 04 still carried the replaced "pending system job" rule, and `year-end:close` did not write the PERIOD_HARD_CLOSE event that the trigger requires. Scope review 14 (D4).
+**Decision:** The stale check of ADR-051 and ADR-053 applies to every posting in scope, including special periods 13+, and replaces the old rule in 04. `year-end:close` writes PERIOD_HARD_CLOSE for the closing period and the year in addition to YEAR_END_CLOSE.
+**Consequences:** Amends ADR-053 and ADR-041.
+
+**Amended (X2, ADR-177):** the stale check runs at the hard-close of every relevant period only (regular period, special periods 13+ and the closing period), not on every posting. The "on every posting" wording is replaced. The claim that the revaluation run "cannot be stale" is removed (ADR-178).
+
+## ADR-149: Account role table and key (D5)
+**Status:** ACCEPTED
+**Context:** The account role rules were inconsistent between 10, 11 and 07, and the key of `account_role_assignment` omitted `vat_registration_id`. Scope review 14 (D5).
+**Decision:** A role table in 07 gives the required open-item mode per role: GR_IR and DROPSHIP_CLEARING = GL_OPEN_ITEM, AR_CONTROL and AP_CONTROL = CONTROL, all others NONE. The unique key of `account_role_assignment` is extended with the nullable `vat_registration_id`.
+**Consequences:** Amends ADR-066. Readiness checks use the role table.
+
+## ADR-150: Closed list of cost exceptions and `cost_source` (D6)
+**Status:** ACCEPTED
+**Context:** "Costs are always computed" and "caller sends transaction-currency amounts only" had unlisted exceptions. Scope review 14 (D6).
+**Decision:** The exceptions to computed costs form a closed list in ADR-096. Each valued document is marked with `cost_source`: COMPUTED, SUPPLIED, INVOICE or MIGRATION.
+**Consequences:** Amends ADR-096 and ADR-057. Returns (ADR-111), receipt at the earlier invoice value (ADR-115), supplied value on adjustments and stock opening, cost adjustment from invoice price differences and migration (ADR-131) are covered.
+
+**Amended (ADR-183, ADR-185):** an adjustment-in without value takes the last layer cost, and returns of migrated deliveries and receipts are valued from `value_lc` of the legacy record.
+
+## ADR-151: `read_access_log` extension (D7)
+**Status:** ACCEPTED
+**Context:** `read_access_log` did not fit the export logging of 12: `partner_id` was mandatory and one row was written per partner. Scope review 14 (D7).
+**Decision:** `partner_id` is nullable. New columns `export_job_id` and `partner_count`. The field-group list is widened (credit limits, search, order addresses). Exports log one row per job.
+**Consequences:** Amends ADR-090 and ADR-127.
+
+## ADR-152: Migration chunk order and checks (D8)
+**Status:** ACCEPTED
+**Context:** Migration had logic gaps after later changes: commit order and retained earnings sequencing, conflicting GR/IR checks, exceptions limited to OPEN batches and stale "atomic" wording. Scope review 14 (D8).
+**Decision:** Chunk order: HISTORY (including closing entries), OPENING_GL, OPEN_ITEMS, STOCK, ORDERS, FULFILMENT, RESERVATIONS, LEGACY_TAX. One GR/IR check against the trial balance. Controlled exceptions apply to batches in status OPEN, COMMITTING and COMMITTED until the seal. Commit is atomic per chunk.
+**Consequences:** Amends ADR-128 to ADR-131.
+
+## ADR-153: VAT settlement reversal and `first_used_at` (D9)
+**Status:** ACCEPTED
+**Context:** 08 allowed settlement reversal after filing, against ADR-080, and `exchange_rate.first_used_at` was said to be set by clearing although clearing does no rate lookup. Scope review 14 (D9).
+**Decision:** A VAT settlement can be reversed only before the filing is recorded (ADR-080). No command reverses a filing. Clearing does not touch `first_used_at`, which is set by posting and revaluation only.
+**Consequences:** Aligns 08 and 07 with ADR-080 and ADR-038.
+
+## ADR-154: Fixed permissions per area (D10)
+**Status:** ACCEPTED
+**Context:** No write permissions existed for configuration and master data, and the VAT and migration permissions were missing in 06. Scope review 14 (D10).
+**Decision:** Fixed permissions per area: `write.config`, `write.master`, `config.apply`, `company.activate`, `history.open`, `vat.prepare`, `vat.file`, `vat.settle` and `migration.*`. The full table is in 06.
+**Consequences:** The error area `VAT` and the permissions are added to 06. Spec 15 and 16 add their own permissions on top.
+
+## ADR-155: Thin supplier invoice matching to line tolerance (S1)
+**Status:** ACCEPTED
+**Context:** Tolerances and acceptance of price deviations are customer policy and workflow. Scope review 14 (S1, Q13).
+**Decision:** The core enforces valid references, quantity not above ordered plus the line tolerance (percent, L2), the gross control total and the GR/IR split. A price deviation is always posted as a price-difference line (account determination) beside the GR/IR clearing and recorded on the match record. `purchase_tolerance_override` and the permission `purchase.match_override` are removed.
+**Consequences:** Amends ADR-116 and ADR-107. Apps decide whether a price deviation is acceptable before they send the invoice.
+
+## ADR-156: Per-company invoice mode CORE_BUILDS or APP_SUPPLIES (S2)
+**Status:** ACCEPTED
+**Context:** The earlier decision (ADR-107) that the core builds the AR invoice from orders and deliveries is billing-run logic for some customers. Scope review 14 (S2, Q11).
+**Decision:** One command `sales-invoices:create`. The mode is versioned configuration per company with `valid_from`: CORE_BUILDS (the core selects lines by `invoice_policy`) or APP_SUPPLIES (apps send complete lines with order and delivery references). Validation, tax determination and posting are the same in both modes. A switch affects new invoices only.
+**Consequences:** Amends the part of ADR-107 that says AR is built by the core.
+
+**Amended (X3, ADR-178):** the setting is named `sales_invoice_mode` and the validity column of company settings is `effective_from` (not `valid_from`) in 06, 07, 11, 13 and the ERD.
+
+## ADR-157: Auto-reservation as optional company setting (S3)
+**Status:** ACCEPTED
+**Context:** Availability promising is ATP logic, but reservation records are shared data. Scope review 14 (S3, Q12).
+**Decision:** Reservation records and commands stay. Auto-reservation at order creation is a setting in `company_order_setting_version`, default off, BEST_EFFORT only. Stricter reservation modes are removed.
+**Consequences:** Amends ADR-101. Apps reserve explicitly after order placement unless the setting is on.
+
+**Amended (X3):** the setting is named `auto_reserve`.
+
+## ADR-158: Single `chain_head` table (K1)
+**Status:** ACCEPTED
+**Context:** Six head tables, six verification routines and a lock order that was hard to state. Scope review 14 (K1, Q14).
+**Decision:** One `chain_head` table keyed (tenant, company, chain_type, scope_key) replaces the head tables. `scope_key` is the ledger id for LEDGER and empty for all other chain types, including VAT_RETURN (one chain per company over all return types, ADR-161). Columns: `last_seq`, `last_hash`, `hash_version`, `updated_at`. The event tables stay. One verification routine. Locks are taken sorted by chain type, then scope key (ADR-147).
+**Consequences:** Amends ADR-030, ADR-036, ADR-041, ADR-099 and ADR-114, and ADR-079 (VAT_RETURN scope, ADR-161). Locks and counters: ADR-162. Five tables fewer.
+
+**Amended (X4, ADR-147):** locks are taken sorted by chain type, then company, then scope key.
+
+## ADR-159: Outbox as the single append-only stream behind audit events (K3)
+**Status:** ACCEPTED
+**Context:** The audit query was a computed union over many logs (ADR-091). Scope review 14 (K3, Q15), spec 15.
+**Decision:** `outbox_event` is the single append-only stream behind `audit-events:query` and the app feed. `outbox_event.is_audit` marks audit events (config, master, data subject, retention, export, tenant, access). Audit events are retained per retention rules. Chained events are referenced through `chain_ref`, not duplicated. The detailed logs (`change_log`, `master_change_log`, `order_change_log`) stay separate and remain the evidence (K2 not adopted).
+**Consequences:** Amends ADR-091. The outbox is an ordered index, not a hash chain.
+
+**Amended (ADR-179, ADR-186):** read access is not written to the outbox, only a daily `access.summary` event. Feed visibility is separate from the audit class, and `is_audit` governs retention only.
+
+## ADR-160: Reversal commands and reason codes (D1 follow-up)
+**Status:** ACCEPTED
+**Context:** The D1 ruling (ADR-145) named the owning-command principle but not all commands, and the reason codes and the document type of mirror documents were open. Scope review 14, section 10.
+**Decision:** Four new owning commands: `sales-credit-notes:reverse`, `purchase-credit-notes:reverse`, `landed-costs:reverse` and `vat-returns:reverse-settlement` (before the filing is recorded, ADR-153). Reason codes for `reversal_of_document_id`: AUTO_REVERSAL, RERUN, REOPEN, CORRECTION, ERROR, RETURN. A mirror document keeps the `document_type` of the original (amended by ADR-168: the four existing mirror types stay). `IC` is not a separate document type: intercompany documents are AR/AP_INVOICE with `ic_transaction_id`.
+**Consequences:** Amends ADR-145 and ADR-048. `journal-documents:reverse` still rejects derived documents. The settlement reversal command is `vat-returns:reverse-settlement` (ADR-169), the settlement itself is `vat-returns:settle` (ADR-080).
+
+**Amended (ADR-168, ADR-169):** mirror document types follow ADR-168. The command name `vat-settlements:reverse` is replaced by `vat-returns:reverse-settlement`.
+
+**Amended (ADR-180, ADR-181):** further mirror-producing commands are `migration-batches:rollback` (reason CORRECTION), `sales-returns:reverse` and `purchase-returns:reverse`. A clearing with open-item lines reversed through the owning command clears mirror open items automatically (ADR-180).
+
+## ADR-161: One VAT return chain per company
+**Status:** ACCEPTED
+**Context:** ADR-158 keyed the VAT_RETURN head by return type, but ADR-079 describes one chain per company and anchoring treats it as one chain. Scope review 14, section 10 (K1/08).
+**Decision:** The VAT_RETURN chain is one chain per company over all return types (STANDARD, EC_LIST, OSS, IOSS). In `chain_head` the `scope_key` is empty for VAT_RETURN. `chain_anchor` uses `scope_key` in 06, 10 and 11.
+**Consequences:** Amends ADR-158 (scope key) and confirms ADR-079. Snapshots of different return types are ordered in the same chain by sequence.
+
+**Amended (ADR-177):** `chain_anchor` rows are created PENDING in the close transaction and stamped after commit.
+
+## ADR-162: Lock details: counters before chain heads, clearing pre-locks
+**Status:** ACCEPTED
+**Context:** ADR-147 fixed the lock order but not the position of number counters and the case of a clearing that posts an exchange difference. Scope review 14, section 10 (D3).
+**Decision:** Number counters are locked before chain heads. A clearing that can produce an exchange difference pre-locks the LEDGER chain head and the number counter, so that the difference document can be posted without a lock inversion. The rest of the order is as in ADR-147.
+**Consequences:** Amends ADR-147. Aligns with ADR-038 (realised FX at clearing through residual lines).
+
+**Amended (ADR-170):** the pre-lock condition is defined precisely.
+
+**Amended (X4, ADR-147):** lock order uses the tuple (chain type, company, scope_key), counters before heads. `revaluation:run` and the close commands also take the CLEARING head (ADR-177, ADR-178).
+
+## ADR-163: Migration seal as year close variant, correction by rollback and recommit
+**Status:** ACCEPTED
+**Context:** Closing entries of history years are migrated as posted documents (ADR-129, ADR-152), so `year-end:close` cannot run on them. Correction of migrated documents after commit was open. Spec 13 Q16 and Q17, scope review 14 section 10.
+**Decision:** `migration-batches:seal` runs a migration variant of the year close for history years: it writes PERIOD_HARD_CLOSE and YEAR_END_CLOSE for the already posted closing entries. `year-end:close` cannot be used on history years. A migration document is corrected between commit and seal by rollback and recommit of the batch (`migration-batches:rollback`, ADR-145).
+**Consequences:** Amends ADR-128 to ADR-131 and ADR-152. Interacts with ADR-148 (the seal writes the same events as a year close).
+
+**Amended (ADR-175, ADR-177, ADR-185):** the closing entries of history years are document type CLOSING. The seal writes the anchor requests as PENDING like any close. History guards key on `history_until_period`.
+
+## ADR-164: Outbox audit event types added
+**Status:** ACCEPTED
+**Context:** Spec 09 Q13: several state changes had no event type in the audit stream (ADR-159). Scope review 14, section 10.
+**Decision:** Added outbox event types, all with `is_audit` = true and no personal data in the summary: `ledger.line_changed`, `revaluation.run_completed`, `revaluation.rerun`, `dsr.received`, `dsr.decided`, `invoice.issued` and `master.reactivated`.
+**Consequences:** Amends ADR-159, ADR-138 and ADR-091. The event type list in 15 and 09 is extended accordingly.
+
+**Amended (ADR-172, ADR-179, ADR-186):** later event types are `retention.recomputed`, `access.summary` (replaces `access.read_logged`) and `migration.sealed`.
+
+## ADR-165: APP_SUPPLIES invoice pricing and service-line reference rule
+**Status:** ACCEPTED
+**Context:** ADR-156 left open how prices are carried when apps supply invoice lines and how service lines without deliveries are referenced. Scope review 14, section 10 (S2).
+**Decision:** In APP_SUPPLIES mode the app sends price and discount per line. They are stored beside the order price and no core price rule is applied. Service lines with invoice policy ORDERED require a reference to the order line instead of a delivery reference. New companies default to CORE_BUILDS.
+**Consequences:** Amends ADR-156 and ADR-107. Price deviations to the order price are visible but not judged by the core.
+
+**Amended (ADR-173, ADR-184):** goods lines with invoice policy ORDERED may be invoiced before delivery in both modes (ADR-184, D2). The delivery reference requirement for goods lines (ADR-173, item 4) therefore no longer applies to ORDERED lines.
+
+## ADR-166: `cost_source` per movement line and split of partly invoice-covered receipts
+**Status:** ACCEPTED
+**Context:** ADR-150 put `cost_source` on the valued document, but one document can mix computed and invoice-based costs. Scope review 14, section 10 (D6).
+**Decision:** `cost_source` is held per movement line. Returns are COMPUTED (ADR-111). A receipt that is only partly covered by an invoice is split into an INVOICE line and a COMPUTED line.
+**Consequences:** Amends ADR-150, ADR-096 and ADR-115.
+
+**Amended (ADR-173, ADR-183, ADR-185):** a split receipt has `stock_document_line_no` and `stock_document_line_count` (ADR-173). Layer rules for adjustments, transfers and returns are in ADR-183, and the valuation basis of migrated deliveries and receipts in ADR-185.
+
+## ADR-167: Export read log granularity and partner retention recomputation
+**Status:** ACCEPTED
+**Context:** ADR-151 logged exports per job, but the granularity and the interaction with the anonymisation job were open. Spec 12 and 09, scope review 14, section 10.
+**Decision:** The export read log has one row per job and field group, never per partner. The field groups PII_EXTENSION, ORDER_ADDRESS, PII_CREDIT and SEARCH are approved. The anonymisation job recomputes the partner `retention_until` before it acts.
+**Consequences:** Amends ADR-151, ADR-127 and ADR-090. The partner `retention_until` stays maintained by batch, not by postings (ADR-147).
+
+## ADR-168: Mirror document types
+**Status:** ACCEPTED
+**Context:** ADR-160 said that a mirror keeps the `document_type` of the original, but four mirror types already exist. Scope review 14, section 11.
+**Decision:** The mirror types REVERSAL, REVAL_REVERSAL, CLEARING_RESET and STOCK_REVERSAL stay. A mirror keeps the original `document_type` only where no own mirror type exists: YEAR_END, VAT_SETTLE, DROPSHIP_COST, order-built invoices and credit notes. All mirrors carry `reversal_of_document_id`.
+**Consequences:** Amends ADR-160 and ADR-145.
+
+**Amended (ADR-175, ADR-180):** CLOSING is a further type that keeps its type in a mirror (migration rollback).
+
+## ADR-169: VAT settlement reversal command and event
+**Status:** ACCEPTED
+**Context:** ADR-160 named the command `vat-settlements:reverse`, but the settlement is a `vat-returns` command (ADR-080). Scope review 14, section 11.
+**Decision:** The command is `vat-returns:reverse-settlement` (permission `vat.settle`), allowed only before the filing is recorded (ADR-153). It emits the new event `vat.settlement_reversed` and rejects an unsettled return with `VAT.NOT_SETTLED`. The name `vat-settlements:reverse` is replaced everywhere.
+**Consequences:** Amends ADR-160, ADR-028 and ADR-080.
+
+## ADR-170: Clearing pre-lock condition
+**Status:** ACCEPTED
+**Context:** ADR-162 pre-locks for a clearing that "can produce an exchange difference" without a testable condition. Scope review 14, section 11.
+**Decision:** A clearing pre-locks the LEDGER chain head and the number counter when the items do not net to zero in LC, GC and RC at full amounts, or when items are partially cleared. The condition is re-checked after the open-item locks are taken.
+**Consequences:** Refines ADR-162. Lock order otherwise as in ADR-147.
+
+## ADR-171: External reversal reason codes
+**Status:** ACCEPTED
+**Context:** The six reason codes of ADR-160 include codes that only the system sets. Scope review 14, section 11.
+**Decision:** `journal-documents:reverse` accepts only CORRECTION and ERROR from external callers and rejects AUTO_REVERSAL, RERUN, REOPEN and RETURN with the error `REVERSAL.REASON_NOT_ALLOWED`. The six-code list is closed.
+**Consequences:** Amends ADR-160. The other codes are set only by the owning commands.
+
+**Amended (ADR-180):** `migration-batches:rollback` is a system caller using CORRECTION.
+
+## ADR-172: Retention recompute event, order address log, outbox purge count
+**Status:** ACCEPTED
+**Context:** Retention and logging details of spec 12 and 09 were open. Scope review 14, section 11.
+**Decision:** Correction of a partner maximum retention emits the new event type `retention.recomputed`. The SYSTEM log of `order_address_snapshot` goes to `order_change_log`. The anonymisation run record reports the purge of outbox events as `outbox_events_purged`. Both revaluation event types (`revaluation.run_completed`, `revaluation.rerun`) map to the view type REVALUATION_RUN.
+**Consequences:** Amends ADR-164, ADR-167 and ADR-127. The event type list in 15 and 09 gains `retention.recomputed`.
+
+## ADR-173: Credit note and invoice reversal interplay, landed-cost reversal limits, receipt line stock line count
+**Status:** ACCEPTED
+**Context:** Interaction of the new reversal commands (ADR-160) with each other and with stock was open. Scope review 14, section 11.
+**Decision:** (1) An invoice with credit notes cannot be reversed until the credit notes are reversed (`ORDER.INVOICE_HAS_CREDIT_NOTES`). A credit note on a reversed invoice is rejected with `ORDER.INVOICE_REVERSED`. (2) `landed-costs:reverse` is rejected with `INVENTORY.ALLOCATION_NOT_REVERSIBLE` if the on-hand part of the allocation is consumed. Correction is by a new allocation. (3) `purchase_receipt_line` gets `stock_document_line_no` (first line) and `stock_document_line_count`, because a partly invoice-covered receipt is split into several stock lines (ADR-166). (4) Goods lines in APP_SUPPLIES mode, ORDERED included, still require a delivery reference; only service lines use the order line reference (clarifies ADR-165). The error codes MIGRATION.*, INVENTORY.INSUFFICIENT_STOCK, INVENTORY.ALLOCATION_* (including `INVENTORY.ALLOCATION_EXISTS`) and ORDER.CREDIT_NOTE_* are adopted in 06.
+**Consequences:** Amends ADR-160, ADR-165 and ADR-166.
+
+**Amended (ADR-181, ADR-184):** item (2) landed-cost reversal limits are replaced by the cost-key test of ADR-181, and item (4) is superseded for ORDERED goods lines by ADR-184 (D2).
+
+## ADR-174: Migration seal variant of year close, upsert rule for master data
+**Status:** ACCEPTED
+**Context:** The seal of ADR-163 had no rule for the stale check or for reopening, and upsert semantics for master data were open. Scope review 14, section 11.
+**Decision:** The seal variant of year close skips the D4 stale check (ADR-148), because no revaluation runs in history. Sealed history years cannot be reopened (`periods:reopen` and `year-end:reopen` are rejected with `PERIOD.HISTORY_YEAR_SEALED`); corrections use adjustment postings. `year-end:close` and the manual `periods:soft-close` and `periods:hard-close` on `is_history` periods before the seal are rejected with `PERIOD.HISTORY_YEAR`. Upsert on an existing row requires `expected_version`. Without a legacy match it inserts. Only the batch variant is exempt. Upsert without `legacy_ref` is rejected.
+**Consequences:** Amends ADR-163, ADR-148 and ADR-136.
+
+**Amended (ADR-175, ADR-177, ADR-185):** the seal skips the stale check, which runs at hard-close only (ADR-148). History guards key on `history_until_period` (ADR-185). Closing documents of history years are type CLOSING (ADR-175).
+
+## ADR-175: Closing entries of history years are document type CLOSING (X1)
+**Status:** ACCEPTED
+**Context:** Closing entries of migrated history years used a document type `CLOSING` that spec 02 did not define (only a line type). Spec 13 said in one place that P&L reads include them and in another that they are excluded, and the P&L rule excluded only YEAR_END, so history comparatives netted to zero. Independent review 17, X1.
+**Decision:** History-year closing entries are a new document type `CLOSING`, system generated and set by the HISTORY chunk of the migration commit. It is not YEAR_END. `CLOSING` is added to 02 (type list, `is_system_generated`), 06 (system types, owning command `migration-batches:rollback`), 09 and 05. P&L reads exclude `CLOSING` like YEAR_END, so comparatives are preserved. Balance reads include it. `fiscal_year.year_end_document_id` of a history year points to its CLOSING document. The statements in 13 are made consistent.
+**Consequences:** Amends ADR-129, ADR-152, ADR-163 and ADR-174. A rollback mirror of a CLOSING document keeps the type CLOSING (ADR-180).
+
+## ADR-176: `journal_document.origin` is set by the core (X5)
+**Status:** ACCEPTED
+**Context:** Documents built by order management were identified by the caller-supplied field `source_system` (ORDER_MGMT), so an external caller could fake or bypass the rule. Independent review 17, X5.
+**Decision:** `journal_document.origin` is an L1 column with the values EXTERNAL, ORDER, STOCK, VAT, MIGRATION and SYSTEM. The core sets it from the command that creates the document and never takes it from the caller. `source_system` stays a free tracing field (P13). The rejection rules in 06 for derived and order-built documents use `origin`.
+**Consequences:** Amends ADR-145 and ADR-132. The column is part of the document hash. It is distinct from the `origin` MIGRATED marker on fulfilment documents (ADR-132).
+
+## ADR-177: Hard-close serialisation and anchoring as post-commit step (A1, A2)
+**Status:** ACCEPTED
+**Context:** Hard-close, posting, clearing and L2 change were not serialised: the status commands locked only PERIOD_EVENT, so a posting could commit into a period that hard-closed concurrently, and the stale check could be wrong. The chain anchor needed an external timestamp inside the close transactions, so a timestamp-service outage could block year-end. Independent review 17, A1 and A2.
+**Decision:** (1) `periods:hard-close` and `year-end:close` lock the LEDGER and CLEARING chain heads before the PERIOD_EVENT head. Period-dependent commands read `fiscal_period` in share mode and re-check the period status after their own head locks. (2) Anchoring happens after commit. The close transaction writes an anchor request with state PENDING, and the timestamp token is fetched after commit, which sets the state STAMPED. `chain_anchor.timestamp_token` is nullable until stamped. The close needs the anchor request, not its response. `chains:verify` warns about PENDING anchors beyond a deadline.
+**Consequences:** Amends ADR-046, ADR-147, ADR-148 and ADR-041. The stale check at hard-close (ADR-148) is now reliable, because no posting can enter the period after the heads are locked.
+
+## ADR-178: Number series by posting-date fiscal year, year-end close and reopen requirements, revaluation locks CLEARING (A3, A4, A5)
+**Status:** ACCEPTED
+**Context:** Series assignment resolved by command time, so a late posting in the old open year took a number from the new series, and `effective_from` was a timestamp compared with a date. `year-end:close` could close a year with an open special period 13, `year-end:reopen` posted its mirror into a closed year, and the revaluation run claimed to lock what it did not. Independent review 17, A3 to A5.
+**Decision:** (A3) The series is resolved by the fiscal year of the posting date. `effective_from` of a series assignment is a DATE, the start date of the fiscal year. (A4) `year-end:close` requires every non-closing special period to be HARD_CLOSED. `year-end:reopen` runs in this order: reopen the closing period, set the year to OPEN, then post the mirror document. New error codes cover "closing period not OPEN" and "special period open". (A5) `revaluation:run` also locks the CLEARING head. The claim that the run "cannot be stale" is removed. The hard-close stale check (ADR-148) is the safeguard.
+**Consequences:** Amends ADR-044, ADR-025, ADR-051 and ADR-053.
+
+## ADR-179: Read access logged only in `read_access_log`, daily summary event (A6)
+**Status:** ACCEPTED
+**Context:** Reads wrote outbox events (`access.read_logged`) and so took the tenant-wide `outbox_head` lock. That serialised PII reads with all writes and broke reads on replicas. Independent review 17, A6.
+**Decision:** Read access is logged only in `read_access_log`. Reads never touch `outbox_head`. A job writes one daily summary event `access.summary` per partner group to the outbox.
+**Consequences:** Amends ADR-090, ADR-151, ADR-164 and ADR-159. The event type `access.read_logged` is replaced by `access.summary`. Replica reads stay possible.
+
+## ADR-180: Rerun, reset and reversal mechanics (B1 to B4)
+**Status:** ACCEPTED
+**Context:** A rerun reversed the same REVALUATION twice while `reversed_by` has one slot. The item list of a clearing reset with a difference document was impossible. It was unclear whether original and mirror open items clear on reversal. Migration rollback posts mirrors that the reason and mirror type lists did not cover. Independent review 17, B1 to B4.
+**Decision:** (B1) More than one REVAL_REVERSAL mirror per original is allowed, and `reversed_by` holds the first. Rerun step 1 mirrors only an original that has no automatic reversal yet. Step 2 is the new run's own pair, not a mirror of a mirror. (B2) Reset of a clearing with difference document D: no item on D's offset line, one item on the reset's own offset line, and D's offset becomes CLEARED by the reset clearing. The exact item list with amounts is written out in 03. (B3) Reversal of a document with open-item lines clears each mirror open item against its original automatically, in the same transaction, with a clearing record and no clearing document. (B4) `migration-batches:rollback` is a mirror-producing command with reason code CORRECTION. Its mirrors keep the original type, including HISTORY_SUMMARY, OPENING, OPENING_ITEMS, STOCK_OPENING and CLOSING.
+**Consequences:** Amends ADR-160, ADR-168, ADR-145, ADR-036 and ADR-051. The reason code list of ADR-160 is unchanged, rollback uses CORRECTION and is a system caller (ADR-171).
+
+## ADR-181: Return reversal, delivery reversal with returns, landed-cost reversal, FIFO receipt check (B5 to B8)
+**Status:** ACCEPTED
+**Context:** Returns had no reverse command, delivery reversal ignored returns, landed-cost reversal had no testable condition or columns, and the FIFO receipt reversal checked only total quantity. Independent review 17, B5 to B8.
+**Decision:** (B5) New commands `sales-returns:reverse` and `purchase-returns:reverse` with the permissions `sales.return` and `purchase.return`. (B6) Delivery reversal and dropship reversal are rejected with `ORDER.DELIVERY_RETURNED` when returns exist. (B7) `landed-costs:reverse` is allowed only if no later movement exists on the cost key since the allocation. The allocation gets `reversal_of_allocation_id`, `reason_code` and a status. The mirror stock document type is STOCK_REVERSAL. (B8) FIFO receipt reversal checks the remaining quantity of the receipt's cost layer, and rejects otherwise with `INVENTORY.RECEIPT_CONSUMED`.
+**Consequences:** Amends ADR-160, ADR-173 (landed-cost limits are replaced by the cost-key test), ADR-111 and ADR-099. The error `INVENTORY.ALLOCATION_NOT_REVERSIBLE` keeps its code and is raised by the cost-key test.
+
+## ADR-182: Replacement-return settlement difference and reverse-settlement contract (B9, X8)
+**Status:** ACCEPTED
+**Context:** A replacement VAT return could settle twice, and 06 and 08 described different payloads for `vat-returns:reverse-settlement`. Independent review 17, B9 and X8.
+**Decision:** The settlement of a replacement return is the difference against the last settled snapshot along the `replaces_return_id` chain. `vat-returns:reverse-settlement` is rejected on a superseded return while a successor settlement is active. The payload is `return_id`, `reversal_date`, `reason_code` (CORRECTION or ERROR) and `reason_text`. There is no date shifting. 06 refers to 08, 7.3a for the contract.
+**Consequences:** Amends ADR-080, ADR-153 and ADR-169.
+
+## ADR-183: Stock as-of reads, negative stock, FIFO rules, `layer_date`, location rules (C1 to C5)
+**Status:** ACCEPTED
+**Context:** As-of reads used running balances that follow processing order, so backdated movements gave wrong historic values. Negative stock mixed stock key and cost key. FIFO was silent on several movement kinds. `layer_date` had no column, and the location rules of 10 and 16 left no way to enter TRANSIT and QUARANTINE except transfers. Independent review 17, C1 to C5.
+**Decision:** (C1) As-of stock reads sum quantity and value by posting date and processing order. The running columns serve only reads of the present. "Reconciles by construction" holds only for the present. (C2) Negative stock handling is defined on the cost key only. (C3) An adjustment-in without value uses the last layer cost. Transfers move layers at their layer cost. RETURN_OUT consumes the layer of the referenced original receipt. (C4) `stock_cost_layer` gets `layer_date`, supplied by migration. (C5) TRANSIT and QUARANTINE locations accept TRANSFER_IN, STATUS_CHANGE and ADJUSTMENT, and reject RECEIPT and ISSUE. QUARANTINE accepts only the status QUARANTINE or BLOCKED.
+**Consequences:** Amends ADR-096, ADR-098, ADR-099 and ADR-143. Historic as-of reads cost a scan over the movements, and the spec says so.
+
+## ADR-184: Order matching and GR/IR: THREE_WAY cap, ORDERED goods invoicing, write-off, open quantity (D1 to D4)
+**Status:** ACCEPTED
+**Context:** The THREE_WAY invoice cap ignored returns, ORDERED goods lines were treated differently in the two invoice modes, GR/IR residuals and orphan receipts had no path, and open quantity had three definitions. Independent review 17, D1 to D4.
+**Decision:** (D1) The THREE_WAY cap is received minus returned. (D2) ORDERED goods lines may be invoiced before delivery in both modes. A delivery reference, when given, protects the delivery line from reversal (`ORDER.DELIVERY_INVOICED`). (D3) New command `gr-ir:write-off` (permission `purchase.invoice`) clears a GR/IR residual to an account from account determination. Direct receipts without an order are matched through a receipt reference on the supplier invoice line. (D4) Open quantity is ordered minus delivered (received), not below zero, and over-tolerance does not count as demand. There is one definition per side in 11. 16, 09 and credit exposure reference it, and the purchase "open to receive" is defined there.
+**Consequences:** Amends ADR-107, ADR-116, ADR-155, ADR-165 and ADR-173 (item 4: goods lines in APP_SUPPLIES mode no longer require a delivery reference when ORDERED).
+
+## ADR-185: Migration: valuation basis, DRAFT exception, abort and rollback, per-currency documents, `history_until_period`, rate rules (D5 to D9)
+**Status:** ACCEPTED
+**Context:** Returns on migrated and dropship documents had no valuation source. The commit posted into a DRAFT company without an exception, a batch could stick in COMMITTING and a rollback blocked a new batch. Several transaction currencies per migration document conflicted with ADR-035. History periods inside the cutover year had no marker. Rates on closing lines were undefined at zero amounts. Independent review 17, D5 to D9.
+**Decision:** (D5) Migrated deliveries and receipts carry `value_lc` from the legacy record as the valuation basis for returns. A dropship return links the sales return to the purchase return by a `dropship_confirmation_id`. (D6) A DRAFT company is a controlled exception for an unsealed batch. `abort` is allowed in COMMITTING when no chunk is DONE. ROLLED_BACK is terminal and does not count as non-aborted. Rollback removes the batch's `legacy_id_map` rows. (D7) Migration OPENING and OPENING_ITEMS documents are split per transaction currency, and a stock document has one currency. (D8) The cutover `fiscal_year` gets `history_until_period`. The history guards (`PERIOD.HISTORY_YEAR`) key on it, and on `is_history` for years before the cutover year. (D9) "Non-zero" means non-zero in at least one currency. The implied rate at LC = 0 is derived from the other currency. System lines with TC = 0 use rate 1 and rate type DERIVED. A rule table per system line type is written in 02.
+**Consequences:** Amends ADR-128, ADR-129, ADR-131, ADR-132, ADR-152, ADR-163, ADR-174, ADR-035 and ADR-055. Together with ADR-175 the migration chapter 13 is re-baselined.
+
+## ADR-186: Compliance: deletion export expiry, `retention_floor`, extension PII, feed visibility, migration events, extension CAS (E1 to E7)
+**Status:** ACCEPTED
+**Context:** Tenant deletion could not run under default settings (export expiry 14 days, waiting period 30). A recomputation of `retention_until` could shorten a `retention:extend` extension. Extension values leaked into logs and were not cleared consistently. Consumers of the app feed needed `read.audit`. Migration events and `outbox:verify` disagreed, and extension compare-and-set was undefined. Independent review 17, E1 to E7.
+**Decision:** (E1) The export backing a tenant deletion does not expire before `waiting_until` plus 7 days. (E2) `retention_floor` is a stored minimum that the recomputation respects. `retention:extend` is limited to record classes that store a date. (E3) Extension values marked `is_pii` are logged without content. `master_change_log` gets `app_id` and a CLEAR action. `is_pii` is immutable once values exist. (E4) Extension values are cleared at anonymisation, never at deactivation, so legal holds are not bypassed. Anonymisation also clears `is_pii` values on records that reference the partner, including orders and open items. `extensions:set` on an anonymised partner is rejected with `EXT.ENTITY_ANONYMISED`. (E5) Feed visibility is separate from audit class. A subscription to an event type grants feed access to its non-sensitive events. `access.*`, compliance and app events need `read.audit`. `is_audit` governs retention only. (E6) One outbox event per batch status change, plus `migration.sealed` with counts and chain ranges. `outbox:verify` accepts a migrated range as covered by the batch event. (E7) `extension_value` gets `row_version`. `expected_version` applies per (entity, namespace). An extension write never bumps the owner row's `row_version`.
+**Consequences:** Amends ADR-119, ADR-124, ADR-127, ADR-137, ADR-138, ADR-139, ADR-159, ADR-167 and ADR-172. E8 (ADR-146) is recorded as an amendment note there.
+
+## ADR-187: Tax determination, TAX_EVIDENCE, configuration and app commands, role rules, permissions and reads (F1 to F13)
+**Status:** ACCEPTED
+**Context:** Tax determination had ties and undefined cases. TAX_EVIDENCE could not be changed or added after hard-close. Configuration tables of 04 were missing in 07 and in the permission map, several keys held NULLs or could not store overrides, versioned tables could not be retired, and app registration, `read.ext`, `app_code`, supply-demand grouping and `confirmed_date` had gaps. Independent review 17, F1 to F13.
+**Decision:** (F1) Rules of different key sets tie-break by highest specificity, then lowest `rule_id`. An absent or expired registration is NOT_REGISTERED in the destination country. Partnerless documents need explicit origin and destination or are rejected. (F2) `line_no` and the four evidence fields are added to the contract in 06. Evidence may be added in hard-closed periods as an append-only controlled exception with its own audit event. Existing evidence never changes. (F3) 07 gets `fiscal_calendar`, `posting_window`, `number_series` and `number_series_assignment`. 06 gets their commands with permission `period.admin`. (F4) The `item_partner` primary key gets `company_key` (0 = tenant level). (F5) `business_calendar_exception` gets `created_at` in the key and the latest row wins. (F6) `company_calendar_assignment` uses the sentinel 0 instead of NULL in the key. (F7) V tables are ended by inserting a row with `valid_to` set, never by update. (F8) Role rules: mode and type of an account cannot change while a role references it, one account has one role, and roles define `currency_code` and `tax_account` rules. (F9) `read.ext` is removed as a separate permission and is implied by each `read.*` of the entity. (F10) `app_code` is added to the 09 envelope. `events:rewind` and `apps.manage` need no app. (F11) Supply-demand reports dropship and service lines under warehouse null. `group_by` and the `ic` flag are added to the parameters. The time `as_of` is replaced by an outbox position as consistency token. (F12) `confirmed_date` is rejected on order create and set only by `change-line-dates`. (F13) New commands `apps:register`, `apps:update`, `apps:deactivate`, `app-namespaces:create` and `app-subscriptions:set`, with `expected_version`, `master_change_log` and permission `apps.manage`.
+**Consequences:** Amends ADR-065, ADR-066, ADR-139, ADR-140, ADR-141, ADR-142, ADR-143, ADR-144 and ADR-154.
+
+## ADR-188: `gr-ir:write-off` account role, document type and reverse command (fix pass 4)
+**Status:** ACCEPTED
+**Context:** ADR-184 (D3) introduced `gr-ir:write-off` but left the account, the document type and the reversal undefined.
+**Decision:** A new account role `GR_IR_WRITE_OFF` (open-item mode NONE) holds the write-off account. The command posts a document of the new type `GR_IR_WRITE_OFF`. The reverse command `gr-ir:reverse-write-off` is the owning command for its mirror. Price difference and write-off stay separate in the ledger.
+**Consequences:** Amends the write-off text in ADR-184. Chapters 02 (type list, role list), 06 (commands, system types) and 11 are updated accordingly.
+
+## ADR-189: FIFO edge rules: synthetic layer for migrated receipts, VALUE_REQUIRED, CURRENCY_MIXED (fix pass 4)
+**Status:** ACCEPTED
+**Context:** FIFO consumption had three undefined edges: returns of migrated receipts, adjustments in without value, and stock documents with several transaction currencies.
+**Decision:** (a) A migrated receipt gets a synthetic cost layer from its legacy `value_lc`, so that RETURN_OUT consumes it. (b) An adjustment-in without value and without an existing layer is rejected with `INVENTORY.VALUE_REQUIRED`. (c) Mixed transaction currencies in one stock document are rejected at P1 with `INVENTORY.CURRENCY_MIXED`.
+**Consequences:** Amends ADR-183 (C3). Chapters 10 and 13 are updated.
+
+## ADR-190: Extension version as stored counter and `apps:reactivate` (fix pass 4)
+**Status:** ACCEPTED
+**Context:** A row_version on `extension_value` falls back when values are cleared, and a deactivated app could not be brought back.
+**Decision:** The `extension_value` version is a stored counter per (entity, namespace) that never decreases and survives clears. `expected_version` compares to it. A new command `apps:reactivate` (permission `apps.manage`, `expected_version`, `master_change_log`) reverses `apps:deactivate`.
+**Consequences:** Amends ADR-186 (E7) and ADR-139. Chapters 06, 07 and 15 are updated.
+
+## ADR-191: Revaluation rerun in four documents and implied rate at LC = 0 (fix pass 4)
+**Status:** ACCEPTED
+**Context:** The rerun form of ADR-180 (B1) left open whether the rerun mirrors only what is missing. The implied rate at LC = 0 was described by ADR-185 (D9) without a calculation rule.
+**Decision:** The four-document form is confirmed: mirror of R0, mirror of A0, and the new pair. Several mirrors per original are allowed, `reversed_by` points to the first, and the old run is superseded before the new run is inserted. The proposal "only what is missing" (B1 of the review) is dropped. At LC = 0 with GC or RC not 0, the rate is the ratio to the first non-zero amount. Amounts are authoritative and the rate is derived.
+**Consequences:** Amends ADR-180 and the closing rate text of ADR-185 (D9, related to ADR-175 closing documents). Chapters 02 and 05 are updated.
+
+## ADR-192: Propagation of the review decisions: access events, VAT names, tax determination priority (fix pass 4)
+**Status:** ACCEPTED
+**Context:** The decisions of ADR-179 and ADR-187 collided with event lists, error names and the priority column of the VAT rules.
+**Decision:** The events `access.read_logged` and `chain.verified` are dropped (amends ADR-179). `access.summary` (daily, per field group and company) and `vat.evidence_added` are introduced. The error code is `VAT.SUPERSEDED`, not `VAT.SUCCESSOR_SETTLEMENT_ACTIVE`. Tax determination keeps `priority` as the first criterion, with `rule_id` as the last tie-break (specificity is applied between rules of different key sets).
+**Consequences:** Amends ADR-187 (F1). Chapters 06, 08 and 09 are updated.
+
+---
+
+## Country packages (spec 18). All PROPOSED, pending the user's decision.
+
+## ADR-193: Country package = core content, policy selections and app content
+**Status:** ACCEPTED (2026-10-14)
+**Context:** ADR-070 and 07 Q10 left the package format open. Specs say "verify per country" without a place for the content or an owner.
+**Decision:** A package has three content classes. Core content is loaded into existing configuration tables. Policy selections give values to a closed switch catalogue (ADR-194). App content (national file formats, filing channels, invoice texts, payment instruments) is carried by the package but never read by the core. The core owns mechanisms, format, apply engine and catalogue. Packages own content and its verification. A package cannot add behaviour.
+**Consequences:** Refines ADR-070 and ADR-011. Ownership roles: platform team, country owner, legal reviewer, tenant, apps (18, section 3). Content of national SAF-T and e-invoice syntaxes stays with apps (P15, 12).
+
+## ADR-194: Closed policy catalogue
+**Status:** ACCEPTED (2026-10-14, three keys confirmed)
+**Context:** Some per-country answers are behaviour switches (number order, clearing in legal series, tax point rule), not rows.
+**Decision:** A table `company_policy_setting` (V, insert only) holds values for keys of a closed catalogue defined in 18, section 5: `NUMBERING_ORDER`, `CLEARING_IN_LEGAL_SERIES`, `TAX_POINT_RULE`. A new key needs an ADR and a core change. A value whose behaviour is not built is rejected (`PACKAGE.POLICY_VALUE_NOT_AVAILABLE`).
+**Consequences:** Closes the per-country follow-ups of ADR-025 and ADR-036 as "no tested country needs the option, unverified". The option behaviours are built only when a package needs them.
+
+## ADR-195: Layered packages with standards and regime packages
+**Status:** ACCEPTED (2026-10-14, standards packages owned by the platform team)
+**Decision:** `STD_SAFT_OECD` and `STD_EN16931` (standards), `EU_VAT` (VAT-directive scenarios) and one package per country, each with `requires` and a version range. Tenant-specific changes are ordinary configuration, not packages.
+**Consequences:** A non-EU country requires the standards but not `EU_VAT`. Standards packages are owned by the platform team.
+
+## ADR-196: Apply and update semantics with item records
+**Status:** ACCEPTED (2026-10-14)
+**Decision:** Refines ADR-070. Symbolic `ref` keys, declared inputs, whole-package validation, one transaction per package. Master data is create-only. A later version may add versions to V objects the package created. User changes are never overwritten (`SKIPPED_MODIFIED`). Every object is recorded in `applied_config_package_item`. `config-packages:diff` previews a newer version.
+**Consequences:** Amends ADR-065 (config versions) only by naming who may add versions. No rollback (ADR-073).
+
+## ADR-197: Verification gate and package lifecycle
+**Status:** ACCEPTED (2026-10-14)
+**Decision:** States DRAFT, REVIEWED, RELEASED, DEPRECATED. Each item has a verification record with source, date, reviewer role and verdict. A PRODUCTION company accepts only RELEASED packages with a matching digest. The engine checks that records are complete, not the law.
+**Consequences:** Operationalises P15 "verify per country". Law changes are new dated versions. Corrections of used objects are new versions from today.
+
+## ADR-198: Two retention start values found by the country test (T3)
+**Status:** ACCEPTED (2026-10-14, as revised after the DK, DE, SE test)
+**Context:** DE counts retention from the end of the calendar year of the document. SE counts from the end of the calendar year in which the fiscal year ended (both UNVERIFIED). 12, 4.1 has only FISCAL_YEAR_END and RECORD_DATE. The earlier proposal of BIMONTHLY VAT periods came from NO, which is not in this round, and is dropped until a package needs it.
+**Decision:** Add CALENDAR_YEAR_END_OF_RECORD and CALENDAR_YEAR_END_OF_FISCAL_YEAR to `retention_rule.start_event`.
+**Consequences:** Amends ADR-119. No schema change beyond the code list.
+
+## ADR-199: Tax-point event for cash VAT
+**Status:** ACCEPTED (2026-10-14: not in release 1, hook fixed)
+**Context:** DE and SE have optional cash VAT schemes (UNVERIFIED sources). `tax_date` is L1 and never updated (ADR-077, 08 Q11).
+**Decision (recommended):** Not in release 1. The hook is fixed now: an append-only `tax_point_event` (tax line key, point date, source clearing, amount share) created when a payment clears the invoice, and return selection using the event date for tax codes marked `tax_point_basis` PAYMENT. Partial payments give proportional events. The event must also allow a forced point at year-end for items still unpaid (SE year-end rule, UNVERIFIED). Until built, `TAX_POINT_RULE` = PAYMENT_DATE is unavailable and country packages declare the cash scheme unsupported.
+**Consequences:** No change to existing columns, hashes or snapshots when built later (as ADR-077). Amends nothing yet.
+
+## ADR-200: Derived EU keys in tax determination (found by writing the DK package)
+**Status:** ACCEPTED (2026-10-14)
+**Context:** `tax_determination_rule` has `origin_country` and `destination_country` but no way to say "any EU member state". Intra-EU rules would need one rule per member state, which goes stale with `ref_country_eu_membership`, or they match non-EU partners that hold a VAT registration. The DK package (F-DK-1) needs the key for seven rules.
+**Decision:** Add two nullable BOOL key columns `origin_eu` and `destination_eu` to `tax_determination_rule`. They are matched against the EU membership of the resolved origin and destination country at the tax date, from `ref_country_eu_membership`. Both are stored with the other resolved inputs on `journal_line_tax`. Null means any (ADR-072). Specificity counts them as keys.
+**Consequences:** Amends ADR-072 and 07, 8.4 (key list and matching algorithm), 02 (`journal_line_tax` resolved inputs). Package rules that use the keys fail VALIDATE until the delta exists.
+
+## ADR-201: Partial input VAT deduction in release 1 (scope decision, design pending)
+**Status:** ACCEPTED as scope (2026-10-14). The design is not yet written
+**Context:** 08, Q6 deferred partial deduction: an input tax code was fully deductible, or a separate non-deductible code posted the tax to the expense. The official Danish VAT code list (DK package, F-DK-11) has 52 of 72 codes outside that model, at least 30 for partial, estimated, area-based or pro rata deduction and 4 for reverse charge without deduction. Business types 2 and 4 (mixed taxable and exempt activities) cannot be served without them.
+**Decision:** Partial deduction and non-deductible input VAT, including reverse charge without deduction, are in release 1 for the DK package. A design pass specifies: a deductible share on the tax code version (fixed percentage), a company or registration level pro rata rate per period or year for the pro rata and estimated codes, the split of the input tax line into a deductible part (VAT account, in the return) and a non-deductible part (to the expense, outside the return), and the effect on the line hash, `journal_line_tax`, the return snapshot, the VAT reporting amounts (ADR-083), settlement and the reversal mirror (ADR-048).
+**Consequences:** Replaces the Q6 deferral of 08 for the DK package. Amends 02, 08, 09 and the DK package scope. Profiles 2 and 4 of the official list become supportable once the design is accepted. The order is a design pass first, then the package codes.
+
+## ADR-202: The standard-chart number rule is enforced outside the core
+**Status:** ACCEPTED (2026-10-14)
+**Context:** The Danish public standard chart allows a suffix after an account number (horizontal dimensioning) and reserves new numbers for authorities. The core accepts any `account_no` (07, 6.1).
+**Decision:** The core stays country-neutral and does not enforce the rule. The package tooling (a lint step before release) and apps that create accounts reject numbers outside the standard without a suffix. No policy key is added (ADR-194 stays at three keys).
+**Consequences:** Documented in the DK package changelog. Revisit if a country makes the rule mandatory for the books themselves.
+
+---
+
+## Partial input VAT deduction (spec 19). ACCEPTED 2026-10-14 with decisions Q1 to Q3 of spec 19.
+
+## ADR-203: Deduction share from a fixed percentage and a variable key
+**Status:** ACCEPTED (2026-10-14)
+**Context:** ADR-201 brings partial and non-deductible input VAT into release 1 for DK. The official Danish code list has fixed percentages, pro rata, estimated, area-based and sector-based deduction and a supplied cap.
+**Decision:** `tax_code_version` gets `deductible_pct` (default 100), `deduction_key` (optional) and `deduction_cap` (NONE or SUPPLIED_AMOUNT). A deduction key is a named variable rate per VAT registration (`vat_deduction_key`), valued by insert-only rows (`vat_deduction_rate`) at the tax date. The share is `deductible_pct x key_rate`. The core never computes a key rate. A supplied amount (leasing cars) is the base of the deduction: it is validated against `tax x deductible_pct` and multiplied by the key rate (corrected 2026-10-14 while writing the DK package).
+**Consequences:** Amends 07 (8.3), 08 (Q6). Packages ship keys and codes, never rates.
+
+## ADR-204: Non-deductible input VAT is cost on the base line account
+**Status:** ACCEPTED (2026-10-14)
+**Decision:** An input tax line is split into the deductible part (the tax line on the VAT account) and the non-deductible part (new line type `TAX_NONDEDUCTIBLE` on the account and dimensions of the base lines, allocated by base amount, largest remainder). Reverse charge splits the deductible side only, the output side stays full. `journal_line_tax` and `journal_line_tax_base` get new L1 columns, the document hash gets a new `hash_version`, old documents keep theirs. The caller's expected tax stays the full tax of the supplier document.
+**Consequences:** Amends 02 (5.1, 7.1, 7.2, 9), 06 (P4 to P7), ADR-027, ADR-030, ADR-032.
+
+## ADR-205: Returns and settlement sum tax lines unchanged
+**Status:** ACCEPTED (2026-10-14)
+**Decision:** Return boxes, snapshots, settlement, replacement and reversal keep their rules (ADR-079, ADR-080, ADR-048). The input VAT box shows the deductible part, the output side of a reverse-charge pair shows the full tax. A credit note takes the key rate of its own tax date.
+**Consequences:** No change in 08, 6 and 7 beyond a cross-reference.
+
+## ADR-206: Release 1 limits of partial deduction
+**Status:** ACCEPTED (2026-10-14)
+**Decision:** Not in release 1: order-built stock purchase invoice lines with partial deduction (`ORDER.PARTIAL_DEDUCTION_NOT_SUPPORTED`), capital goods adjustment, a command for the year-end adjustment of a provisional rate. The adjustment hook is the stored share, key, key rate and gross tax on every input tax line, so a later command needs no schema change.
+**Consequences:** Amends ADR-201 (scope). Packages document the manual adjustment procedure.
+
+## ADR-207: Company address and company contact (found by the SAF-T mapping)
+**Status:** PROPOSED
+**Context:** The STD_SAFT_OECD mapping of all mandatory elements found two data gaps (G1, G2). The OECD schema requires an address with city and post code of the company in the header and a billing address of the seller on every sales invoice, and a company contact with a contact person (first and last name) and a telephone. The `company` (07, 5.4) has the country but no address and no contact. EN 16931 needs only the country code of the seller (BT-40), which exists, but its street, city and post code are optional and wanted for readable invoices.
+**Decision (recommended):** Add `address_line_1`, `address_line_2`, `postal_code` and `city` to `company` (organisation data, nullable, readiness warning when a SAF-T or e-invoice feature is used). Add a small table `company_contact` (M) with `contact_name_first`, `contact_name_last`, `telephone`, `email`, `active`. A contact person is personal data of an employee: the table is listed in the personal data inventory (12, 3) and cleared at tenant deletion, never used by a core rule. The data set uses defaults and lists missing data when the values are absent (12, 8).
+**Consequences:** Amends 07 (5.4, new table), 12 (3, 8, 9.2), 09 (reads). The decision is the user's because the contact data is personal.
+
+## ADR-208: PostgreSQL as the release 1 reference database
+**Status:** ACCEPTED (2026-10-19)
+**Context:** ADR-001 kept the specs platform-neutral and left the physical mapping to a later ADR. The specs need row-level isolation, ordered row locks, no-DELETE grants, a substring index and point-in-time recovery (20, section 2).
+**Decision (recommended):** PostgreSQL, one managed cluster per environment. `ID` is a UUID version 7 generated by the core, `AMT` numeric(19,4), `RATE` numeric(19,10), `CODE` text with CHECK (no enum types), `TS` timestamptz in UTC, hashes bytea of 32 bytes. No PostgreSQL-specific type enters the specs.
+**Consequences:** The type mapping of 20, 2.1 applies to all table specs. A later platform change needs a new mapping, not a spec change. Alternatives (SQL Server, HANA) are not excluded but are not specified.
+
+## ADR-209: Tenant isolation and database protection
+**Status:** ACCEPTED (2026-10-19)
+**Decision (recommended):** Shared schema, `tenant_id` first in every key and index, row-level security forced on every tenant table with the tenant set by `SET LOCAL` from the validated token. Four roles: `core_owner` (migrations), `core_app`, `core_job`, `core_retention` (the only role with DELETE and personal data updates). Column-level UPDATE grants on L2 and S columns only. The four roles are login roles, the command roles of 02, 10 are group roles. The column-class triggers of 02, 10 (ADR-146) stay, and further triggers reject UPDATE, DELETE and TRUNCATE on append-only tables. The platform schema (registry, deletion certificate) has no `tenant_id`.
+**Consequences:** Implements P7 and ADR-001 (02, 10). Hash and anchors remain the control for tampering by a privileged user.
+
+## ADR-210: Concurrency by ordered row locks at READ COMMITTED
+**Status:** ACCEPTED (2026-10-19)
+**Decision (recommended):** READ COMMITTED with the one authoritative lock order of 04, 6.3. Counters and chain heads are rows, never sequences. `lock_timeout` per transaction (default 5 seconds) returns a retryable error. Idempotency by a unique key and `ON CONFLICT`. No external call inside a transaction.
+**Consequences:** One chain is a serial queue limited by commit latency (estimate hundreds per second, to be measured). Throughput scales by companies and ledgers, not within a chain.
+
+## ADR-211: Hash computation in application code with published test vectors
+**Status:** ACCEPTED (2026-10-19)
+**Decision (recommended):** SHA-256 and canonical serialisation (02, 9.3) are implemented once in a core library selected by `hash_version`. The database computes no hash. Test vectors per `hash_version` are kept with the specs. A second implementation must reproduce them.
+**Consequences:** A platform change cannot alter a hash. `chains:verify` runs on a replica or a restored copy.
+
+## ADR-212: Outbox and jobs on the database, no broker in release 1
+**Status:** ACCEPTED (2026-10-19)
+**Decision (recommended):** `outbox_event` positions are gapless under the `outbox_head` lock (K3). The app feed is a cursor read, webhooks come from a relay job. All jobs are rows processed with `FOR UPDATE SKIP LOCKED` by separate workers and are idempotent. LISTEN/NOTIFY is a wake-up hint only.
+**Consequences:** No new infrastructure. A broker is added, fed from the outbox, when measured feed load requires it (20, O6).
+
+## ADR-213: API layer: REST, OpenAPI generated from the contracts, OIDC tokens
+**Status:** ACCEPTED (2026-10-19)
+**Decision (recommended):** HTTPS and JSON, commands as `POST /v1/{resource}:{verb}`, OpenAPI 3.1 generated from 06 and 09, OAuth 2.0 and OIDC bearer tokens with the tenant in the token, permissions as scopes or roles, `Idempotency-Key` header, problem+json errors per ADR-058, keyset cursors, additive changes within a major version, gateway limits and TLS 1.2 or higher.
+**Consequences:** The implementation language is not decided (20, O2). The OpenAPI document is a build artefact of every release.
+
+## ADR-214: Replica reads by ledger sequence and trigram search on normalised columns
+**Status:** ACCEPTED (2026-10-19)
+**Decision (recommended):** `min_ledger_seq` is compared with `last_seq` of the LEDGER chain head on the serving database, `READ.STALE_SNAPSHOT` if lower. `contains` (ADR-092) uses a normalised search column computed in application code (NFKD, remove combining marks, case-fold, collapse whitespace) and a `pg_trgm` GIN index. The scope guard stays. Personal data search columns are cleared by the retention job.
+**Consequences:** Closes the open point of ADR-092. A platform without the index disables `contains` per field.
+
+## ADR-215: Timestamp service: RFC 3161 job, qualified EU authority, one token per anchor
+**Status:** ACCEPTED (2026-10-19)
+**Decision (recommended):** The anchor job sends `anchor_digest` after commit (A2) to a qualified timestamp authority of the EU trust list in production and stores token, certificate chain and revocation data in the `anchors` bucket. One authority in release 1. A second authority later adds a child table without any hash change. Rehearsal tenants are not anchored externally (ADR-134).
+**Consequences:** Vendor choice is procurement (20, O3). A token stays verifiable after the certificate expires.
+
+## ADR-216: Object storage, envelope encryption and object lock for anchors only
+**Status:** ACCEPTED (2026-10-19)
+**Decision (recommended):** One EU region, buckets `exports`, `anchors`, `packages`, tenant prefix, short-lived pre-signed URLs, no stored credentials. Exports and anchor material use envelope encryption with a tenant key in the KMS (crypto-shredding at tenant deletion). Compliance-mode object lock only on `anchors` and `packages`, which hold no personal data.
+**Consequences:** Exports with personal data are never locked. Database backups are outside crypto-shredding (erasure lag, ADR-218).
+
+## ADR-217: Package signing, trust sets and repository (closes Q5 of 18)
+**Status:** ACCEPTED (2026-10-19)
+**Decision (recommended):** Deterministic archive with a manifest of file hashes and the verification state. Detached ECDSA P-256 / SHA-256 signature over the manifest, key in KMS or HSM, signing by the platform team under a two-person rule. Two trust sets in the core: development (development and release keys, non-production tenants) and release (release key only, production tenants). Only RELEASED archives get the release signature. Verification at apply in a fixed order: signature, file hashes, format version, `requires`, gate. The repository is a versioned, immutable object store with a signed index. The core never fetches packages: a platform tool uploads the archive to the API.
+**Consequences:** The gate of 18, section 6 is enforced by state and by key. Amends 18 (section 3, 8, Q5).
+
+## ADR-218: Availability, backup and restore reconciliation
+**Status:** ACCEPTED (2026-10-19)
+**Decision (recommended):** Primary with a synchronous standby in a second zone, point-in-time recovery, backup retention 35 days, a cross-region backup copy. A restore goes to a new database and ends in a mandatory reconciliation: `chains:verify` against the newest stamped anchors, outbox positions against consumers, and a report of the lost range to the tenants. Schema migrations are forward-only and never rewrite L1 columns. The erasure lag (backup retention) is stated in the deletion certificate.
+**Consequences:** RPO and RTO figures are proposals for the service description (20, O7). A restore is a platform operation, not a core command.
+
+## ADR-219: Invoicing and payment are app domains over a documented core contract
+**Status:** ACCEPTED (2026-10-19)
+**Context:** Most of invoicing and payment already exists in the core (11, 12, 02, 03, 07). What is missing is the contract the apps use (21).
+**Decision:** The project specifies the contract and reference flows (22), not the apps. Invoice delivery status is app data. Direct debit mandates are extension attributes with `is_pii`, not a core table. Work shape: spec 22 for invoicing and payment, spec 23 for consolidation data, the standards and country packages in parallel, in the order 22, packages, 23.
+**Consequences:** Spec 22 with its conformance flow tests. No new core tables for invoicing or payment.
+
+## ADR-220: Advance invoices out of the next release, payment runs post at the bank statement
+**Status:** ACCEPTED (2026-10-19)
+**Decision:** Advance and prepayment invoices stay out of the next release and are described as a pattern (22, 4.7). A payment run holds items with `payment_block` and the payment document is posted when the bank statement line arrives (22, 5.5). Payment in transit is an app option on an ordinary GL account.
+**Consequences:** No schema change. The country package must state the VAT point of supply of prepayments before the pattern is used in production.
+
+## ADR-221: E-invoice completeness check as a fixed rule set per EN 16931 edition
+**Status:** ACCEPTED (2026-10-19)
+**Context:** Finding G7 of the package work: the core's completeness rule and the `STD_EN16931` term list state the same thing in two places, and the core must not read app content (18, 4.5).
+**Decision:** The core keeps the check as a fixed rule set per edition, selected by a company setting. A new edition is a new rule set. `STD_EN16931` stays as the reviewed list and a conformance test compares the two. The choice of edition is still open.
+**Consequences:** New company setting `einvoice_rule_set` (07, 5.5, applied 2026-10-19). Amends 12, section 10.
+
+## ADR-222: Consolidation results stay in apps, the core adds data only
+**Status:** ACCEPTED (2026-10-19)
+**Decision:** Translation, elimination and minority results live in a consolidation app that reads through the read APIs. The core adds only data it lacks (versioned ownership and method per company, rate types AVERAGE and HISTORICAL, a read for IC reconciliation, 21, 3.2). A consolidation ledger in a pseudo company stays an option for when a client needs consolidation postings: `ledger_id` is already part of the chain key.
+**Consequences:** Refines ADR-017. Design in spec 23, not yet written.
+
+## ADR-223: Alternative account identifiers and the payment reference in the e-invoice payment instructions (found by the DK payment content)
+**Status:** ACCEPTED (2026-10-19)
+**Context:** The Danish Peppol rules need a creditor number (8 digits, FIK) or a giro account (7 or 8 digits) as the payee account id, and a PaymentID with the card type prefix (DK-R-008, DK-R-010, DK-R-011). `company_bank_account` holds an IBAN only (07, 9.5). The e-invoice data set (12, section 10) takes the payment instructions from the bank account and the payment terms text, and reads no `payment_reference`. The STD_EN16931 term mapping has no entry for BT-83 (F-DK-19, F-DK-20).
+**Decision (recommended):** `company_bank_account` gets `account_scheme` (CODE, default IBAN, further values come from packages, for example DK_FIK and DK_GIRO) and `account_identifier` (TEXT(50), nullable). `iban` becomes nullable and exactly one of `iban` and `account_identifier` is set. A company has one row per creditor number or giro account, each with its own `payment_means_code`. The data set takes BT-84 from `iban` or from `account_identifier` according to the scheme. BT-83 comes from the `payment_reference` of the AR open item of the invoice, with the prefix rule of the country package applied by the app. The package never supplies the value: the app builds the reference (22, 4.2).
+**Consequences:** Amends 07, 9.5, 12, sections 9.2 and 10, and the STD_EN16931 term mapping (BT-83, BT-84). No hash change (master data). The same row type fits other national identifiers (Swedish and Norwegian giro numbers) without a new table. The alternative, extension attributes on the company bank account, fails because the e-invoice data set is assembled by the core and the core never reads app data. Applied 2026-10-19: 07, 9.5, 12 (9.2, 10, 12), 06 (13.6) and STD_EN16931 1.0.1.

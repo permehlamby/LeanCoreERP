@@ -1,0 +1,1380 @@
+﻿{
+    "note":  "App content (assembly specification of the payment and statement apps, 22). The core never reads it (18, 4.5). Core names are those of specs 02, 03, 07 and 09. Statuses: MAPPED a core column or master data field. DERIVED computed from core data, a core read or the app run. CONSTANT a fixed value. APP data that lives in the app by design (22). EXTENSION an extension attribute owned by the app (22, 5.7). GAP needed by the message or profile and not held by the core. OMITTED not produced. Basis: EPC the dictionary of the EPC guideline (primary source for SEPA credit transfer), BANK a bank format guide (secondary, a subset of the ISO message), KNOWLEDGE authored from general knowledge with no source read (UNVERIFIED, weakest)",
+    "profiles":  {
+                     "SEPA_CT":  "SEPA credit transfer, pain.001.001.09, EUR only",
+                     "SEPA_CT_REJECT":  "SEPA credit transfer reject, pain.002.001.10",
+                     "SEPA_DD":  "SEPA direct debit, pain.008.001.08",
+                     "STATEMENT":  "Bank to customer statement, camt.053",
+                     "NOTIFICATION":  "Debit credit notification, camt.054"
+                 },
+    "entry_count":  140,
+    "entries":  [
+                    {
+                        "message":  "pain.001",
+                        "path":  "GrpHdr",
+                        "context":  "SEPA_CT",
+                        "status":  "APP",
+                        "source":  "payment run (app)",
+                        "basis":  "EPC",
+                        "note":  "Group header of the file, built by the treasury app from the run",
+                        "mult":  "1..1"
+                    },
+                    {
+                        "message":  "pain.001",
+                        "path":  "GrpHdr/MsgId",
+                        "context":  "SEPA_CT",
+                        "status":  "APP",
+                        "source":  "payment run (app)",
+                        "basis":  "EPC",
+                        "note":  "File identifier chosen by the treasury app, unique per bank for a pre-agreed period. Max 35 characters. Kept in the app run table",
+                        "mult":  "1..1",
+                        "sepa_length":  "1..35"
+                    },
+                    {
+                        "message":  "pain.001",
+                        "path":  "GrpHdr/CreDtTm",
+                        "context":  "SEPA_CT",
+                        "status":  "APP",
+                        "source":  "payment run (app)",
+                        "basis":  "EPC",
+                        "note":  "Time the file is built",
+                        "mult":  "1..1"
+                    },
+                    {
+                        "message":  "pain.001",
+                        "path":  "GrpHdr/NbOfTxs",
+                        "context":  "SEPA_CT",
+                        "status":  "DERIVED",
+                        "source":  "count of transactions in the run",
+                        "basis":  "EPC",
+                        "note":  "Validation depends on the bank agreement",
+                        "mult":  "1..1"
+                    },
+                    {
+                        "message":  "pain.001",
+                        "path":  "GrpHdr/CtrlSum",
+                        "context":  "SEPA_CT",
+                        "status":  "DERIVED",
+                        "source":  "sum of InstdAmt of the run",
+                        "basis":  "EPC",
+                        "note":  "At most two fraction digits",
+                        "mult":  "1..1"
+                    },
+                    {
+                        "message":  "pain.001",
+                        "path":  "GrpHdr/InitgPty",
+                        "context":  "SEPA_CT",
+                        "status":  "MAPPED",
+                        "source":  "company",
+                        "basis":  "EPC",
+                        "note":  "The company (or the treasury service acting for it)",
+                        "mult":  "1..1"
+                    },
+                    {
+                        "message":  "pain.001",
+                        "path":  "GrpHdr/InitgPty/Nm",
+                        "context":  "SEPA_CT",
+                        "status":  "MAPPED",
+                        "source":  "company.legal_name",
+                        "basis":  "EPC",
+                        "note":  "Truncated to 70 characters",
+                        "mult":  "0..1",
+                        "sepa_length":  "1..70"
+                    },
+                    {
+                        "message":  "pain.001",
+                        "path":  "GrpHdr/InitgPty/Id/OrgId",
+                        "context":  "SEPA_CT",
+                        "status":  "MAPPED",
+                        "source":  "company.legal_registration_id, company.legal_registration_scheme",
+                        "basis":  "EPC",
+                        "note":  "Other/Id with scheme. LEI or BIC only if the bank agreement asks. Optional",
+                        "mult":  "1..1"
+                    },
+                    {
+                        "message":  "pain.001",
+                        "path":  "PmtInf",
+                        "context":  "SEPA_CT",
+                        "status":  "APP",
+                        "source":  "payment run (app)",
+                        "basis":  "EPC",
+                        "note":  "One group per debtor account and execution date",
+                        "mult":  "1..n"
+                    },
+                    {
+                        "message":  "pain.001",
+                        "path":  "PmtInf/PmtInfId",
+                        "context":  "SEPA_CT",
+                        "status":  "APP",
+                        "source":  "payment run (app)",
+                        "basis":  "EPC",
+                        "note":  "Run group id, max 35 characters",
+                        "mult":  "1..1",
+                        "sepa_length":  "1..35"
+                    },
+                    {
+                        "message":  "pain.001",
+                        "path":  "PmtInf/PmtMtd",
+                        "context":  "SEPA_CT",
+                        "status":  "MAPPED",
+                        "source":  "external_code_mapping ISO20022, entity PAYMENT_MEANS, company_bank_account.payment_means_code",
+                        "basis":  "EPC",
+                        "note":  "TRF only",
+                        "mult":  "1..1"
+                    },
+                    {
+                        "message":  "pain.001",
+                        "path":  "PmtInf/BtchBookg",
+                        "context":  "SEPA_CT",
+                        "status":  "APP",
+                        "source":  "bank agreement",
+                        "basis":  "EPC",
+                        "note":  "Request for batch or single booking. It changes how the statement shows the payment (one entry for the batch): see camt.053 entries",
+                        "mult":  "0..1"
+                    },
+                    {
+                        "message":  "pain.001",
+                        "path":  "PmtInf/NbOfTxs",
+                        "context":  "SEPA_CT",
+                        "status":  "DERIVED",
+                        "source":  "count of transactions in the group",
+                        "basis":  "EPC",
+                        "note":  "",
+                        "mult":  "1..1"
+                    },
+                    {
+                        "message":  "pain.001",
+                        "path":  "PmtInf/CtrlSum",
+                        "context":  "SEPA_CT",
+                        "status":  "DERIVED",
+                        "source":  "sum of InstdAmt of the group",
+                        "basis":  "EPC",
+                        "note":  "",
+                        "mult":  "1..1"
+                    },
+                    {
+                        "message":  "pain.001",
+                        "path":  "PmtInf/PmtTpInf",
+                        "context":  "SEPA_CT",
+                        "status":  "MAPPED",
+                        "source":  "external_code_mapping ISO20022",
+                        "basis":  "EPC",
+                        "note":  "Present here or on each transaction",
+                        "mult":  "0..1"
+                    },
+                    {
+                        "message":  "pain.001",
+                        "path":  "PmtInf/PmtTpInf/SvcLvl/Cd",
+                        "context":  "SEPA_CT",
+                        "status":  "MAPPED",
+                        "source":  "external_code_mapping ISO20022, entity PAYMENT_MEANS",
+                        "basis":  "EPC",
+                        "note":  "SEPA only",
+                        "mult":  "1..1",
+                        "sepa_length":  "1..4"
+                    },
+                    {
+                        "message":  "pain.001",
+                        "path":  "PmtInf/PmtTpInf/CtgyPurp",
+                        "context":  "SEPA_CT",
+                        "status":  "APP",
+                        "source":  "bank agreement (for example salary, supplier)",
+                        "basis":  "EPC",
+                        "note":  "No core field",
+                        "mult":  "0..1"
+                    },
+                    {
+                        "message":  "pain.001",
+                        "path":  "PmtInf/ReqdExctnDt",
+                        "context":  "SEPA_CT",
+                        "status":  "APP",
+                        "source":  "payment run (app)",
+                        "basis":  "EPC",
+                        "note":  "Chosen by the run. Informed by open item due_date and discount_due_date",
+                        "mult":  "1..1"
+                    },
+                    {
+                        "message":  "pain.001",
+                        "path":  "PmtInf/ReqdExctnDt/Dt",
+                        "context":  "SEPA_CT",
+                        "status":  "APP",
+                        "source":  "payment run (app)",
+                        "basis":  "EPC",
+                        "note":  "",
+                        "mult":  "1..1"
+                    },
+                    {
+                        "message":  "pain.001",
+                        "path":  "PmtInf/Dbtr",
+                        "context":  "SEPA_CT",
+                        "status":  "MAPPED",
+                        "source":  "company",
+                        "basis":  "EPC",
+                        "note":  "",
+                        "mult":  "1..1"
+                    },
+                    {
+                        "message":  "pain.001",
+                        "path":  "PmtInf/Dbtr/Nm",
+                        "context":  "SEPA_CT",
+                        "status":  "MAPPED",
+                        "source":  "company.legal_name",
+                        "basis":  "EPC",
+                        "note":  "Truncated to 70 characters",
+                        "mult":  "1..1",
+                        "sepa_length":  "1..70"
+                    },
+                    {
+                        "message":  "pain.001",
+                        "path":  "PmtInf/Dbtr/PstlAdr",
+                        "context":  "SEPA_CT",
+                        "status":  "GAP",
+                        "source":  "company address (ADR-207, PROPOSED)",
+                        "basis":  "EPC",
+                        "note":  "Optional in the profile, recommended. The company has no address (G1). With ADR-207: address_line_1, address_line_2, postal_code, city, country_code. From 22 November 2026 only structured and hybrid addresses are allowed, an address needs Town Name and Country",
+                        "mult":  "0..1"
+                    },
+                    {
+                        "message":  "pain.001",
+                        "path":  "PmtInf/Dbtr/Id/OrgId",
+                        "context":  "SEPA_CT",
+                        "status":  "MAPPED",
+                        "source":  "company.legal_registration_id, company.legal_registration_scheme",
+                        "basis":  "EPC",
+                        "note":  "Optional",
+                        "mult":  "1..1"
+                    },
+                    {
+                        "message":  "pain.001",
+                        "path":  "PmtInf/DbtrAcct",
+                        "context":  "SEPA_CT",
+                        "status":  "MAPPED",
+                        "source":  "company_bank_account",
+                        "basis":  "EPC",
+                        "note":  "The account chosen by the run",
+                        "mult":  "1..1"
+                    },
+                    {
+                        "message":  "pain.001",
+                        "path":  "PmtInf/DbtrAcct/Id",
+                        "context":  "SEPA_CT",
+                        "status":  "MAPPED",
+                        "source":  "company_bank_account.iban",
+                        "basis":  "EPC",
+                        "note":  "IBAN only",
+                        "mult":  "1..1"
+                    },
+                    {
+                        "message":  "pain.001",
+                        "path":  "PmtInf/DbtrAcct/Id/IBAN",
+                        "context":  "SEPA_CT",
+                        "status":  "MAPPED",
+                        "source":  "company_bank_account.iban",
+                        "basis":  "EPC",
+                        "note":  "",
+                        "mult":  "1..1"
+                    },
+                    {
+                        "message":  "pain.001",
+                        "path":  "PmtInf/DbtrAcct/Ccy",
+                        "context":  "SEPA_CT",
+                        "status":  "MAPPED",
+                        "source":  "company_bank_account.currency_code",
+                        "basis":  "EPC",
+                        "note":  "Optional",
+                        "mult":  "0..1"
+                    },
+                    {
+                        "message":  "pain.001",
+                        "path":  "PmtInf/DbtrAgt",
+                        "context":  "SEPA_CT",
+                        "status":  "MAPPED",
+                        "source":  "company_bank_account.bic",
+                        "basis":  "EPC",
+                        "note":  "When the BIC is empty the fixed value NOTPROVIDED is sent",
+                        "mult":  "1..1"
+                    },
+                    {
+                        "message":  "pain.001",
+                        "path":  "PmtInf/DbtrAgt/FinInstnId",
+                        "context":  "SEPA_CT",
+                        "status":  "MAPPED",
+                        "source":  "company_bank_account.bic",
+                        "basis":  "EPC",
+                        "note":  "BICFI, or Other/Id NOTPROVIDED",
+                        "mult":  "1..1"
+                    },
+                    {
+                        "message":  "pain.001",
+                        "path":  "PmtInf/DbtrAgt/FinInstnId/BICFI",
+                        "context":  "SEPA_CT",
+                        "status":  "MAPPED",
+                        "source":  "company_bank_account.bic",
+                        "basis":  "EPC",
+                        "note":  "",
+                        "mult":  "0..1"
+                    },
+                    {
+                        "message":  "pain.001",
+                        "path":  "PmtInf/DbtrAgt/FinInstnId/Othr/Id",
+                        "context":  "SEPA_CT",
+                        "status":  "CONSTANT",
+                        "source":  "NOTPROVIDED",
+                        "basis":  "EPC",
+                        "note":  "Used when the company bank account has no BIC",
+                        "mult":  "1..1",
+                        "sepa_length":  "1..35"
+                    },
+                    {
+                        "message":  "pain.001",
+                        "path":  "PmtInf/UltmtDbtr",
+                        "context":  "SEPA_CT",
+                        "status":  "OMITTED",
+                        "source":  "none",
+                        "basis":  "EPC",
+                        "note":  "No core data. Used when paying on behalf of another party",
+                        "mult":  "0..1"
+                    },
+                    {
+                        "message":  "pain.001",
+                        "path":  "PmtInf/ChrgBr",
+                        "context":  "SEPA_CT",
+                        "status":  "CONSTANT",
+                        "source":  "SLEV",
+                        "basis":  "EPC",
+                        "note":  "Only SLEV, recommended at group level",
+                        "mult":  "0..1"
+                    },
+                    {
+                        "message":  "pain.001",
+                        "path":  "PmtInf/CdtTrfTxInf",
+                        "context":  "SEPA_CT",
+                        "status":  "DERIVED",
+                        "source":  "one per open item or per payment line of the run",
+                        "basis":  "EPC",
+                        "note":  "Several open items of one supplier may be summed into one transaction by the app",
+                        "mult":  "1..n"
+                    },
+                    {
+                        "message":  "pain.001",
+                        "path":  "PmtInf/CdtTrfTxInf/PmtId",
+                        "context":  "SEPA_CT",
+                        "status":  "APP",
+                        "source":  "payment run (app)",
+                        "basis":  "EPC",
+                        "note":  "",
+                        "mult":  "1..1"
+                    },
+                    {
+                        "message":  "pain.001",
+                        "path":  "PmtInf/CdtTrfTxInf/PmtId/InstrId",
+                        "context":  "SEPA_CT",
+                        "status":  "APP",
+                        "source":  "payment run (app)",
+                        "basis":  "EPC",
+                        "note":  "Optional",
+                        "mult":  "0..1",
+                        "sepa_length":  "1..35"
+                    },
+                    {
+                        "message":  "pain.001",
+                        "path":  "PmtInf/CdtTrfTxInf/PmtId/EndToEndId",
+                        "context":  "SEPA_CT",
+                        "status":  "APP",
+                        "source":  "payment run (app)",
+                        "basis":  "EPC",
+                        "note":  "Mandatory, max 35 characters. The core has no field for it: the treasury app keeps the link from EndToEndId to the open item (document id and line number). It returns in the status report and in the statement and is the safest matching key",
+                        "mult":  "1..1",
+                        "sepa_length":  "1..35"
+                    },
+                    {
+                        "message":  "pain.001",
+                        "path":  "PmtInf/CdtTrfTxInf/Amt",
+                        "context":  "SEPA_CT",
+                        "status":  "DERIVED",
+                        "source":  "open item remaining amount",
+                        "basis":  "EPC",
+                        "note":  "",
+                        "mult":  "1..1"
+                    },
+                    {
+                        "message":  "pain.001",
+                        "path":  "PmtInf/CdtTrfTxInf/Amt/InstdAmt",
+                        "context":  "SEPA_CT",
+                        "status":  "DERIVED",
+                        "source":  "open-items:query remaining transaction-currency amount, minus discount if taken",
+                        "basis":  "EPC",
+                        "note":  "Only EUR in the SEPA profile, 0.01 to 999999999.99. Other currencies need a non-SEPA profile of the bank (not in this package). The currency is the open item currency (transaction currency of the document)",
+                        "mult":  "1..1"
+                    },
+                    {
+                        "message":  "pain.001",
+                        "path":  "PmtInf/CdtTrfTxInf/ChrgBr",
+                        "context":  "SEPA_CT",
+                        "status":  "CONSTANT",
+                        "source":  "SLEV",
+                        "basis":  "EPC",
+                        "note":  "If not given at group level",
+                        "mult":  "0..1"
+                    },
+                    {
+                        "message":  "pain.001",
+                        "path":  "PmtInf/CdtTrfTxInf/CdtrAgt",
+                        "context":  "SEPA_CT",
+                        "status":  "MAPPED",
+                        "source":  "partner_bank_account.bic",
+                        "basis":  "EPC",
+                        "note":  "BICFI only. If the BIC is empty the element is not used",
+                        "mult":  "0..1"
+                    },
+                    {
+                        "message":  "pain.001",
+                        "path":  "PmtInf/CdtTrfTxInf/Cdtr",
+                        "context":  "SEPA_CT",
+                        "status":  "MAPPED",
+                        "source":  "partner_bank_account.account_holder, business_partner_pii.legal_name",
+                        "basis":  "EPC",
+                        "note":  "Personal data for a person partner",
+                        "mult":  "1..1"
+                    },
+                    {
+                        "message":  "pain.001",
+                        "path":  "PmtInf/CdtTrfTxInf/Cdtr/Nm",
+                        "context":  "SEPA_CT",
+                        "status":  "MAPPED",
+                        "source":  "partner_bank_account.account_holder, else business_partner_pii.legal_name",
+                        "basis":  "EPC",
+                        "note":  "Mandatory, truncated to 70 characters. The account holder name is preferred because the bank may check it against the account",
+                        "mult":  "1..1",
+                        "sepa_length":  "1..70"
+                    },
+                    {
+                        "message":  "pain.001",
+                        "path":  "PmtInf/CdtTrfTxInf/Cdtr/PstlAdr",
+                        "context":  "SEPA_CT",
+                        "status":  "MAPPED",
+                        "source":  "business_partner_pii address",
+                        "basis":  "EPC",
+                        "note":  "Hybrid address from the core fields. A fully structured address needs street and building number (G-ISO-3)",
+                        "mult":  "0..1"
+                    },
+                    {
+                        "message":  "pain.001",
+                        "path":  "PmtInf/CdtTrfTxInf/Cdtr/PstlAdr/TwnNm",
+                        "context":  "SEPA_CT",
+                        "status":  "MAPPED",
+                        "source":  "business_partner_pii.city",
+                        "basis":  "EPC",
+                        "note":  "Mandatory with an address",
+                        "mult":  "0..1",
+                        "sepa_length":  "1..35"
+                    },
+                    {
+                        "message":  "pain.001",
+                        "path":  "PmtInf/CdtTrfTxInf/Cdtr/PstlAdr/Ctry",
+                        "context":  "SEPA_CT",
+                        "status":  "MAPPED",
+                        "source":  "business_partner_pii.country_code",
+                        "basis":  "EPC",
+                        "note":  "Mandatory with an address",
+                        "mult":  "0..1"
+                    },
+                    {
+                        "message":  "pain.001",
+                        "path":  "PmtInf/CdtTrfTxInf/Cdtr/PstlAdr/PstCd",
+                        "context":  "SEPA_CT",
+                        "status":  "MAPPED",
+                        "source":  "business_partner_pii.postal_code",
+                        "basis":  "EPC",
+                        "note":  "",
+                        "mult":  "0..1",
+                        "sepa_length":  "1..16"
+                    },
+                    {
+                        "message":  "pain.001",
+                        "path":  "PmtInf/CdtTrfTxInf/Cdtr/PstlAdr/AdrLine",
+                        "context":  "SEPA_CT",
+                        "status":  "MAPPED",
+                        "source":  "business_partner_pii.address_line_1, address_line_2",
+                        "basis":  "EPC",
+                        "note":  "Up to two lines of 70 characters",
+                        "mult":  "0..2",
+                        "sepa_length":  "1..70"
+                    },
+                    {
+                        "message":  "pain.001",
+                        "path":  "PmtInf/CdtTrfTxInf/Cdtr/PstlAdr/StrtNm",
+                        "context":  "SEPA_CT",
+                        "status":  "GAP",
+                        "source":  "street name (not held separately)",
+                        "basis":  "EPC",
+                        "note":  "Structured address wants street name and building number. The core holds free address lines (G-ISO-3)",
+                        "mult":  "0..1",
+                        "sepa_length":  "1..70"
+                    },
+                    {
+                        "message":  "pain.001",
+                        "path":  "PmtInf/CdtTrfTxInf/Cdtr/PstlAdr/BldgNb",
+                        "context":  "SEPA_CT",
+                        "status":  "GAP",
+                        "source":  "building number (not held separately)",
+                        "basis":  "EPC",
+                        "note":  "As StrtNm",
+                        "mult":  "0..1",
+                        "sepa_length":  "1..16"
+                    },
+                    {
+                        "message":  "pain.001",
+                        "path":  "PmtInf/CdtTrfTxInf/CdtrAcct",
+                        "context":  "SEPA_CT",
+                        "status":  "MAPPED",
+                        "source":  "partner_bank_account",
+                        "basis":  "EPC",
+                        "note":  "The account named by the open item bank_account_id",
+                        "mult":  "1..1"
+                    },
+                    {
+                        "message":  "pain.001",
+                        "path":  "PmtInf/CdtTrfTxInf/CdtrAcct/Id",
+                        "context":  "SEPA_CT",
+                        "status":  "MAPPED",
+                        "source":  "partner_bank_account.iban",
+                        "basis":  "EPC",
+                        "note":  "IBAN only in the SEPA profile",
+                        "mult":  "1..1"
+                    },
+                    {
+                        "message":  "pain.001",
+                        "path":  "PmtInf/CdtTrfTxInf/CdtrAcct/Id/IBAN",
+                        "context":  "SEPA_CT",
+                        "status":  "MAPPED",
+                        "source":  "partner_bank_account.iban",
+                        "basis":  "EPC",
+                        "note":  "Check digits validated by the app before the file is built",
+                        "mult":  "1..1"
+                    },
+                    {
+                        "message":  "pain.001",
+                        "path":  "PmtInf/CdtTrfTxInf/CdtrAcct/Id/Othr",
+                        "context":  "SEPA_CT",
+                        "status":  "GAP",
+                        "source":  "non-IBAN account identifier (not held)",
+                        "basis":  "EPC",
+                        "note":  "partner_bank_account has only iban. Accounts outside the IBAN world need an extension of the table (G-ISO-4)",
+                        "mult":  "1..1"
+                    },
+                    {
+                        "message":  "pain.001",
+                        "path":  "PmtInf/CdtTrfTxInf/CdtrAcct/Ccy",
+                        "context":  "SEPA_CT",
+                        "status":  "MAPPED",
+                        "source":  "partner_bank_account.currency_code",
+                        "basis":  "EPC",
+                        "note":  "Optional",
+                        "mult":  "0..1"
+                    },
+                    {
+                        "message":  "pain.001",
+                        "path":  "PmtInf/CdtTrfTxInf/UltmtCdtr",
+                        "context":  "SEPA_CT",
+                        "status":  "OMITTED",
+                        "source":  "none",
+                        "basis":  "EPC",
+                        "note":  "",
+                        "mult":  "0..1"
+                    },
+                    {
+                        "message":  "pain.001",
+                        "path":  "PmtInf/CdtTrfTxInf/Purp",
+                        "context":  "SEPA_CT",
+                        "status":  "APP",
+                        "source":  "bank agreement",
+                        "basis":  "EPC",
+                        "note":  "Optional purpose code. No core field",
+                        "mult":  "0..1"
+                    },
+                    {
+                        "message":  "pain.001",
+                        "path":  "PmtInf/CdtTrfTxInf/Purp/Cd",
+                        "context":  "SEPA_CT",
+                        "status":  "APP",
+                        "source":  "bank agreement",
+                        "basis":  "EPC",
+                        "note":  "",
+                        "mult":  "1..1",
+                        "sepa_length":  "1..4"
+                    },
+                    {
+                        "message":  "pain.001",
+                        "path":  "PmtInf/CdtTrfTxInf/RmtInf",
+                        "context":  "SEPA_CT",
+                        "status":  "DERIVED",
+                        "source":  "open item payment_reference or document references",
+                        "basis":  "EPC",
+                        "note":  "Either structured or unstructured",
+                        "mult":  "0..1"
+                    },
+                    {
+                        "message":  "pain.001",
+                        "path":  "PmtInf/CdtTrfTxInf/RmtInf/Ustrd",
+                        "context":  "SEPA_CT",
+                        "status":  "DERIVED",
+                        "source":  "journal_document.external_reference of the paid documents (supplier invoice numbers)",
+                        "basis":  "EPC",
+                        "note":  "One occurrence, max 140 characters. Used when no structured reference exists",
+                        "mult":  "0..1",
+                        "sepa_length":  "1..140"
+                    },
+                    {
+                        "message":  "pain.001",
+                        "path":  "PmtInf/CdtTrfTxInf/RmtInf/Strd/CdtrRefInf",
+                        "context":  "SEPA_CT",
+                        "status":  "DERIVED",
+                        "source":  "open item payment_reference",
+                        "basis":  "EPC",
+                        "note":  "Used when payment_reference holds a creditor reference",
+                        "mult":  "0..1"
+                    },
+                    {
+                        "message":  "pain.001",
+                        "path":  "PmtInf/CdtTrfTxInf/RmtInf/Strd/CdtrRefInf/Tp",
+                        "context":  "SEPA_CT",
+                        "status":  "CONSTANT",
+                        "source":  "SCOR",
+                        "basis":  "EPC",
+                        "note":  "Mandatory if CdtrRefInf is used",
+                        "mult":  "1..1"
+                    },
+                    {
+                        "message":  "pain.001",
+                        "path":  "PmtInf/CdtTrfTxInf/RmtInf/Strd/CdtrRefInf/Tp/CdOrPrtry",
+                        "context":  "SEPA_CT",
+                        "status":  "CONSTANT",
+                        "source":  "SCOR",
+                        "basis":  "EPC",
+                        "note":  "",
+                        "mult":  "1..1"
+                    },
+                    {
+                        "message":  "pain.001",
+                        "path":  "PmtInf/CdtTrfTxInf/RmtInf/Strd/CdtrRefInf/Tp/CdOrPrtry/Cd",
+                        "context":  "SEPA_CT",
+                        "status":  "CONSTANT",
+                        "source":  "SCOR",
+                        "basis":  "EPC",
+                        "note":  "Only SCOR",
+                        "mult":  "1..1"
+                    },
+                    {
+                        "message":  "pain.001",
+                        "path":  "PmtInf/CdtTrfTxInf/RmtInf/Strd/CdtrRefInf/Tp/Issr",
+                        "context":  "SEPA_CT",
+                        "status":  "DERIVED",
+                        "source":  "ISO when the reference is an RF reference",
+                        "basis":  "EPC",
+                        "note":  "Set when payment_reference starts with RF and the check digits are valid",
+                        "mult":  "0..1"
+                    },
+                    {
+                        "message":  "pain.001",
+                        "path":  "PmtInf/CdtTrfTxInf/RmtInf/Strd/CdtrRefInf/Ref",
+                        "context":  "SEPA_CT",
+                        "status":  "MAPPED",
+                        "source":  "journal_line_open_item.payment_reference",
+                        "basis":  "EPC",
+                        "note":  "Max 35 characters. RF reference required when the issuer is ISO. The core validates nothing (22, 5.9)",
+                        "mult":  "1..1",
+                        "sepa_length":  "1..35"
+                    },
+                    {
+                        "message":  "pain.002",
+                        "path":  "GrpHdr",
+                        "context":  "SEPA_CT_REJECT",
+                        "status":  "APP",
+                        "source":  "payment run (app)",
+                        "basis":  "EPC",
+                        "note":  "Header of the report from the bank",
+                        "mult":  "1..1"
+                    },
+                    {
+                        "message":  "pain.002",
+                        "path":  "GrpHdr/MsgId",
+                        "context":  "SEPA_CT_REJECT",
+                        "status":  "APP",
+                        "source":  "payment run (app)",
+                        "basis":  "EPC",
+                        "note":  "Id of the report. Stored with the run to detect a repeated report",
+                        "mult":  "1..1",
+                        "sepa_length":  "1..35"
+                    },
+                    {
+                        "message":  "pain.002",
+                        "path":  "GrpHdr/CreDtTm",
+                        "context":  "SEPA_CT_REJECT",
+                        "status":  "APP",
+                        "source":  "payment run (app)",
+                        "basis":  "EPC",
+                        "note":  "",
+                        "mult":  "1..1"
+                    },
+                    {
+                        "message":  "pain.002",
+                        "path":  "OrgnlGrpInfAndSts",
+                        "context":  "SEPA_CT_REJECT",
+                        "status":  "APP",
+                        "source":  "payment run (app)",
+                        "basis":  "EPC",
+                        "note":  "The report refers to the file by OrgnlMsgId",
+                        "mult":  "1..1"
+                    },
+                    {
+                        "message":  "pain.002",
+                        "path":  "OrgnlGrpInfAndSts/OrgnlMsgId",
+                        "context":  "SEPA_CT_REJECT",
+                        "status":  "APP",
+                        "source":  "payment run (app)",
+                        "basis":  "EPC",
+                        "note":  "Equals GrpHdr/MsgId of the pain.001. The app finds the run",
+                        "mult":  "1..1",
+                        "sepa_length":  "1..35"
+                    },
+                    {
+                        "message":  "pain.002",
+                        "path":  "OrgnlGrpInfAndSts/OrgnlMsgNmId",
+                        "context":  "SEPA_CT_REJECT",
+                        "status":  "CONSTANT",
+                        "source":  "pain.001.001.09",
+                        "basis":  "EPC",
+                        "note":  "Must begin with pain.001",
+                        "mult":  "1..1",
+                        "sepa_length":  "1..35"
+                    },
+                    {
+                        "message":  "pain.002",
+                        "path":  "OrgnlGrpInfAndSts/GrpSts",
+                        "context":  "SEPA_CT_REJECT",
+                        "status":  "APP",
+                        "source":  "payment run (app)",
+                        "basis":  "EPC",
+                        "note":  "RJCT only in the SEPA reject dataset. The whole file is rejected: every item of the run is released (22, 5.5 step 5)",
+                        "mult":  "0..1",
+                        "sepa_length":  "1..4"
+                    },
+                    {
+                        "message":  "pain.002",
+                        "path":  "OrgnlGrpInfAndSts/StsRsnInf/Rsn/Cd",
+                        "context":  "SEPA_CT_REJECT",
+                        "status":  "APP",
+                        "source":  "payment run (app), reason code list",
+                        "basis":  "EPC",
+                        "note":  "See the reject reasons in the code lists. The core effect of a reject is the release of the payment_block with change-open-fields",
+                        "mult":  "1..1",
+                        "sepa_length":  "1..4"
+                    },
+                    {
+                        "message":  "pain.002",
+                        "path":  "OrgnlPmtInfAndSts/OrgnlPmtInfId",
+                        "context":  "SEPA_CT_REJECT",
+                        "status":  "APP",
+                        "source":  "payment run (app)",
+                        "basis":  "EPC",
+                        "note":  "Equals PmtInf/PmtInfId. The app finds the group",
+                        "mult":  "1..1",
+                        "sepa_length":  "1..35"
+                    },
+                    {
+                        "message":  "pain.002",
+                        "path":  "OrgnlPmtInfAndSts/PmtInfSts",
+                        "context":  "SEPA_CT_REJECT",
+                        "status":  "APP",
+                        "source":  "payment run (app)",
+                        "basis":  "EPC",
+                        "note":  "RJCT only. The group is rejected",
+                        "mult":  "0..1",
+                        "sepa_length":  "1..4"
+                    },
+                    {
+                        "message":  "pain.002",
+                        "path":  "OrgnlPmtInfAndSts/TxInfAndSts/OrgnlEndToEndId",
+                        "context":  "SEPA_CT_REJECT",
+                        "status":  "APP",
+                        "source":  "payment run (app)",
+                        "basis":  "EPC",
+                        "note":  "Equals EndToEndId. The app finds the open item and releases its block",
+                        "mult":  "0..1",
+                        "sepa_length":  "1..35"
+                    },
+                    {
+                        "message":  "pain.002",
+                        "path":  "OrgnlPmtInfAndSts/TxInfAndSts/TxSts",
+                        "context":  "SEPA_CT_REJECT",
+                        "status":  "APP",
+                        "source":  "payment run (app)",
+                        "basis":  "EPC",
+                        "note":  "RJCT only. The transaction is rejected",
+                        "mult":  "0..1",
+                        "sepa_length":  "1..4"
+                    },
+                    {
+                        "message":  "pain.002",
+                        "path":  "OrgnlPmtInfAndSts/TxInfAndSts/StsRsnInf/Rsn/Cd",
+                        "context":  "SEPA_CT_REJECT",
+                        "status":  "APP",
+                        "source":  "payment run (app), reason code list",
+                        "basis":  "EPC",
+                        "note":  "AC01 for example: the payee IBAN is wrong. The app marks the partner bank account for review, it does not change the account",
+                        "mult":  "1..1",
+                        "sepa_length":  "1..4"
+                    },
+                    {
+                        "message":  "pain.002",
+                        "path":  "OrgnlPmtInfAndSts/TxInfAndSts/OrgnlTxRef/Amt",
+                        "context":  "SEPA_CT_REJECT",
+                        "status":  "APP",
+                        "source":  "payment run (app)",
+                        "basis":  "EPC",
+                        "note":  "For checks only",
+                        "mult":  "0..1"
+                    },
+                    {
+                        "message":  "pain.008",
+                        "path":  "GrpHdr/MsgId",
+                        "context":  "SEPA_DD",
+                        "status":  "APP",
+                        "source":  "collection run (app)",
+                        "basis":  "KNOWLEDGE",
+                        "note":  "File identifier, as pain.001"
+                    },
+                    {
+                        "message":  "pain.008",
+                        "path":  "GrpHdr/CreDtTm",
+                        "context":  "SEPA_DD",
+                        "status":  "APP",
+                        "source":  "collection run (app)",
+                        "basis":  "KNOWLEDGE",
+                        "note":  ""
+                    },
+                    {
+                        "message":  "pain.008",
+                        "path":  "GrpHdr/NbOfTxs",
+                        "context":  "SEPA_DD",
+                        "status":  "DERIVED",
+                        "source":  "count of collections",
+                        "basis":  "KNOWLEDGE",
+                        "note":  ""
+                    },
+                    {
+                        "message":  "pain.008",
+                        "path":  "GrpHdr/CtrlSum",
+                        "context":  "SEPA_DD",
+                        "status":  "DERIVED",
+                        "source":  "sum of InstdAmt",
+                        "basis":  "KNOWLEDGE",
+                        "note":  ""
+                    },
+                    {
+                        "message":  "pain.008",
+                        "path":  "GrpHdr/InitgPty/Nm",
+                        "context":  "SEPA_DD",
+                        "status":  "MAPPED",
+                        "source":  "company.legal_name",
+                        "basis":  "KNOWLEDGE",
+                        "note":  ""
+                    },
+                    {
+                        "message":  "pain.008",
+                        "path":  "PmtInf/PmtInfId",
+                        "context":  "SEPA_DD",
+                        "status":  "APP",
+                        "source":  "collection run (app)",
+                        "basis":  "KNOWLEDGE",
+                        "note":  ""
+                    },
+                    {
+                        "message":  "pain.008",
+                        "path":  "PmtInf/PmtMtd",
+                        "context":  "SEPA_DD",
+                        "status":  "MAPPED",
+                        "source":  "external_code_mapping ISO20022, entity PAYMENT_MEANS",
+                        "basis":  "KNOWLEDGE",
+                        "note":  "DD"
+                    },
+                    {
+                        "message":  "pain.008",
+                        "path":  "PmtInf/PmtTpInf/SvcLvl/Cd",
+                        "context":  "SEPA_DD",
+                        "status":  "MAPPED",
+                        "source":  "external_code_mapping ISO20022, entity PAYMENT_MEANS",
+                        "basis":  "KNOWLEDGE",
+                        "note":  "SEPA"
+                    },
+                    {
+                        "message":  "pain.008",
+                        "path":  "PmtInf/PmtTpInf/LclInstrm/Cd",
+                        "context":  "SEPA_DD",
+                        "status":  "MAPPED",
+                        "source":  "external_code_mapping ISO20022, entity PAYMENT_MEANS",
+                        "basis":  "KNOWLEDGE",
+                        "note":  "CORE or B2B. The standard UN/CEFACT code for SEPA direct debit does not distinguish them: the package maps 59 to CORE. A B2B mandate needs its own code (G-ISO-6)"
+                    },
+                    {
+                        "message":  "pain.008",
+                        "path":  "PmtInf/PmtTpInf/SeqTp",
+                        "context":  "SEPA_DD",
+                        "status":  "EXTENSION",
+                        "source":  "mandate state (app extension attribute or app table)",
+                        "basis":  "KNOWLEDGE",
+                        "note":  "FRST, RCUR, OOFF, FNAL. Depends on the history of collections under the mandate, kept by the app"
+                    },
+                    {
+                        "message":  "pain.008",
+                        "path":  "PmtInf/ReqdColltnDt",
+                        "context":  "SEPA_DD",
+                        "status":  "APP",
+                        "source":  "collection run (app)",
+                        "basis":  "KNOWLEDGE",
+                        "note":  "Due date of the collection, from open item due_date and the pre-notification rule of the scheme"
+                    },
+                    {
+                        "message":  "pain.008",
+                        "path":  "PmtInf/Cdtr/Nm",
+                        "context":  "SEPA_DD",
+                        "status":  "MAPPED",
+                        "source":  "company.legal_name",
+                        "basis":  "KNOWLEDGE",
+                        "note":  ""
+                    },
+                    {
+                        "message":  "pain.008",
+                        "path":  "PmtInf/Cdtr/PstlAdr",
+                        "context":  "SEPA_DD",
+                        "status":  "GAP",
+                        "source":  "company address (ADR-207, PROPOSED)",
+                        "basis":  "KNOWLEDGE",
+                        "note":  "As G1"
+                    },
+                    {
+                        "message":  "pain.008",
+                        "path":  "PmtInf/CdtrAcct/Id/IBAN",
+                        "context":  "SEPA_DD",
+                        "status":  "MAPPED",
+                        "source":  "company_bank_account.iban",
+                        "basis":  "KNOWLEDGE",
+                        "note":  ""
+                    },
+                    {
+                        "message":  "pain.008",
+                        "path":  "PmtInf/CdtrAgt/FinInstnId/BICFI",
+                        "context":  "SEPA_DD",
+                        "status":  "MAPPED",
+                        "source":  "company_bank_account.bic",
+                        "basis":  "KNOWLEDGE",
+                        "note":  ""
+                    },
+                    {
+                        "message":  "pain.008",
+                        "path":  "PmtInf/ChrgBr",
+                        "context":  "SEPA_DD",
+                        "status":  "CONSTANT",
+                        "source":  "SLEV",
+                        "basis":  "KNOWLEDGE",
+                        "note":  ""
+                    },
+                    {
+                        "message":  "pain.008",
+                        "path":  "PmtInf/CdtrSchmeId",
+                        "context":  "SEPA_DD",
+                        "status":  "GAP",
+                        "source":  "creditor identifier of the company (no field)",
+                        "basis":  "KNOWLEDGE",
+                        "note":  "The scheme requires a creditor identifier per company, issued nationally. The core has no field for it (G-ISO-2). Proposed: an extension attribute on the company by the collection app, or a field of company_bank_account if a package needs it"
+                    },
+                    {
+                        "message":  "pain.008",
+                        "path":  "PmtInf/DrctDbtTxInf/PmtId/EndToEndId",
+                        "context":  "SEPA_DD",
+                        "status":  "APP",
+                        "source":  "collection run (app)",
+                        "basis":  "KNOWLEDGE",
+                        "note":  "As pain.001: the app keeps the link to the open item"
+                    },
+                    {
+                        "message":  "pain.008",
+                        "path":  "PmtInf/DrctDbtTxInf/InstdAmt",
+                        "context":  "SEPA_DD",
+                        "status":  "DERIVED",
+                        "source":  "open-items:query remaining amount of the AR open item",
+                        "basis":  "KNOWLEDGE",
+                        "note":  "EUR only in the SEPA profile"
+                    },
+                    {
+                        "message":  "pain.008",
+                        "path":  "PmtInf/DrctDbtTxInf/DrctDbtTx/MndtRltdInf/MndtId",
+                        "context":  "SEPA_DD",
+                        "status":  "EXTENSION",
+                        "source":  "mandate (extension attribute, 22, 5.7)",
+                        "basis":  "KNOWLEDGE",
+                        "note":  "Personal data (is_pii)"
+                    },
+                    {
+                        "message":  "pain.008",
+                        "path":  "PmtInf/DrctDbtTxInf/DrctDbtTx/MndtRltdInf/DtOfSgntr",
+                        "context":  "SEPA_DD",
+                        "status":  "EXTENSION",
+                        "source":  "mandate (extension attribute, 22, 5.7)",
+                        "basis":  "KNOWLEDGE",
+                        "note":  "Personal data (is_pii)"
+                    },
+                    {
+                        "message":  "pain.008",
+                        "path":  "PmtInf/DrctDbtTxInf/DbtrAgt/FinInstnId/BICFI",
+                        "context":  "SEPA_DD",
+                        "status":  "MAPPED",
+                        "source":  "partner_bank_account.bic",
+                        "basis":  "KNOWLEDGE",
+                        "note":  ""
+                    },
+                    {
+                        "message":  "pain.008",
+                        "path":  "PmtInf/DrctDbtTxInf/Dbtr/Nm",
+                        "context":  "SEPA_DD",
+                        "status":  "MAPPED",
+                        "source":  "partner_bank_account.account_holder, business_partner_pii.legal_name",
+                        "basis":  "KNOWLEDGE",
+                        "note":  ""
+                    },
+                    {
+                        "message":  "pain.008",
+                        "path":  "PmtInf/DrctDbtTxInf/DbtrAcct/Id/IBAN",
+                        "context":  "SEPA_DD",
+                        "status":  "MAPPED",
+                        "source":  "partner_bank_account.iban",
+                        "basis":  "KNOWLEDGE",
+                        "note":  ""
+                    },
+                    {
+                        "message":  "pain.008",
+                        "path":  "PmtInf/DrctDbtTxInf/RmtInf",
+                        "context":  "SEPA_DD",
+                        "status":  "DERIVED",
+                        "source":  "open item payment_reference or document numbers",
+                        "basis":  "KNOWLEDGE",
+                        "note":  "As pain.001"
+                    },
+                    {
+                        "message":  "camt.053",
+                        "path":  "BkToCstmrStmt/GrpHdr/MsgId",
+                        "context":  "STATEMENT",
+                        "status":  "APP",
+                        "source":  "statement import (app)",
+                        "basis":  "BANK",
+                        "note":  "Stored with the imported statement"
+                    },
+                    {
+                        "message":  "camt.053",
+                        "path":  "BkToCstmrStmt/Stmt/Id",
+                        "context":  "STATEMENT",
+                        "status":  "APP",
+                        "source":  "statement import (app)",
+                        "basis":  "BANK",
+                        "note":  "First part of the idempotency key of the payment document (22, 3)"
+                    },
+                    {
+                        "message":  "camt.053",
+                        "path":  "BkToCstmrStmt/Stmt/ElctrncSeqNb",
+                        "context":  "STATEMENT",
+                        "status":  "APP",
+                        "source":  "statement import (app)",
+                        "basis":  "BANK",
+                        "note":  "Statement number. Gap detection in the app: a missing number means a missing statement"
+                    },
+                    {
+                        "message":  "camt.053",
+                        "path":  "BkToCstmrStmt/Stmt/FrToDt",
+                        "context":  "STATEMENT",
+                        "status":  "APP",
+                        "source":  "statement import (app)",
+                        "basis":  "BANK",
+                        "note":  ""
+                    },
+                    {
+                        "message":  "camt.053",
+                        "path":  "BkToCstmrStmt/Stmt/Acct/Id/IBAN",
+                        "context":  "STATEMENT",
+                        "status":  "DERIVED",
+                        "source":  "company_bank_account.iban lookup",
+                        "basis":  "BANK",
+                        "note":  "Finds the company, the bank account and its GL account (gl_account_id). A statement for an unknown IBAN is rejected by the app"
+                    },
+                    {
+                        "message":  "camt.053",
+                        "path":  "BkToCstmrStmt/Stmt/Acct/Ccy",
+                        "context":  "STATEMENT",
+                        "status":  "DERIVED",
+                        "source":  "company_bank_account.currency_code",
+                        "basis":  "BANK",
+                        "note":  "Must equal the account currency. It is the transaction currency of the payment document"
+                    },
+                    {
+                        "message":  "camt.053",
+                        "path":  "BkToCstmrStmt/Stmt/Bal/Tp/CdOrPrtry/Cd",
+                        "context":  "STATEMENT",
+                        "status":  "APP",
+                        "source":  "statement import (app)",
+                        "basis":  "BANK",
+                        "note":  "OPBD opening booked, CLBD closing booked"
+                    },
+                    {
+                        "message":  "camt.053",
+                        "path":  "BkToCstmrStmt/Stmt/Bal/Amt",
+                        "context":  "STATEMENT",
+                        "status":  "DERIVED",
+                        "source":  "balances:query of the bank GL account at the balance date",
+                        "basis":  "BANK",
+                        "note":  "Control: the closing booked balance must equal the GL balance after all entries are posted. A difference is reported, not posted"
+                    },
+                    {
+                        "message":  "camt.053",
+                        "path":  "BkToCstmrStmt/Stmt/Bal/CdtDbtInd",
+                        "context":  "STATEMENT",
+                        "status":  "DERIVED",
+                        "source":  "sign of the balance",
+                        "basis":  "BANK",
+                        "note":  "CRDT positive on an asset account"
+                    },
+                    {
+                        "message":  "camt.053",
+                        "path":  "BkToCstmrStmt/Stmt/Bal/Dt",
+                        "context":  "STATEMENT",
+                        "status":  "DERIVED",
+                        "source":  "balance date",
+                        "basis":  "BANK",
+                        "note":  ""
+                    },
+                    {
+                        "message":  "camt.053",
+                        "path":  "BkToCstmrStmt/Stmt/Ntry",
+                        "context":  "STATEMENT",
+                        "status":  "DERIVED",
+                        "source":  "one PAYMENT document (22, 5.1) per booked entry, or one per transaction detail of a batch entry",
+                        "basis":  "BANK",
+                        "note":  "A batch entry (BtchBookg) has one Ntry and several TxDtls: the app posts one payment per transaction and checks that their sum equals the entry"
+                    },
+                    {
+                        "message":  "camt.053",
+                        "path":  "BkToCstmrStmt/Stmt/Ntry/NtryRef",
+                        "context":  "STATEMENT",
+                        "status":  "APP",
+                        "source":  "statement import (app)",
+                        "basis":  "BANK",
+                        "note":  "Optional entry reference"
+                    },
+                    {
+                        "message":  "camt.053",
+                        "path":  "BkToCstmrStmt/Stmt/Ntry/Amt",
+                        "context":  "STATEMENT",
+                        "status":  "MAPPED",
+                        "source":  "journal_line.amount_tc of the bank account line, absolute value, transaction_currency = Amt Ccy",
+                        "basis":  "BANK",
+                        "note":  "Signed by CdtDbtInd on the bank line. When an amount in another currency is shown in AmtDtls the payment document stays in the account currency and the clearing computes realised FX (22, 5.3)"
+                    },
+                    {
+                        "message":  "camt.053",
+                        "path":  "BkToCstmrStmt/Stmt/Ntry/CdtDbtInd",
+                        "context":  "STATEMENT",
+                        "status":  "DERIVED",
+                        "source":  "sign of the bank line and side of the control line",
+                        "basis":  "BANK",
+                        "note":  "CRDT: debit the bank account and credit the customer or supplier control account. DBIT: the reverse. A credit on a supplier or a debit on a customer is a refund and needs a partner decision by the app"
+                    },
+                    {
+                        "message":  "camt.053",
+                        "path":  "BkToCstmrStmt/Stmt/Ntry/RvslInd",
+                        "context":  "STATEMENT",
+                        "status":  "APP",
+                        "source":  "statement import (app)",
+                        "basis":  "BANK",
+                        "note":  "True: a reversal of an earlier entry. The app uses the returned payment flow (22, 5.6)"
+                    },
+                    {
+                        "message":  "camt.053",
+                        "path":  "BkToCstmrStmt/Stmt/Ntry/Sts",
+                        "context":  "STATEMENT",
+                        "status":  "APP",
+                        "source":  "statement import (app)",
+                        "basis":  "BANK",
+                        "note":  "Only BOOK entries are posted. PDNG and INFO are not"
+                    },
+                    {
+                        "message":  "camt.053",
+                        "path":  "BkToCstmrStmt/Stmt/Ntry/BookgDt/Dt",
+                        "context":  "STATEMENT",
+                        "status":  "MAPPED",
+                        "source":  "journal_document.posting_date and document_date",
+                        "basis":  "BANK",
+                        "note":  "Package choice. The posting must be inside an open period and the posting window (PERIOD.*, POSTING.OUTSIDE_WINDOW): there is no date shifting"
+                    },
+                    {
+                        "message":  "camt.053",
+                        "path":  "BkToCstmrStmt/Stmt/Ntry/ValDt/Dt",
+                        "context":  "STATEMENT",
+                        "status":  "APP",
+                        "source":  "statement import (app)",
+                        "basis":  "BANK",
+                        "note":  "Value date for interest. The core has no field"
+                    },
+                    {
+                        "message":  "camt.053",
+                        "path":  "BkToCstmrStmt/Stmt/Ntry/AcctSvcrRef",
+                        "context":  "STATEMENT",
+                        "status":  "MAPPED",
+                        "source":  "journal_document.external_reference",
+                        "basis":  "BANK",
+                        "note":  "The bank reference. source_document_ref carries statement id and line"
+                    },
+                    {
+                        "message":  "camt.053",
+                        "path":  "BkToCstmrStmt/Stmt/Ntry/BkTxCd/Domn/Cd",
+                        "context":  "STATEMENT",
+                        "status":  "APP",
+                        "source":  "statement import (app), code list",
+                        "basis":  "BANK",
+                        "note":  "Classifies the entry: payment, fee, interest. A fee or interest entry is not a customer or supplier payment: the app posts it as a separate document to an expense or income account (one currency per document, ADR-035)"
+                    },
+                    {
+                        "message":  "camt.053",
+                        "path":  "BkToCstmrStmt/Stmt/Ntry/BkTxCd/Domn/Fmly/Cd",
+                        "context":  "STATEMENT",
+                        "status":  "APP",
+                        "source":  "statement import (app), code list",
+                        "basis":  "BANK",
+                        "note":  ""
+                    },
+                    {
+                        "message":  "camt.053",
+                        "path":  "BkToCstmrStmt/Stmt/Ntry/BkTxCd/Domn/Fmly/SubFmlyCd",
+                        "context":  "STATEMENT",
+                        "status":  "APP",
+                        "source":  "statement import (app), code list",
+                        "basis":  "BANK",
+                        "note":  ""
+                    },
+                    {
+                        "message":  "camt.053",
+                        "path":  "BkToCstmrStmt/Stmt/Ntry/NtryDtls/TxDtls/Refs/EndToEndId",
+                        "context":  "STATEMENT",
+                        "status":  "APP",
+                        "source":  "payment run link (app)",
+                        "basis":  "BANK",
+                        "note":  "Matches PmtId/EndToEndId of the pain.001 or pain.008. NOTPROVIDED when the payer sent none"
+                    },
+                    {
+                        "message":  "camt.053",
+                        "path":  "BkToCstmrStmt/Stmt/Ntry/NtryDtls/TxDtls/Refs/InstrId",
+                        "context":  "STATEMENT",
+                        "status":  "APP",
+                        "source":  "payment run link (app)",
+                        "basis":  "BANK",
+                        "note":  ""
+                    },
+                    {
+                        "message":  "camt.053",
+                        "path":  "BkToCstmrStmt/Stmt/Ntry/NtryDtls/TxDtls/Refs/AcctSvcrRef",
+                        "context":  "STATEMENT",
+                        "status":  "MAPPED",
+                        "source":  "journal_document.external_reference",
+                        "basis":  "BANK",
+                        "note":  "When the entry level has none"
+                    },
+                    {
+                        "message":  "camt.053",
+                        "path":  "BkToCstmrStmt/Stmt/Ntry/NtryDtls/TxDtls/Refs/MndtId",
+                        "context":  "STATEMENT",
+                        "status":  "EXTENSION",
+                        "source":  "mandate (extension attribute)",
+                        "basis":  "BANK",
+                        "note":  "Matches a collection to its mandate"
+                    },
+                    {
+                        "message":  "camt.053",
+                        "path":  "BkToCstmrStmt/Stmt/Ntry/NtryDtls/TxDtls/RltdPties/Dbtr/Nm",
+                        "context":  "STATEMENT",
+                        "status":  "APP",
+                        "source":  "statement import (app)",
+                        "basis":  "BANK",
+                        "note":  "Matching help. The other party. Personal data, not stored in the core by this flow"
+                    },
+                    {
+                        "message":  "camt.053",
+                        "path":  "BkToCstmrStmt/Stmt/Ntry/NtryDtls/TxDtls/RltdPties/DbtrAcct/Id/IBAN",
+                        "context":  "STATEMENT",
+                        "status":  "DERIVED",
+                        "source":  "partner_bank_account.iban lookup",
+                        "basis":  "BANK",
+                        "note":  "Finds the partner when the IBAN is known"
+                    },
+                    {
+                        "message":  "camt.053",
+                        "path":  "BkToCstmrStmt/Stmt/Ntry/NtryDtls/TxDtls/RltdPties/Cdtr/Nm",
+                        "context":  "STATEMENT",
+                        "status":  "APP",
+                        "source":  "statement import (app)",
+                        "basis":  "BANK",
+                        "note":  ""
+                    },
+                    {
+                        "message":  "camt.053",
+                        "path":  "BkToCstmrStmt/Stmt/Ntry/NtryDtls/TxDtls/RltdPties/CdtrAcct/Id/IBAN",
+                        "context":  "STATEMENT",
+                        "status":  "DERIVED",
+                        "source":  "partner_bank_account.iban lookup",
+                        "basis":  "BANK",
+                        "note":  ""
+                    },
+                    {
+                        "message":  "camt.053",
+                        "path":  "BkToCstmrStmt/Stmt/Ntry/NtryDtls/TxDtls/RmtInf/Strd/CdtrRefInf/Ref",
+                        "context":  "STATEMENT",
+                        "status":  "DERIVED",
+                        "source":  "open items with the same payment_reference (open-items:query)",
+                        "basis":  "BANK",
+                        "note":  "The best matching key for incoming customer payments. RF or national reference"
+                    },
+                    {
+                        "message":  "camt.053",
+                        "path":  "BkToCstmrStmt/Stmt/Ntry/NtryDtls/TxDtls/RmtInf/Ustrd",
+                        "context":  "STATEMENT",
+                        "status":  "APP",
+                        "source":  "statement import (app)",
+                        "basis":  "BANK",
+                        "note":  "Free text matching (document numbers) is the app\u0027s rule"
+                    },
+                    {
+                        "message":  "camt.053",
+                        "path":  "BkToCstmrStmt/Stmt/Ntry/NtryDtls/TxDtls/RtrInf/Rsn/Cd",
+                        "context":  "STATEMENT",
+                        "status":  "APP",
+                        "source":  "statement import (app), code list",
+                        "basis":  "BANK",
+                        "note":  "Return reason of a returned payment or collection (22, 5.6)"
+                    },
+                    {
+                        "message":  "camt.054",
+                        "path":  "BkToCstmrDbtCdtNtfctn/Ntfctn/Ntry",
+                        "context":  "NOTIFICATION",
+                        "status":  "DERIVED",
+                        "source":  "as camt.053 Stmt/Ntry",
+                        "basis":  "KNOWLEDGE",
+                        "note":  "The notification carries the same entry structure for intraday information. Used for faster matching. Postings follow the statement (booked entries only) to avoid double posting"
+                    },
+                    {
+                        "message":  "camt.054",
+                        "path":  "BkToCstmrDbtCdtNtfctn/Ntfctn/Id",
+                        "context":  "NOTIFICATION",
+                        "status":  "APP",
+                        "source":  "statement import (app)",
+                        "basis":  "KNOWLEDGE",
+                        "note":  ""
+                    }
+                ]
+}

@@ -1,0 +1,42 @@
+{
+  "note": "Class C content. Check algorithms and account structure rules for the Danish payment identifiers, with test vectors. The vectors marked CHECKED_AGAINST_SOURCE were reproduced by calculation in the package build on 2026-10-19. Rules marked ASSUMED were not read from a source",
+  "algorithms": [
+    {
+      "code": "FIK_MODULUS10",
+      "applies_to": ["DK_FIK_71"],
+      "basis": "PBS",
+      "source": "PBS handbook for the FIK card +71<, section 3.3.3 (August 2009)",
+      "rule": "The payment id is 14 data digits plus one check digit. Multiply the digits from the right by 2, 1, 2, 1 and so on (the 14th data digit by 2, the 13th by 1). Where a product is 10 or more, add its two digits. Add all results. The check digit is 10 minus the remainder of the sum divided by 10. A remainder of 0 gives the check digit 0. The check digit is the last digit of the id",
+      "test_vectors": [
+        { "data": "02684014996532", "sum": 62, "check": "8", "payment_id": "026840149965328", "state": "CHECKED_AGAINST_SOURCE", "note": "The worked example of the handbook" },
+        { "data": "00000000000001", "check": "8", "state": "COMPUTED" },
+        { "data": "12345678901234", "check": "7", "state": "COMPUTED" },
+        { "data": "10000000000009", "check": "0", "state": "COMPUTED" }
+      ]
+    },
+    {
+      "code": "FIK_75_AND_GIRO_OCR",
+      "applies_to": ["DK_FIK_75", "DK_GIRO"],
+      "basis": "NORDEA",
+      "state": "ASSUMED",
+      "rule": "16 digit id with a modulus 10 check digit (Nordea and Danske Bank state the algorithm name only). The package assumes the same weights from the right as for type 71, with 15 data digits. To be confirmed against the FI +75< and giro handbooks"
+    }
+  ],
+  "account_structure": [
+    {
+      "code": "DK_BBAN",
+      "basis": "NORDEA",
+      "source": "Nordea Corporate Access Payables appendix Denmark, 2.3.4 and 2.3.5 (2026-10-08)",
+      "rule": "14 digits: the first 4 are the bank registration number, the last 10 the account number. A shorter registration number or account number is right aligned and padded with leading zeroes. A creditor number has 8 digits, padded with leading zeroes. Hyphens and dots are allowed in the input",
+      "derivation_from_iban": "A Danish IBAN has 18 characters: DK, two check digits, then the 14 digit BBAN. Registration number = characters 5 to 8, account number = characters 9 to 18",
+      "test_vectors": [
+        { "iban": "DK5000400440116243", "length": 18, "valid": true, "registration_number": "0040", "account_number": "0440116243", "state": "CHECKED_AGAINST_SOURCE", "note": "The Danish IBAN example of the Nordea appendix. The modulus 97 test passes in the build" }
+      ]
+    }
+  ],
+  "peppol_payment_id": {
+    "basis": "PEPPOL",
+    "rule": "PaymentID is the card type followed by # and the id, for example 71#026840149965328. For payment means 93 the card type is 71, 73 or 75. For payment means 50 it is 01, 04 or 15",
+    "state": "The rule text was read through a page fetch that summarises. UNVERIFIED"
+  }
+}

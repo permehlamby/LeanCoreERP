@@ -1,0 +1,72 @@
+{
+  "format_version": "1.0",
+  "package_code": "STD_ISO20022",
+  "package_version": "1.0.0",
+  "kind": "STANDARD",
+  "state": "DRAFT",
+  "standard": {
+    "name": "ISO 20022 payment and cash management messages",
+    "messages": ["pain.001.001.09", "pain.002.001.10", "pain.008.001.08", "camt.053.001.08", "camt.053.001.02", "camt.054.001.08"],
+    "profile_codes": ["SEPA_CT", "SEPA_CT_REJECT", "SEPA_DD", "STATEMENT", "NOTIFICATION"],
+    "note": "Mapping of the payment and statement messages to the core, for the treasury and collection apps (22). The SEPA credit transfer profile is read from the EPC guideline. National variants (payment slips, national debit schemes) are country packages that require this one"
+  },
+  "requires": [],
+  "sources": [
+    {
+      "title": "SEPA Credit Transfer Scheme Customer-to-PSP Implementation Guidelines, EPC132-08, 2025 Version 1.0",
+      "authority": "European Payments Council",
+      "url": "https://www.europeanpaymentscouncil.eu/sites/default/files/kb/file/2025-10/EPC132-08%20SCT%20C2PSP%20IG%202025%20V1.0.pdf",
+      "sha256": "see app/iso20022/sepa-ct-pain001-elements.json",
+      "basis": "EPC",
+      "used_for": ["app/iso20022/sepa-ct-pain001-elements.json", "app/iso20022/sepa-ct-pain002-elements.json", "app/iso20022/iso20022-core-mapping.json", "app/iso20022/iso20022-code-lists.json"]
+    },
+    {
+      "title": "CAMT.053.001.08 Format Description (mBank CompanyNet, MultiCash, SWIFT CBPR+), 72 pages",
+      "authority": "mBank S.A. (a bank format guide, secondary: a subset of the ISO message)",
+      "url": "https://www.mbank.pl/pdf/msp-korporacje/bankowosc-elektroniczna/description-of-the-camt.053.001.08-daily-statement-file-format.pdf",
+      "sha256": "25970d80f0756d2e5e543507192b3f60bad000e96b9a11413c83abc4cf302de0",
+      "basis": "BANK",
+      "used_for": ["app/iso20022/iso20022-core-mapping.json (camt.053 entries)"]
+    },
+    {
+      "title": "Danske Bank interpretation of the BankToCustomerStatementV02 (CGI), camt.053.001.02, 47 pages",
+      "authority": "Danske Bank (a bank format guide, secondary)",
+      "url": "https://danskeci.com/-/media/pdf/danskeci-com/iso-20022-xml/camt,-d-,053,-d-,001,-d-,02-cgi.pdf",
+      "sha256": "6acca1fc8b139217d4095e22d52c1ea052037dd785469d79281ad3734904474a",
+      "basis": "BANK",
+      "used_for": ["app/iso20022/iso20022-core-mapping.json (camt.053 entries, version note)", "app/iso20022/message-catalogue.json"]
+    },
+    {
+      "title": "Danske Bank pain.008.001.08 format guide",
+      "authority": "Danske Bank",
+      "url": "https://danskeci.com/-/media/pdf/danskeci-com/iso-20022-xml/pain,-d-,008,-d-,001,-d-,08-pdf.pdf",
+      "sha256": "0d77a5ef93c34924a666ed85493df23e72a56bee4eaef9d263432dc5551f198b",
+      "basis": "NOT_READ",
+      "used_for": [],
+      "note": "Fetched but the text could not be extracted (the font encoding is not plain text). The pain.008 entries are authored from general knowledge"
+    }
+  ],
+  "owner": "Platform team",
+  "legal_reviewer": "to be named",
+  "scope": "SEPA credit transfer initiation and reject (pain.001, pain.002), SEPA direct debit initiation (pain.008, authored without a source), bank statement and notification (camt.053, camt.054). Not covered: payment status reports beyond the SEPA reject dataset, direct debit status and return messages (pain.002 for debits, pain.007, pacs), non-SEPA payments and currencies, cheques, cross-border and instant payments, national payment slip formats (country packages), bank-specific profiles (CGI-MP country recommendations)",
+  "scope_map": {
+    "tenant": ["external_code_mapping"],
+    "company": []
+  },
+  "inputs": [],
+  "content": {
+    "core": ["core/external_code_mapping.json"],
+    "policy": null,
+    "app": "app/app-content.json",
+    "verification": "verification.json"
+  },
+  "findings_for_core": [
+    { "ref": "G-ISO-1", "text": "The company has no address (07, 5.4), as already found for SAF-T (G1, ADR-207 PROPOSED). The debtor and creditor address of the payment files is optional, but the guideline says that from 22 November 2026 an address that is sent must be structured or hybrid. The same company address serves SAF-T, EN 16931 and payment files" },
+    { "ref": "G-ISO-2", "text": "The company has no creditor identifier for SEPA direct debits (pain.008, CdtrSchmeId). It is issued nationally per company. Proposed: an extension attribute of the company owned by the collection app, or a field of company_bank_account if a package needs it" },
+    { "ref": "G-ISO-3", "text": "Partner addresses are free address lines with postal code, city and country (07, 9.2). That is enough for a hybrid address. A fully structured address needs street name and building number as separate values" },
+    { "ref": "G-ISO-4", "text": "partner_bank_account holds only an IBAN (07, 9.5). Payees outside the IBAN world need another account identifier (Othr in the message). Not needed for SEPA payments" },
+    { "ref": "G-ISO-5", "text": "The core has no field for the end-to-end id. The apps keep the link from the id to the open item (22, 5.5). Not a core gap by design, listed here because the id is the safest matching key in the statement" },
+    { "ref": "G-ISO-6", "text": "payment_means_code uses UNCL4461 codes, which have one code for SEPA direct debit and none for the business-to-business variant. The package maps 59 to CORE" },
+    { "ref": "G-ISO-7", "text": "The SEPA credit transfer profile allows EUR only. The core pays in the open item currency: other currencies need a non-SEPA profile of the bank, not in this package" }
+  ]
+}

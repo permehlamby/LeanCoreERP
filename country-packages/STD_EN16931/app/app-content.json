@@ -1,0 +1,8 @@
+{
+  "note": "Class C content. The core never reads these artefacts (18, 4.5)",
+  "artefacts": [
+    { "app_role": "einvoice-syntax", "name": "en16931-term-mapping", "file": "einvoice/en16931-term-mapping.json", "media_type": "application/json", "status": "DRAFT", "digest": null, "note": "82 business terms and groups with requirement, core source and gap marking" },
+    { "app_role": "einvoice-syntax", "name": "en16931-code-lists", "file": "einvoice/en16931-code-lists.json", "media_type": "application/json", "status": "DRAFT", "digest": null, "note": "VAT categories, exemption reason codes, invoice type codes, electronic address schemes" },
+    { "app_role": "einvoice-syntax", "name": "en16931-syntax-bindings", "file": null, "status": "PLANNED", "note": "UBL and CII element paths per business term. National CIUS (Peppol BIS Billing 3, XRechnung, national profiles) are layered by the country packages" }
+  ]
+}

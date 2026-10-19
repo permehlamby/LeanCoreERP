@@ -1,0 +1,11 @@
+{
+  "resource": "payment-terms",
+  "note": "Commercial conventions, not law. Informational for the core (07, A4)",
+  "objects": [
+    { "item_id": "DK-PAY-CASH", "code": "KONTANT", "description": "Kontant", "baseline_rule": "DOCUMENT_DATE", "net_days": 0, "active": true },
+    { "item_id": "DK-PAY-N8", "code": "NETTO8", "description": "Netto 8 dage", "baseline_rule": "DOCUMENT_DATE", "net_days": 8, "active": true },
+    { "item_id": "DK-PAY-N14", "code": "NETTO14", "description": "Netto 14 dage", "baseline_rule": "DOCUMENT_DATE", "net_days": 14, "active": true },
+    { "item_id": "DK-PAY-N30", "code": "NETTO30", "description": "Netto 30 dage", "baseline_rule": "DOCUMENT_DATE", "net_days": 30, "active": true },
+    { "item_id": "DK-PAY-LM30", "code": "LM30", "description": "Løbende måned plus 30 dage", "baseline_rule": "END_OF_MONTH", "net_days": 30, "active": true }
+  ]
+}

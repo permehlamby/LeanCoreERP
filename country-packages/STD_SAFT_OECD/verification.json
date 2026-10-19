@@ -1,0 +1,26 @@
+{
+  "package_code": "STD_SAFT_OECD",
+  "package_version": "1.0.0",
+  "format_note": "item_prefixes cover all core items whose id starts with the prefix, artefacts name app artefacts of app/app-content.json. No item is VERIFIED, the package is DRAFT (18, section 6)",
+  "records": [
+    {
+      "item_prefixes": ["SAFT-DT-"],
+      "status": "NOT_APPLICABLE",
+      "note": "Package choice of journal codes. The OECD schema prescribes none (Journal/JournalID and Journal/Type are free codes)"
+    },
+    {
+      "artefacts": ["oecd-2.00-schema-elements"],
+      "status": "UNVERIFIED",
+      "source_ref": "OECD, Guidance for the Standard Audit File - Tax, Version 2.0, Appendix B (archived PDF, 133 pages)",
+      "standard_version": "SAF-T 2.00",
+      "note": "Text extracted mechanically from an archived PDF. To verify: compare element names, occurrence and types with the current OECD schema file SAF-T_Schema_v_2.00.xsd. The definitions of Account/OpeningCreditBalance and Account/ClosingCreditBalance are listed as children but missing from the extracted text"
+    },
+    {
+      "artefacts": ["oecd-2.00-core-mapping"],
+      "status": "UNVERIFIED",
+      "source_ref": "Specs 02, 07, 10, 11 and 12 (core column names), schema structure file above",
+      "standard_version": "SAF-T 2.00",
+      "note": "Authored mapping. The core column names must be re-checked when the specs change. Open findings: G1 and G2 (no company address, no company contact)"
+    }
+  ]
+}

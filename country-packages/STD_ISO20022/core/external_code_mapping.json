@@ -1,0 +1,12 @@
+{
+  "resource": "external-code-mappings",
+  "scope": "TENANT",
+  "note": "Maps company_bank_account.payment_means_code (UN/CEFACT payment means code list, UNCL4461 subset, the codes of STD_EN16931, BT-81) to the ISO 20022 payment method, service level and local instrument. The external code is a composite of those parts joined with plus signs: method, then service level, then local instrument. The payment apps split it. 30 and 58 map to a credit transfer (PmtMtd TRF, SvcLvl SEPA for 58). 49 and 59 map to a direct debit (PmtMtd DD, SvcLvl SEPA and LclInstrm CORE for 59). A SEPA business-to-business debit has no UNCL4461 code of its own (finding G-ISO-6): it needs a code added by the country package or the company",
+  "defaults": { "standard_code": "ISO20022", "entity_type": "PAYMENT_MEANS", "valid_from": "2000-01-01" },
+  "objects": [
+    { "item_id": "ISO-PM-30", "entity_id": "30", "external_code": "TRF", "external_text": "Credit transfer (PmtMtd TRF)" },
+    { "item_id": "ISO-PM-58", "entity_id": "58", "external_code": "TRF+SEPA", "external_text": "SEPA credit transfer (PmtMtd TRF, SvcLvl SEPA)" },
+    { "item_id": "ISO-PM-49", "entity_id": "49", "external_code": "DD", "external_text": "Direct debit (PmtMtd DD)" },
+    { "item_id": "ISO-PM-59", "entity_id": "59", "external_code": "DD+SEPA+CORE", "external_text": "SEPA Core direct debit (PmtMtd DD, SvcLvl SEPA, LclInstrm CORE)" }
+  ]
+}

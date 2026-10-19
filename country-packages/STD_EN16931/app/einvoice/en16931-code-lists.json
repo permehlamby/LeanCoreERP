@@ -1,0 +1,48 @@
+{
+  "note": "Code lists used by the EN16931 data set. All values are UNVERIFIED: the sources found are secondary and the lists are versioned by their maintainers (the VATEX list is published about every six months). The verification records the list versions. The core's configuration validation of 07, 8.3 and 12, 9.2 is the rule in force, this file documents the standard it follows",
+  "vat_categories": {
+    "list": "UNCL5305 subset used by EN 16931 (BT-118, BT-151)",
+    "values": [
+      { "code": "S", "name": "Standard rated", "rate": "above 0", "exemption_reason": "not used", "rule_family": "BR-S" },
+      { "code": "Z", "name": "Zero rated goods", "rate": "0", "exemption_reason": "not used", "rule_family": "BR-Z" },
+      { "code": "E", "name": "Exempt from VAT", "rate": "0", "exemption_reason": "BT-120 or BT-121 required", "rule_family": "BR-E" },
+      { "code": "AE", "name": "VAT reverse charge", "rate": "0", "exemption_reason": "BT-120 or BT-121 required", "rule_family": "BR-AE" },
+      { "code": "K", "name": "VAT exempt for intra-community supply of goods and services", "rate": "0", "exemption_reason": "BT-120 or BT-121 required", "rule_family": "BR-IC" },
+      { "code": "G", "name": "Free export item, VAT not charged", "rate": "0", "exemption_reason": "BT-120 or BT-121 required", "rule_family": "BR-G" },
+      { "code": "O", "name": "Services outside scope of tax", "rate": "no rate (BT-119 not used)", "exemption_reason": "BT-120 or BT-121 required", "rule_family": "BR-O" },
+      { "code": "L", "name": "Canary Islands general indirect tax", "rate": "see the rule family", "exemption_reason": "see the rule family", "rule_family": "BR-IG" },
+      { "code": "M", "name": "Tax for production, services and importation in Ceuta and Melilla", "rate": "see the rule family", "exemption_reason": "see the rule family", "rule_family": "BR-IP" }
+    ],
+    "note": "Names, rate rules and rule families of L and M are not confirmed by the sources found. The rules of the families S, Z, E, AE, IC, G and O are from the Peppol BIS Billing 3.0 specification (BR-S-01 to BR-O-10)"
+  },
+  "vat_exemption_reason_codes": {
+    "list": "CEF VATEX (BT-121), version 6 per one source",
+    "values": [
+      { "code": "VATEX-EU-IC", "meaning": "Intra-community supply", "pairs_with_category": "K" },
+      { "code": "VATEX-EU-G", "meaning": "Export outside the EU", "pairs_with_category": "G" },
+      { "code": "VATEX-EU-AE", "meaning": "Reverse charge", "pairs_with_category": "AE" },
+      { "code": "VATEX-EU-O", "meaning": "Not subject to VAT", "pairs_with_category": "O" },
+      { "code": "VATEX-EU-132", "meaning": "Exempt based on Article 132 of Directive 2006/112/EC (public interest activities)", "pairs_with_category": "E", "note": "The article has sub-codes by activity. Not confirmed by the sources found" }
+    ]
+  },
+  "invoice_type_codes": {
+    "list": "UNTDID 1001 subset (BT-3)",
+    "values": [
+      { "code": "380", "meaning": "Commercial invoice" },
+      { "code": "381", "meaning": "Credit note" },
+      { "code": "384", "meaning": "Corrected invoice", "note": "Not produced by the core: a correction is a credit note and a new invoice" }
+    ]
+  },
+  "electronic_address_schemes": {
+    "list": "Electronic Address Scheme (EAS) code list maintained by OpenPeppol (BT-34-1, BT-49-1)",
+    "values": [
+      { "code": "0088", "meaning": "GLN (GS1)" },
+      { "code": "0184", "meaning": "Danish identifier (DIGSTORG)" },
+      { "code": "0192", "meaning": "Norwegian organisation number" },
+      { "code": "0007", "meaning": "Swedish organisation number (organisationsnummer)" }
+    ],
+    "note": "Only the schemes confirmed by a secondary source for the countries of the package tests are listed. A scheme for German parties is not listed. The full list is long and is maintained by OpenPeppol: the app uses the current list"
+  },
+  "units": { "list": "UN/ECE Recommendation 20 (BT-130)", "note": "ref_unit (10, 3.1) follows it, no mapping" },
+  "payment_means": { "list": "UNCL4461 subset (BT-81)", "note": "company_bank_account.payment_means_code holds the code. The default for a credit transfer is a package or company choice" }
+}

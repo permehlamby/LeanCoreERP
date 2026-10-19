@@ -1,0 +1,7 @@
+{
+  "note": "Class C content. The core never reads these artefacts (18, 4.5). The structure file is the schema as printed by the OECD, the mapping file is the assembly specification of the SAFT_DATASET variant OECD_BASE (12, 8)",
+  "artefacts": [
+    { "app_role": "saft-export", "name": "oecd-2.00-schema-elements", "file": "saft/oecd-2.00-schema-elements.json", "media_type": "application/json", "status": "DRAFT", "digest": null, "note": "423 element definitions with occurrence and type, extracted mechanically from the OECD appendix" },
+    { "app_role": "saft-export", "name": "oecd-2.00-core-mapping", "file": "saft/oecd-2.00-core-mapping.json", "media_type": "application/json", "status": "DRAFT", "digest": null, "note": "190 entries: every mandatory element of the covered scope is mapped to a core source or flagged as a gap" }
+  ]
+}

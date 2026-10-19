@@ -1,0 +1,58 @@
+﻿{
+    "note":  "The messages this package maps and the sources read. Version choice depends on the bank: Nordic banks may still use older camt versions",
+    "messages":  [
+                     {
+                         "message":  "pain.001.001.09",
+                         "name":  "Customer Credit Transfer Initiation",
+                         "direction":  "OUT",
+                         "role":  "Payment file from the treasury app to the bank",
+                         "profile":  "SEPA_CT",
+                         "basis":  "EPC",
+                         "element_file":  "sepa-ct-pain001-elements.json"
+                     },
+                     {
+                         "message":  "pain.002.001.10",
+                         "name":  "Customer Payment Status Report",
+                         "direction":  "IN",
+                         "role":  "Status or reject of a payment file",
+                         "profile":  "SEPA_CT_REJECT",
+                         "basis":  "EPC",
+                         "element_file":  "sepa-ct-pain002-elements.json"
+                     },
+                     {
+                         "message":  "pain.008.001.08",
+                         "name":  "Customer Direct Debit Initiation",
+                         "direction":  "OUT",
+                         "role":  "Collection file from the collection app to the bank",
+                         "profile":  "SEPA_DD",
+                         "basis":  "KNOWLEDGE",
+                         "note":  "The EPC SDD guideline was not read: the Core guideline URL guessed from the B2B name returned 404, and the Danske Bank pain.008 guide had no extractable text. Entries are authored and UNVERIFIED"
+                     },
+                     {
+                         "message":  "camt.053.001.08",
+                         "name":  "Bank To Customer Statement",
+                         "direction":  "IN",
+                         "role":  "Daily statement, the basis of payment postings",
+                         "profile":  "STATEMENT",
+                         "basis":  "BANK",
+                         "note":  "Structure from the mBank camt.053.001.08 description (a bank subset). Danske Bank documents camt.053.001.02 (CGI-MP) for Nordic accounts: the entries used here have the same tags there, with Sts as a code instead of a Cd element"
+                     },
+                     {
+                         "message":  "camt.053.001.02",
+                         "name":  "Bank To Customer Statement",
+                         "direction":  "IN",
+                         "role":  "Nordic variant of the daily statement",
+                         "profile":  "STATEMENT",
+                         "basis":  "BANK",
+                         "note":  "Danske Bank interpretation of CGI, version 7.0 of 2026-09-09 (secondary)"
+                     },
+                     {
+                         "message":  "camt.054.001.08",
+                         "name":  "Bank To Customer Debit Credit Notification",
+                         "direction":  "IN",
+                         "role":  "Intraday notification, faster matching",
+                         "profile":  "NOTIFICATION",
+                         "basis":  "KNOWLEDGE"
+                     }
+                 ]
+}

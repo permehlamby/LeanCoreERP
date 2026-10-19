@@ -1,0 +1,7 @@
+{
+  "policy": [
+    { "item_id": "DK-POL-0001", "policy_key": "NUMBERING_ORDER", "value": "POSTING_ORDER", "valid_from": "2000-01-01", "note": "Default. DATE_ORDER is not built (ADR-194). No Danish requirement for it found, UNVERIFIED" },
+    { "item_id": "DK-POL-0002", "policy_key": "CLEARING_IN_LEGAL_SERIES", "value": "NO", "valid_from": "2000-01-01", "note": "Default. YES is not built (ADR-194). UNVERIFIED" },
+    { "item_id": "DK-POL-0003", "policy_key": "TAX_POINT_RULE", "value": "DELIVERY_DATE", "valid_from": "2000-01-01", "note": "Default of 11, Q4: delivery date for goods invoiced from a delivery, invoice date otherwise. PAYMENT_DATE is unavailable (ADR-199). Danish tax point UNVERIFIED" }
+  ]
+}

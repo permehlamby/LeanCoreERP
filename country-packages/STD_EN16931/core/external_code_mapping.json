@@ -1,0 +1,10 @@
+{
+  "resource": "external-code-mappings",
+  "scope": "TENANT",
+  "note": "Document type codes of the invoice type code BT-3 (UNTDID 1001 subset). 380 commercial invoice, 381 credit note. The invoice kind CREDIT_NOTE of sales_invoice has the journal document type AR_CREDIT. Units need no mapping: ref_unit codes follow UN/ECE Recommendation 20 (10, 3.1). Payment means codes are stored directly on company_bank_account (12, 9.2). VAT category and exemption reason are attributes of the tax code version (12, 9.2), not mapped here",
+  "defaults": { "standard_code": "EN16931", "entity_type": "DOCUMENT_TYPE", "valid_from": "2000-01-01" },
+  "objects": [
+    { "item_id": "EN-DT-AR_INVOICE", "entity_id": "AR_INVOICE", "external_code": "380", "external_text": "Commercial invoice" },
+    { "item_id": "EN-DT-AR_CREDIT", "entity_id": "AR_CREDIT", "external_code": "381", "external_text": "Credit note" }
+  ]
+}

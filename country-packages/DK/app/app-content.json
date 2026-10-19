@@ -1,0 +1,15 @@
+{
+  "note": "Class C content. The core never reads these artefacts, it stores only the digests in the apply record (18, 4.5). Entries with status PLANNED have no file yet",
+  "artefacts": [
+    { "app_role": "reporting", "name": "dk-standard-chart-structure", "file": "reporting/dk-standard-chart-structure.json", "media_type": "application/json", "status": "DRAFT", "digest": null, "note": "Headings and sum rows of the public standard chart, version 20260101" },
+    { "app_role": "filing", "name": "dk-vat-return-layout", "file": "filing/dk-vat-return-layout.json", "media_type": "application/json", "status": "DRAFT", "digest": null },
+    { "app_role": "filing", "name": "dk-vat-period-advice", "file": null, "status": "PLANNED", "note": "Turnover bands for the filing frequency (ML paragraph 57 per one source). Advice only, the core never computes turnover" },
+    { "app_role": "saft-export", "name": "dk-saft-gap-analysis", "file": null, "status": "PLANNED", "note": "Gap analysis of the Danish file against the OECD base data set. The Danish requirement is not confirmed in the sources found" },
+    { "app_role": "einvoice-syntax", "name": "dk-peppol-bis3-profile", "file": null, "status": "PLANNED", "note": "Peppol BIS Billing 3 for public-sector exchange (UNVERIFIED), endpoint scheme ids. The payment related Danish rules are in dk-peppol-payment-rules (0.4.0), the rest of the profile is still planned" },
+    { "app_role": "invoice-text", "name": "dk-invoice-texts-da", "file": null, "status": "PLANNED", "note": "Mandatory phrases per tax code (reverse charge, intra-EU, export, exemption). Statutory wording to be verified" },
+    { "app_role": "payment", "name": "dk-payment-schemes", "file": "payment/dk-payment-schemes.json", "media_type": "application/json", "status": "DRAFT", "digest": null, "note": "FIK 71, 73 and 75, giro, domestic credit transfers, NemKonto, Betalingsservice, SEPA: identifiers, representations, core homes and facts, each with its basis" },
+    { "app_role": "payment", "name": "dk-reference-algorithms", "file": "payment/dk-reference-algorithms.json", "media_type": "application/json", "status": "DRAFT", "digest": null, "note": "FIK modulus 10 check digit (type 71 checked against the PBS handbook example), Danish BBAN and IBAN structure with a checked vector, Peppol PaymentID form" },
+    { "app_role": "payment", "name": "dk-peppol-payment-rules", "file": "payment/dk-peppol-payment-rules.json", "media_type": "application/json", "status": "DRAFT", "digest": null, "note": "Danish Peppol BIS Billing 3 rules DK-R-005 to DK-R-011 with what each needs from the core and the findings F-DK-19 and F-DK-20" },
+    { "app_role": "payment", "name": "dk-pain001-profile", "file": "payment/dk-pain001-profile.json", "media_type": "application/json", "status": "DRAFT", "digest": null, "note": "Codes of the Danish domestic payment types in pain.001 as one bank describes them, account and address rules, the 2027-04-01 change" }
+  ]
+}

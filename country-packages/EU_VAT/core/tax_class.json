@@ -1,0 +1,9 @@
+{
+  "resource": "tax-classes",
+  "scope": "TENANT",
+  "note": "Tax classes (07, 8.1) that country packages use as a rule key to tell goods from services in the intra-EU, import and export scenarios. The class of a line is the line's supplied class, else the item's or the account's default class (07, 8.5). Apply once per tenant: a second apply reports SKIPPED_EXISTS. A tenant may add more classes itself, for example for reduced-rate goods",
+  "objects": [
+    { "item_id": "EUV-TCL-GOODS", "ref": "tcl_goods", "code": "GOODS", "name": "Goods", "active": true },
+    { "item_id": "EUV-TCL-SERVICES", "ref": "tcl_services", "code": "SERVICES", "name": "Services", "active": true }
+  ]
+}

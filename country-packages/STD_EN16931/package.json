@@ -1,0 +1,44 @@
+{
+  "format_version": "1.0",
+  "package_code": "STD_EN16931",
+  "package_version": "1.0.1",
+  "kind": "STANDARD",
+  "state": "DRAFT",
+  "standard": {
+    "name": "EN 16931-1 European standard on electronic invoicing, semantic data model",
+    "edition": "EN 16931-1:2017+A1:2019 (baseline)",
+    "newer_edition": "EN 16931-1:2026, approved 2026-03-13, replaces the 2017 edition and is not backward compatible (secondary source, to verify)",
+    "note": "The EN16931 data set (12, 10) is the data of one invoice or credit note keyed by business term identifiers. Syntax (UBL, CII) and CIUS are app content"
+  },
+  "requires": [],
+  "sources": [
+    {
+      "title": "EN 16931 business rules (BR-xx, BR-CO-xx) as published in the Peppol BIS Billing 3.0 specification, section 16.2",
+      "url": "https://docs.peppol.eu/poacc/billing/3.0/bis/",
+      "used_for": ["app/einvoice/en16931-term-mapping.json"]
+    },
+    {
+      "title": "CEF code lists used in EN 16931 (VATEX, EAS, UNCL subsets)",
+      "url": "https://ec.europa.eu/digital-building-blocks/wikis/display/DIGITAL/Code+lists",
+      "used_for": ["app/einvoice/en16931-code-lists.json"]
+    }
+  ],
+  "owner": "Platform team",
+  "legal_reviewer": "to be named",
+  "scope": "Sales invoices and credit notes built by order management (sales_invoice). Not covered: allowances and charges, invoicing period, attachments, tax representative, payee, classification identifiers, item attributes",
+  "scope_map": {
+    "tenant": ["external_code_mapping"],
+    "company": []
+  },
+  "inputs": [],
+  "content": {
+    "core": ["core/external_code_mapping.json"],
+    "policy": null,
+    "app": "app/app-content.json",
+    "verification": "verification.json"
+  },
+  "findings_for_core": [
+    { "ref": "G1", "text": "The company has no address. The seller postal address BG-5 is mandatory, but only the country code BT-40 is, and the company has it. Street, city and post code (BT-35 to BT-38) are optional and not available" },
+    { "ref": "G7", "text": "The mandatory and conditional terms of the completeness check (12, 10) are held in the core's code, and this package lists the same set with its source. The two must stay equal. Decided in ADR-221 (2026-10-19): the core keeps a fixed rule set per edition selected by einvoice_rule_set and never reads this package, a conformance test compares the two" }
+  ]
+}

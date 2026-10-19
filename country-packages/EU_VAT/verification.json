@@ -1,0 +1,18 @@
+{
+  "package_code": "EU_VAT",
+  "package_version": "1.0.0",
+  "format_note": "item_prefixes cover all core items whose id starts with the prefix, artefacts name app artefacts of app/app-content.json. No item is VERIFIED, the package is DRAFT (18, section 6)",
+  "records": [
+    {
+      "item_prefixes": ["EUV-TCL-"],
+      "status": "NOT_APPLICABLE",
+      "note": "Two tax classes used as determination keys. A platform design choice with no legal claim"
+    },
+    {
+      "artefacts": ["scenario-catalogue"],
+      "status": "UNVERIFIED",
+      "source_ref": "Spec 08, section 3 (indicative catalogue), VAT Directive 2006/112/EC (not checked), EN 16931 category pairing from the STD_EN16931 code lists",
+      "note": "Every scenario is indicative and must be verified per member state in the country package. The EN 16931 pairing of EU-04 (services), EU-07 (triangulation) and EU-05 to EU-06 differs by country"
+    }
+  ]
+}

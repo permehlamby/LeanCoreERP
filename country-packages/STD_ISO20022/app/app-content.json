@@ -1,0 +1,10 @@
+{
+  "note": "Class C content. The core never reads these artefacts (18, 4.5). They are the assembly specification of the payment, collection and statement apps (22). The two element files are the data dictionary of the EPC guideline as printed, the mapping file says where every element comes from or goes to",
+  "artefacts": [
+    { "app_role": "payment-file", "name": "sepa-ct-pain001-elements", "file": "iso20022/sepa-ct-pain001-elements.json", "media_type": "application/json", "status": "DRAFT", "digest": null, "note": "Elements of pain.001.001.09 in the SEPA Core credit transfer profile: path, SEPA multiplicity, type, SEPA length and usage rule" },
+    { "app_role": "payment-file", "name": "sepa-ct-pain002-elements", "file": "iso20022/sepa-ct-pain002-elements.json", "media_type": "application/json", "status": "DRAFT", "digest": null, "note": "Elements of pain.002.001.10 in the SEPA reject dataset" },
+    { "app_role": "payment-file", "name": "iso20022-core-mapping", "file": "iso20022/iso20022-core-mapping.json", "media_type": "application/json", "status": "DRAFT", "digest": null, "note": "140 entries over five profiles. Every mandatory element of the pain.001 and pain.002 dictionaries has an entry or lies below one. Statuses MAPPED, DERIVED, CONSTANT, APP, EXTENSION, GAP, OMITTED, with the basis of each entry" },
+    { "app_role": "payment-file", "name": "iso20022-code-lists", "file": "iso20022/iso20022-code-lists.json", "media_type": "application/json", "status": "DRAFT", "digest": null, "note": "Reject reasons (from the guideline), status and statement codes (authored), character set, address rule, IBAN and RF check algorithms with test vectors" },
+    { "app_role": "payment-file", "name": "message-catalogue", "file": "iso20022/message-catalogue.json", "media_type": "application/json", "status": "DRAFT", "digest": null, "note": "The six messages, direction, profile and the basis of each" }
+  ]
+}

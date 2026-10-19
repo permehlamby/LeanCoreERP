@@ -1,0 +1,17 @@
+{
+  "resource": "tax-return-boxes",
+  "scope": "TENANT",
+  "note": "Symbolic box codes for the STANDARD return. The structure follows the official return text of the public VAT code list (column Momsangivelse: Salgsmoms, Købsmoms, Moms af varekøb i udlandet (både EU og lande uden for EU), Moms af ydelseskøb i udlandet med omvendt betalingspligt, Rubrik A varer og ydelser, Rubrik B varer, B oplysninger der ikke skal indberettes til EU-salg uden moms, B ydelser, Rubrik C) and must still be reconciled with the current TastSelv form before RELEASED. Danish labels and the derived total are app content (app/filing/dk-vat-return-layout.json). Energy taxes are not in v0.2. EC_LIST has no boxes: its rows are per partner, country and category (08, 6.4). The OSS return is not in v0.2",
+  "objects": [
+    { "item_id": "DK-BOX-0001", "country_code": "DK", "return_type": "STANDARD", "box_code": "DK_SALES_VAT", "name": "Salgsmoms (udgående moms)", "box_group": "VAT_AMOUNT" },
+    { "item_id": "DK-BOX-0002", "country_code": "DK", "return_type": "STANDARD", "box_code": "DK_PURCHASE_VAT", "name": "Købsmoms (indgående moms)", "box_group": "VAT_AMOUNT" },
+    { "item_id": "DK-BOX-0003", "country_code": "DK", "return_type": "STANDARD", "box_code": "DK_GOODS_ABROAD_VAT", "name": "Moms af varekøb i udlandet (både EU og lande uden for EU)", "box_group": "VAT_AMOUNT" },
+    { "item_id": "DK-BOX-0004", "country_code": "DK", "return_type": "STANDARD", "box_code": "DK_SERVICES_ABROAD_VAT", "name": "Moms af ydelseskøb i udlandet med omvendt betalingspligt", "box_group": "VAT_AMOUNT" },
+    { "item_id": "DK-BOX-0005", "country_code": "DK", "return_type": "STANDARD", "box_code": "DK_RUBRIK_A_GOODS", "name": "Rubrik A, varer", "box_group": "EU_BASE" },
+    { "item_id": "DK-BOX-0006", "country_code": "DK", "return_type": "STANDARD", "box_code": "DK_RUBRIK_A_SERVICES", "name": "Rubrik A, ydelser", "box_group": "EU_BASE" },
+    { "item_id": "DK-BOX-0007", "country_code": "DK", "return_type": "STANDARD", "box_code": "DK_RUBRIK_B_GOODS_LISTED", "name": "Rubrik B, varer (indberettes til EU-salg uden moms)", "box_group": "EU_BASE" },
+    { "item_id": "DK-BOX-0008", "country_code": "DK", "return_type": "STANDARD", "box_code": "DK_RUBRIK_B_GOODS_OTHER", "name": "Rubrik B, oplysninger der ikke skal indberettes til EU-salg uden moms", "box_group": "EU_BASE" },
+    { "item_id": "DK-BOX-0009", "country_code": "DK", "return_type": "STANDARD", "box_code": "DK_RUBRIK_B_SERVICES", "name": "Rubrik B, ydelser", "box_group": "EU_BASE" },
+    { "item_id": "DK-BOX-0010", "country_code": "DK", "return_type": "STANDARD", "box_code": "DK_RUBRIK_C", "name": "Rubrik C (herunder eksport uden for EU)", "box_group": "ZERO_BASE" }
+  ]
+}

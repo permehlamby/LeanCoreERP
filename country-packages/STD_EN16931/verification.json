@@ -1,0 +1,28 @@
+{
+  "package_code": "STD_EN16931",
+  "package_version": "1.0.1",
+  "format_note": "item_prefixes cover all core items whose id starts with the prefix, artefacts name app artefacts of app/app-content.json. No item is VERIFIED, the package is DRAFT (18, section 6)",
+  "records": [
+    {
+      "item_prefixes": ["EN-DT-"],
+      "status": "UNVERIFIED",
+      "source_ref": "UNTDID 1001 codes 380, 381 and 384 as named by secondary sources",
+      "standard_version": "EN 16931-1:2017+A1:2019",
+      "note": "Invoice type codes of BT-3"
+    },
+    {
+      "artefacts": ["en16931-term-mapping"],
+      "status": "UNVERIFIED",
+      "source_ref": "EN 16931 business rules BR-01 to BR-65 and BR-CO-09 to BR-CO-26 as listed in the Peppol BIS Billing 3.0 specification, section 16.2 (secondary, paraphrased). BT-151 as mandatory follows BR-CO-04, which was not in the excerpt",
+      "standard_version": "EN 16931-1:2017+A1:2019",
+      "note": "Term names and the requirement column. Verify against EN 16931-1 of the targeted edition. The 2026 edition changes some cardinalities (one source: BT-10, BT-29, BT-46). The core mapping column is authored against specs 02, 07, 10, 11, 12"
+    },
+    {
+      "artefacts": ["en16931-code-lists"],
+      "status": "UNVERIFIED",
+      "source_ref": "CEF code lists page of the European Commission, Peppol BIS Billing 3.0 (EAS), secondary summaries",
+      "standard_version": "VATEX version 6 (one source), EAS version not recorded",
+      "note": "The categories L and M, the VATEX Article 132 sub-codes and the EAS list are not confirmed. Record the exact list versions at verification"
+    }
+  ]
+}

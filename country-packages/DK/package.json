@@ -1,0 +1,85 @@
+{
+  "format_version": "1.0",
+  "package_code": "DK",
+  "package_version": "0.4.0",
+  "kind": "COUNTRY",
+  "country_code": "DK",
+  "state": "DRAFT",
+  "requires": [
+    { "package_code": "STD_SAFT_OECD", "range": "^1", "status": "DRAFT_WRITTEN" },
+    { "package_code": "STD_EN16931", "range": "^1", "status": "DRAFT_WRITTEN" },
+    { "package_code": "EU_VAT", "range": "^1", "status": "DRAFT_WRITTEN", "provides_to_dk": ["tcl_goods", "tcl_services"] }
+  ],
+  "sources": [
+    {
+      "file": "2026-01-01 Standardkontoplan.xlsx",
+      "version": "20260101",
+      "authority": "Fællesoffentlig standardkontoplan (Erhvervsstyrelsen, Skattestyrelsen, Danmarks Statistik)",
+      "sha256": "0dbebecfddcd395c984732c4ac11a03820605a308e743c85f45de12feb17fc96",
+      "used_for": ["core/gl_account.json", "core/tax_code.json", "app/reporting/dk-standard-chart-structure.json"]
+    }
+  ],
+  "law_effective_from": "2000-01-01",
+  "owner": "DK country owner (Per Amby)",
+  "legal_reviewer": "to be named",
+  "scope": "Finance core and VAT. The public standard chart is used directly. 55 of the 72 codes of the official VAT code list, including partial deduction (fixed percentage, pro rata, estimate, sector, area, supplied cap) and reverse charge without deduction (ADR-201 to ADR-206). From 0.4.0 the payment schemes (FIK 71, 73 and 75, giro, domestic credit transfers, NemKonto, Betalingsservice) as app content, with check algorithms, the Danish Peppol payment rules and one bank's pain.001 profile. Not in v0.4: orders and inventory account determination, order and fulfilment number series, OSS and IOSS, special schemes (used goods, margin, cars), the refund scheme, local VAT abroad, energy taxes, public holidays, the creditor side of Betalingsservice (see CHANGELOG.md)",
+  "scope_map": {
+    "tenant": ["tax_return_box"],
+    "company": [
+      "company_vat_registration",
+      "company_setting_version",
+      "gl_account",
+      "account_role_assignment",
+      "tax_code",
+      "tax_determination_rule",
+      "vat_deduction_key",
+      "vat_deduction_rate",
+      "number_series",
+      "number_series_assignment",
+      "retention_rule",
+      "payment_terms"
+    ]
+  },
+  "inputs": [
+    { "name": "vat_id", "type": "text", "required": true, "note": "CVR-based VAT id of the company" },
+    { "name": "filing_frequency", "type": "code", "allowed": ["MONTHLY", "QUARTERLY", "HALF_YEARLY"], "required": true, "note": "Depends on turnover band (UNVERIFIED, advice is app content, not computed by the core)" },
+    { "name": "ec_list_frequency", "type": "code", "allowed": ["MONTHLY", "QUARTERLY", null], "default": null },
+    { "name": "correction_method", "type": "code", "allowed": ["ADJUST_NEXT", "SUPPLEMENTARY", "REPLACEMENT"], "default": "ADJUST_NEXT", "note": "Country default not verified" },
+    { "name": "vat_profile", "type": "code", "allowed": [1, 2, 3, 4], "required": true, "note": "Business type of the official VAT code list: 1 trade in DK only, 2 DK with mixed taxable and exempt activities, 3 also foreign trade, 4 mixed with foreign trade. Selects the tax codes whose `profiles` contain the value" },
+    { "name": "include_special_codes", "type": "bool", "default": false, "note": "Adds the codes of profile 5 that the package contains (K610, K660, K670, K680, K690, K700 in v0.3)" },
+    { "name": "pro_rata_rate_pct", "type": "rate", "required": false, "note": "Initial provisional pro rata rate in percent. Creates a PROVISIONAL rate of the key PRO_RATA from first_fiscal_year_start. Needed for profiles 2 and 4 (mixed activities). The core never computes it" },
+    { "name": "estimate_rate_pct", "type": "rate", "required": false, "note": "Initial estimated deduction rate (key ESTIMATE), if the company uses the estimate codes" },
+    { "name": "sector_rate_pct", "type": "rate", "required": false, "note": "Initial rate of the key SECTOR, if the company uses the sector code" },
+    { "name": "area_rate_pct", "type": "rate", "required": false, "note": "Initial rate of the key AREA, if the company uses the area-based codes" },
+    { "name": "first_fiscal_year_start", "type": "date", "required": true, "note": "start_date of the first opened fiscal year, used as effective_from of series assignments (04, 5.2)" },
+    { "name": "local_currency", "type": "code", "default": "DKK" }
+  ],
+  "content": {
+    "core": [
+      "core/company_vat_registration.json",
+      "core/company_setting_version.json",
+      "core/gl_account.json",
+      "core/account_role_assignment.json",
+      "core/tax_return_box.json",
+      "core/tax_code.json",
+      "core/tax_determination_rule.json",
+      "core/vat_deduction_key.json",
+      "core/vat_deduction_rate.json",
+      "core/number_series.json",
+      "core/retention_rule.json",
+      "core/payment_terms.json"
+    ],
+    "policy": "policy.json",
+    "app": "app/app-content.json",
+    "verification": "verification.json"
+  },
+  "requires_core_delta": [
+    { "adr": "ADR-200", "reason": "ADR-200 (accepted): tax_determination_rule needs derived keys origin_eu and destination_eu. Rules DK-RUL-S03 to S06 and P02 to P05 use them. The delta is specified in 07, 8.4, 02, 7.1 and 08, 3.1 (2026-10-14), the implementation is pending" },
+    { "adr": "ADR-203", "reason": "Partial and non-deductible input VAT (ADR-201 to ADR-206, design in 19, deltas specified 2026-10-14, implementation pending). The codes with deductible_pct below 100, a deduction_key or a deduction_cap and the files vat_deduction_key.json and vat_deduction_rate.json need the code version columns and the two tables of 07, 8.3 and 8.6. VALIDATE fails with PACKAGE.REFERENCE_UNRESOLVED until they exist" }
+  ],
+  "findings_for_core": [
+    { "ref": "F-DK-19", "text": "FIK creditor numbers and giro accounts have no core home, and the Danish Peppol rules need them as the payee account id (DK-R-008, DK-R-010). company_bank_account had an IBAN only. CLOSED by ADR-223 (accepted 2026-10-19, applied in 07, 9.5)" },
+    { "ref": "F-DK-20", "text": "BT-83 remittance information (the PaymentID with the card type prefix) is not in the STD_EN16931 term mapping, and 12, section 10 read no payment_reference. PARTLY CLOSED by ADR-223: BT-83 is now mapped (STD_EN16931 1.0.1) and read. Open: registration number of the bank, mandate id and payer account (DK-R-006, DK-R-007)" },
+    { "ref": "F-DK-21", "text": "sales-invoices:create has no field for the open item payment_reference, and the FIK payment id is built from the invoice number, which exists only after posting. The app sets payment_reference with change-open-fields (L2) after the post and before the e-invoice data set is read (22, 4.2)" }
+  ]
+}

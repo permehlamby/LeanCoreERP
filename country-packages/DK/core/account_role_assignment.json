@@ -1,0 +1,15 @@
+{
+  "resource": "account-role-assignments",
+  "note": "Roles of 07, 6.3 mapped to accounts of the public standard chart. Roles that need an account the standard does not name use a horizontal dimension of a standard account (suffix, allowed by the standard). One account has one role (07, 6.3 F8). Foreign exchange: the standard has separate gain and loss accounts, the role FX_REALISED needs one account, so realised differences are netted on 3610-1 (design choice). IC roles are per counterpart company and cannot be package content. Roles resolved by account_determination (inventory, orders) are not in v0.2",
+  "objects": [
+    { "item_id": "DK-ROL-0001", "role_code": "ROUNDING", "account": "acc_2720-1", "effective_from": "APPLY_TIME" },
+    { "item_id": "DK-ROL-0002", "role_code": "TAX_ROUNDING", "account": "acc_2720-2", "effective_from": "APPLY_TIME" },
+    { "item_id": "DK-ROL-0003", "role_code": "FX_REALISED", "account": "acc_3610-1", "effective_from": "APPLY_TIME" },
+    { "item_id": "DK-ROL-0004", "role_code": "FX_UNREALISED_GAIN", "account": "acc_3535-1", "effective_from": "APPLY_TIME" },
+    { "item_id": "DK-ROL-0005", "role_code": "FX_UNREALISED_LOSS", "account": "acc_3610-2", "effective_from": "APPLY_TIME" },
+    { "item_id": "DK-ROL-0006", "role_code": "RETAINED_EARNINGS", "account": "acc_6940", "effective_from": "APPLY_TIME", "note": "Overført resultat, jf. resultatdisponering. Choice of account to confirm with the first Danish client" },
+    { "item_id": "DK-ROL-0007", "role_code": "VAT_SETTLEMENT", "account": "acc_7840", "vat_registration": "$registration", "effective_from": "APPLY_TIME", "note": "Skyldig moms. A refund position is a negative balance on this account. Tilgodehavende moms (6320) is not used by the settlement" },
+    { "item_id": "DK-ROL-0008", "role_code": "MIGRATION_CLEARING", "account": "acc_6330-M", "effective_from": "APPLY_TIME" },
+    { "item_id": "DK-ROL-0009", "role_code": "HISTORY_RESULT", "account": "acc_6935", "effective_from": "APPLY_TIME", "note": "Overført resultat, primo" }
+  ]
+}

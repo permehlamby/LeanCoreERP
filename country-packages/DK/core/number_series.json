@@ -1,0 +1,43 @@
+{
+  "resource": "number-series",
+  "note": "Gapless is_legal is stricter than the EU invoice rule (sequential, unique; UNVERIFIED) and is accepted. include_fiscal_year is true on every series (04, 5.1). Order and fulfilment document types (11) are not in v0.1: their type codes must be added from 11 before orders are used (readiness check 07, 11.3)",
+  "series": [
+    { "item_id": "DK-NUM-AR", "ref": "ser_ar", "series_code": "AR-INV", "description": "Debitorfakturaer og kreditnotaer", "prefix": "AR", "include_fiscal_year": true, "separator": "-", "number_length": 6, "start_number": 1, "is_legal": true },
+    { "item_id": "DK-NUM-AP", "ref": "ser_ap", "series_code": "AP-INV", "description": "Kreditorfakturaer og kreditnotaer", "prefix": "AP", "include_fiscal_year": true, "separator": "-", "number_length": 6, "start_number": 1, "is_legal": true },
+    { "item_id": "DK-NUM-PAY", "ref": "ser_pay", "series_code": "PAY", "description": "Betalinger", "prefix": "PAY", "include_fiscal_year": true, "separator": "-", "number_length": 6, "start_number": 1, "is_legal": true },
+    { "item_id": "DK-NUM-GL", "ref": "ser_gl", "series_code": "GL-JRN", "description": "Finansposteringer og systemposteringer", "prefix": "GL", "include_fiscal_year": true, "separator": "-", "number_length": 6, "start_number": 1, "is_legal": true },
+    { "item_id": "DK-NUM-STK", "ref": "ser_stk", "series_code": "STK", "description": "Lagerbevægelser og afledte bilag", "prefix": "STK", "include_fiscal_year": true, "separator": "-", "number_length": 6, "start_number": 1, "is_legal": true },
+    { "item_id": "DK-NUM-MIG", "ref": "ser_mig", "series_code": "MIG", "description": "Migreringsbilag (ikke juridisk serie)", "prefix": "MIG", "include_fiscal_year": true, "separator": "-", "number_length": 6, "start_number": 1, "is_legal": false }
+  ],
+  "assignments": [
+    { "item_id": "DK-NAS-01", "document_type": "AR_INVOICE", "series": "ser_ar" },
+    { "item_id": "DK-NAS-02", "document_type": "AR_CREDIT", "series": "ser_ar" },
+    { "item_id": "DK-NAS-03", "document_type": "AP_INVOICE", "series": "ser_ap" },
+    { "item_id": "DK-NAS-04", "document_type": "AP_CREDIT", "series": "ser_ap" },
+    { "item_id": "DK-NAS-05", "document_type": "PAYMENT", "series": "ser_pay" },
+    { "item_id": "DK-NAS-06", "document_type": "JOURNAL", "series": "ser_gl" },
+    { "item_id": "DK-NAS-07", "document_type": "REVERSAL", "series": "ser_gl" },
+    { "item_id": "DK-NAS-08", "document_type": "REVALUATION", "series": "ser_gl" },
+    { "item_id": "DK-NAS-09", "document_type": "REVAL_REVERSAL", "series": "ser_gl" },
+    { "item_id": "DK-NAS-10", "document_type": "YEAR_END", "series": "ser_gl" },
+    { "item_id": "DK-NAS-11", "document_type": "VAT_SETTLE", "series": "ser_gl" },
+    { "item_id": "DK-NAS-12", "document_type": "CLEARING", "series": "ser_gl" },
+    { "item_id": "DK-NAS-13", "document_type": "CLEARING_RESET", "series": "ser_gl" },
+    { "item_id": "DK-NAS-14", "document_type": "STOCK_RECEIPT", "series": "ser_stk" },
+    { "item_id": "DK-NAS-15", "document_type": "STOCK_ISSUE", "series": "ser_stk" },
+    { "item_id": "DK-NAS-16", "document_type": "STOCK_ADJUSTMENT", "series": "ser_stk" },
+    { "item_id": "DK-NAS-17", "document_type": "STOCK_TRANSFER", "series": "ser_stk" },
+    { "item_id": "DK-NAS-18", "document_type": "STOCK_STATUS_CHANGE", "series": "ser_stk" },
+    { "item_id": "DK-NAS-19", "document_type": "STOCK_COST_ADJUSTMENT", "series": "ser_stk" },
+    { "item_id": "DK-NAS-20", "document_type": "STOCK_RETURN", "series": "ser_stk" },
+    { "item_id": "DK-NAS-21", "document_type": "STOCK_REVERSAL", "series": "ser_stk" },
+    { "item_id": "DK-NAS-22", "document_type": "DROPSHIP_COST", "series": "ser_stk" },
+    { "item_id": "DK-NAS-23", "document_type": "GR_IR_WRITE_OFF", "series": "ser_gl" },
+    { "item_id": "DK-NAS-24", "document_type": "OPENING", "series": "ser_mig" },
+    { "item_id": "DK-NAS-25", "document_type": "OPENING_ITEMS", "series": "ser_mig" },
+    { "item_id": "DK-NAS-26", "document_type": "HISTORY_SUMMARY", "series": "ser_mig" },
+    { "item_id": "DK-NAS-27", "document_type": "CLOSING", "series": "ser_mig" },
+    { "item_id": "DK-NAS-28", "document_type": "STOCK_OPENING", "series": "ser_mig" }
+  ],
+  "assignment_defaults": { "ledger_id": null, "effective_from": "$input.first_fiscal_year_start" }
+}

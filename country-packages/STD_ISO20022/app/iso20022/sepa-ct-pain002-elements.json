@@ -1,0 +1,607 @@
+﻿{
+    "source":  {
+                   "title":  "EPC132-08, 2025 Version 1.0, section 2.2.1 Use of the Customer Payment Status Report (pain.002.001.10), reject dataset based on DS-03",
+                   "authority":  "European Payments Council",
+                   "url":  "https://www.europeanpaymentscouncil.eu/sites/default/files/kb/file/2025-10/EPC132-08%20SCT%20C2PSP%20IG%202025%20V1.0.pdf",
+                   "pdf_sha256":  "0719e0fd8482b69dcbceec2f6e8aa70306e6a3d740317fa5819c83c63aa6ef95",
+                   "extraction":  "As for pain.001. Paths are relative to CstmrPmtStsRpt. This is the reject dataset only: group, payment information and transaction status are RJCT"
+               },
+    "message":  "pain.002.001.10",
+    "root":  "CstmrPmtStsRpt",
+    "profile":  "SEPA_CT_REJECT",
+    "count":  74,
+    "elements":  [
+                     {
+                         "ref":  "1.0",
+                         "path":  "GrpHdr",
+                         "mult":  "1..1",
+                         "type":  "GroupHeader86",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "1.1",
+                         "path":  "GrpHdr/MsgId",
+                         "mult":  "1..1",
+                         "type":  "Max35Text",
+                         "sepa_length":  "1..35",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "1.2",
+                         "path":  "GrpHdr/CreDtTm",
+                         "mult":  "1..1",
+                         "type":  "ISODateTime",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "1.3",
+                         "path":  "GrpHdr/InitgPty",
+                         "mult":  "0..1",
+                         "type":  "PartyIdentification135",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "1.4",
+                         "path":  "GrpHdr/FwdgAgt",
+                         "mult":  "0..1",
+                         "type":  "BranchAndFinancialInstitutionIdentification6",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "1.5",
+                         "path":  "GrpHdr/DbtrAgt",
+                         "mult":  "0..1",
+                         "type":  "BranchAndFinancialInstitutionIdentification6",
+                         "sepa_length":  "",
+                         "sepa_usage":  "Only \u0027BICFI\u0027 is allowed."
+                     },
+                     {
+                         "ref":  "1.6",
+                         "path":  "GrpHdr/CdtrAgt",
+                         "mult":  "0..1",
+                         "type":  "BranchAndFinancialInstitutionIdentification6",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.0",
+                         "path":  "OrgnlGrpInfAndSts",
+                         "mult":  "1..1",
+                         "type":  "OriginalGroupHeader17",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.1",
+                         "path":  "OrgnlGrpInfAndSts/OrgnlMsgId",
+                         "mult":  "1..1",
+                         "type":  "Max35Text",
+                         "sepa_length":  "1..35",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.2",
+                         "path":  "OrgnlGrpInfAndSts/OrgnlMsgNmId",
+                         "mult":  "1..1",
+                         "type":  "Max35Text",
+                         "sepa_length":  "1..35",
+                         "sepa_usage":  "Must begin with pain.001. The addition of a variant number and version number is optional."
+                     },
+                     {
+                         "ref":  "2.3",
+                         "path":  "OrgnlGrpInfAndSts/OrgnlCreDtTm",
+                         "mult":  "0..1",
+                         "type":  "ISODateTime",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.4",
+                         "path":  "OrgnlGrpInfAndSts/OrgnlNbOfTxs",
+                         "mult":  "0..1",
+                         "type":  "Max15NumericText",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.5",
+                         "path":  "OrgnlGrpInfAndSts/OrgnlCtrlSum",
+                         "mult":  "0..1",
+                         "type":  "DecimalNumber",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.6",
+                         "path":  "OrgnlGrpInfAndSts/GrpSts",
+                         "mult":  "0..1",
+                         "type":  "ExternalPaymentGroupStatus1Code",
+                         "sepa_length":  "1..4",
+                         "sepa_usage":  "Group Status, Payment Information Status or Transaction Status must be present with the code \"RJCT\"."
+                     },
+                     {
+                         "ref":  "2.7",
+                         "path":  "OrgnlGrpInfAndSts/StsRsnInf",
+                         "mult":  "0..n",
+                         "type":  "StatusReasonInformation12",
+                         "sepa_length":  "",
+                         "sepa_usage":  "Status Reason Information must be present in Original Group Information And Status, Original Payment Information and Status or Transaction Information and Status."
+                     },
+                     {
+                         "ref":  "2.8",
+                         "path":  "OrgnlGrpInfAndSts/StsRsnInf/Orgtr",
+                         "mult":  "1..1",
+                         "type":  "PartyIdentification135",
+                         "sepa_length":  "",
+                         "sepa_usage":  "Mandatory. Limited to \u0027AnyBIC\u0027 to identify the PSP or CSM originating the status or Name to indicate a CSM when it has no BIC. Name is limited to 70 characters in length."
+                     },
+                     {
+                         "ref":  "2.9",
+                         "path":  "OrgnlGrpInfAndSts/StsRsnInf/Rsn",
+                         "mult":  "1..1",
+                         "type":  "StatusReason6Choice",
+                         "sepa_length":  "",
+                         "sepa_usage":  "Mandatory"
+                     },
+                     {
+                         "ref":  "2.10",
+                         "path":  "OrgnlGrpInfAndSts/StsRsnInf/Rsn/Cd",
+                         "mult":  "1..1",
+                         "type":  "ExternalStatusReason1Code",
+                         "sepa_length":  "1..4",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.11",
+                         "path":  "OrgnlGrpInfAndSts/StsRsnInf/Rsn/Prtry",
+                         "mult":  "1..1",
+                         "type":  "Max35Text",
+                         "sepa_length":  "1..35",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.12",
+                         "path":  "OrgnlGrpInfAndSts/StsRsnInf/AddtlInf",
+                         "mult":  "0..n",
+                         "type":  "Max105Text",
+                         "sepa_length":  "1..105",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "2.13",
+                         "path":  "OrgnlGrpInfAndSts/NbOfTxsPerSts",
+                         "mult":  "0..n",
+                         "type":  "NumberOfTransactionsPerStatus5",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "3.0",
+                         "path":  "OrgnlPmtInfAndSts",
+                         "mult":  "0..n",
+                         "type":  "OriginalPaymentInstruction32",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "3.1",
+                         "path":  "OrgnlPmtInfAndSts/OrgnlPmtInfId",
+                         "mult":  "1..1",
+                         "type":  "Max35Text",
+                         "sepa_length":  "1..35",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "3.2",
+                         "path":  "OrgnlPmtInfAndSts/OrgnlNbOfTxs",
+                         "mult":  "0..1",
+                         "type":  "Max15NumericText",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "3.3",
+                         "path":  "OrgnlPmtInfAndSts/OrgnlCtrlSum",
+                         "mult":  "0..1",
+                         "type":  "DecimalNumber",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "3.4",
+                         "path":  "OrgnlPmtInfAndSts/PmtInfSts",
+                         "mult":  "0..1",
+                         "type":  "ExternalPaymentGroupStatus1Code",
+                         "sepa_length":  "1..4",
+                         "sepa_usage":  "Group Status, Payment Information Status or Transaction Status must be present with the code \"RJCT\"."
+                     },
+                     {
+                         "ref":  "3.5",
+                         "path":  "OrgnlPmtInfAndSts/StsRsnInf",
+                         "mult":  "0..n",
+                         "type":  "StatusReasonInformation12",
+                         "sepa_length":  "",
+                         "sepa_usage":  "Status Reason Information must be present in Original Group Information and Status, Original Payment Information and Status or Transaction Information and Status."
+                     },
+                     {
+                         "ref":  "3.6",
+                         "path":  "OrgnlPmtInfAndSts/StsRsnInf/Orgtr",
+                         "mult":  "1..1",
+                         "type":  "PartyIdentification135",
+                         "sepa_length":  "",
+                         "sepa_usage":  "Mandatory. Limited to \u0027AnyBIC\u0027 to identify the PSP or CSM originating the status or Name to indicate a CSM when it has no BIC. Name is limited to 70 characters in length."
+                     },
+                     {
+                         "ref":  "3.7",
+                         "path":  "OrgnlPmtInfAndSts/StsRsnInf/Rsn",
+                         "mult":  "1..1",
+                         "type":  "StatusReason6Choice",
+                         "sepa_length":  "",
+                         "sepa_usage":  "Mandatory."
+                     },
+                     {
+                         "ref":  "3.8",
+                         "path":  "OrgnlPmtInfAndSts/StsRsnInf/Rsn/Cd",
+                         "mult":  "1..1",
+                         "type":  "ExternalStatusReason1Code",
+                         "sepa_length":  "1..4",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "3.9",
+                         "path":  "OrgnlPmtInfAndSts/StsRsnInf/Rsn/Prtry",
+                         "mult":  "1..1",
+                         "type":  "Max35Text",
+                         "sepa_length":  "1..35",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "3.10",
+                         "path":  "OrgnlPmtInfAndSts/StsRsnInf/AddtlInf",
+                         "mult":  "0..n",
+                         "type":  "Max105Text",
+                         "sepa_length":  "1..105",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "3.11",
+                         "path":  "OrgnlPmtInfAndSts/NbOfTxsPerSts",
+                         "mult":  "0..n",
+                         "type":  "NumberOfTransactionsPerStatus5",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "3.12",
+                         "path":  "OrgnlPmtInfAndSts/TxInfAndSts",
+                         "mult":  "0..n",
+                         "type":  "PaymentTransaction105",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "3.13",
+                         "path":  "OrgnlPmtInfAndSts/TxInfAndSts/StsId",
+                         "mult":  "0..1",
+                         "type":  "Max35Text",
+                         "sepa_length":  "1..35",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "3.14",
+                         "path":  "OrgnlPmtInfAndSts/TxInfAndSts/OrgnlInstrId",
+                         "mult":  "0..1",
+                         "type":  "Max35Text",
+                         "sepa_length":  "1..35",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "3.15",
+                         "path":  "OrgnlPmtInfAndSts/TxInfAndSts/OrgnlEndToEndId",
+                         "mult":  "0..1",
+                         "type":  "Max35Text",
+                         "sepa_length":  "1..35",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "3.16",
+                         "path":  "OrgnlPmtInfAndSts/TxInfAndSts/OrgnlUETR",
+                         "mult":  "0..1",
+                         "type":  "UUIDv4Identifier",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "3.17",
+                         "path":  "OrgnlPmtInfAndSts/TxInfAndSts/TxSts",
+                         "mult":  "0..1",
+                         "type":  "ExternalPaymentTransactionStatus1Code",
+                         "sepa_length":  "1..4",
+                         "sepa_usage":  "Group Status, \u0027Payment Information Status or Transaction Status must be present with the code \"RJCT\"."
+                     },
+                     {
+                         "ref":  "3.18",
+                         "path":  "OrgnlPmtInfAndSts/TxInfAndSts/StsRsnInf",
+                         "mult":  "0..n",
+                         "type":  "StatusReasonInformation12",
+                         "sepa_length":  "",
+                         "sepa_usage":  "Status Reason Information must be present in Original Group Information and Status, Original Payment Information and Status or Transaction Information and Status."
+                     },
+                     {
+                         "ref":  "3.19",
+                         "path":  "OrgnlPmtInfAndSts/TxInfAndSts/StsRsnInf/Orgtr",
+                         "mult":  "1..1",
+                         "type":  "PartyIdentification135",
+                         "sepa_length":  "",
+                         "sepa_usage":  "Mandatory. Limited to \u0027AnyBIC\u0027 to identify the PSP or CSM originating the status or Name to indicate a CSM when it has no BIC. Name is limited to 70 characters in length."
+                     },
+                     {
+                         "ref":  "3.20",
+                         "path":  "OrgnlPmtInfAndSts/TxInfAndSts/StsRsnInf/Rsn",
+                         "mult":  "1..1",
+                         "type":  "StatusReason6Choice",
+                         "sepa_length":  "",
+                         "sepa_usage":  "Mandatory."
+                     },
+                     {
+                         "ref":  "3.21",
+                         "path":  "OrgnlPmtInfAndSts/TxInfAndSts/StsRsnInf/Rsn/Cd",
+                         "mult":  "1..1",
+                         "type":  "ExternalStatusReason1Code",
+                         "sepa_length":  "1..4",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "3.22",
+                         "path":  "OrgnlPmtInfAndSts/TxInfAndSts/StsRsnInf/Rsn/Prtry",
+                         "mult":  "1..1",
+                         "type":  "Max35Text",
+                         "sepa_length":  "1..35",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "3.23",
+                         "path":  "OrgnlPmtInfAndSts/TxInfAndSts/StsRsnInf/AddtlInf",
+                         "mult":  "0..n",
+                         "type":  "Max105Text",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "3.24",
+                         "path":  "OrgnlPmtInfAndSts/TxInfAndSts/ChrgsInf",
+                         "mult":  "0..n",
+                         "type":  "Charges7",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "3.25",
+                         "path":  "OrgnlPmtInfAndSts/TxInfAndSts/TrckrData",
+                         "mult":  "0..1",
+                         "type":  "TrackerData1",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "3.26",
+                         "path":  "OrgnlPmtInfAndSts/TxInfAndSts/AccptncDtTm",
+                         "mult":  "0..1",
+                         "type":  "ISODateTime",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "3.27",
+                         "path":  "OrgnlPmtInfAndSts/TxInfAndSts/AcctSvcrRef",
+                         "mult":  "0..1",
+                         "type":  "Max35Text",
+                         "sepa_length":  "1..35",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "3.28",
+                         "path":  "OrgnlPmtInfAndSts/TxInfAndSts/ClrSysRef",
+                         "mult":  "0..1",
+                         "type":  "Max35Text",
+                         "sepa_length":  "1..35",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "3.29",
+                         "path":  "OrgnlPmtInfAndSts/TxInfAndSts/OrgnlTxRef",
+                         "mult":  "0..1",
+                         "type":  "OriginalTransactionReference28",
+                         "sepa_length":  "",
+                         "sepa_usage":  "The message elements under Original Transaction Reference must be populated with the same value as the message elements of the original instruction."
+                     },
+                     {
+                         "ref":  "3.30",
+                         "path":  "OrgnlPmtInfAndSts/TxInfAndSts/OrgnlTxRef/IntrBkSttlmAmt",
+                         "mult":  "0..1",
+                         "type":  "ActiveOrHistoricCurrencyAndAmount",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "3.31",
+                         "path":  "OrgnlPmtInfAndSts/TxInfAndSts/OrgnlTxRef/Amt",
+                         "mult":  "0..1",
+                         "type":  "AmountType4Choice",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "3.32",
+                         "path":  "OrgnlPmtInfAndSts/TxInfAndSts/OrgnlTxRef/IntrBkSttlmDt",
+                         "mult":  "0..1",
+                         "type":  "ISODate",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "3.33",
+                         "path":  "OrgnlPmtInfAndSts/TxInfAndSts/OrgnlTxRef/ReqdColltnDt",
+                         "mult":  "0..1",
+                         "type":  "ISODate",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "3.34",
+                         "path":  "OrgnlPmtInfAndSts/TxInfAndSts/OrgnlTxRef/ReqdExctnDt",
+                         "mult":  "0..1",
+                         "type":  "DateAndDateTime2Choice",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "3.35",
+                         "path":  "OrgnlPmtInfAndSts/TxInfAndSts/OrgnlTxRef/CdtrSchmeId",
+                         "mult":  "0..1",
+                         "type":  "PartyIdentification135",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "3.36",
+                         "path":  "OrgnlPmtInfAndSts/TxInfAndSts/OrgnlTxRef/SttlmInf",
+                         "mult":  "0..1",
+                         "type":  "SettlementInstruction7",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "3.37",
+                         "path":  "OrgnlPmtInfAndSts/TxInfAndSts/OrgnlTxRef/PmtTpInf",
+                         "mult":  "0..1",
+                         "type":  "PaymentTypeInformation27",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "3.38",
+                         "path":  "OrgnlPmtInfAndSts/TxInfAndSts/OrgnlTxRef/PmtMtd",
+                         "mult":  "0..1",
+                         "type":  "PaymentMethod4Code",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "3.39",
+                         "path":  "OrgnlPmtInfAndSts/TxInfAndSts/OrgnlTxRef/MndtRltdInf",
+                         "mult":  "0..1",
+                         "type":  "MandateRelatedInformation14",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "3.40",
+                         "path":  "OrgnlPmtInfAndSts/TxInfAndSts/OrgnlTxRef/RmtInf",
+                         "mult":  "0..1",
+                         "type":  "RemittanceInformation16",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "3.41",
+                         "path":  "OrgnlPmtInfAndSts/TxInfAndSts/OrgnlTxRef/UltmtDbtr",
+                         "mult":  "0..1",
+                         "type":  "Party40Choice",
+                         "sepa_length":  "",
+                         "sepa_usage":  "Only \u0027Party\u0027 is allowed."
+                     },
+                     {
+                         "ref":  "3.42",
+                         "path":  "OrgnlPmtInfAndSts/TxInfAndSts/OrgnlTxRef/Dbtr",
+                         "mult":  "0..1",
+                         "type":  "Party40Choice",
+                         "sepa_length":  "",
+                         "sepa_usage":  "Only \u0027Party\u0027 is allowed."
+                     },
+                     {
+                         "ref":  "3.43",
+                         "path":  "OrgnlPmtInfAndSts/TxInfAndSts/OrgnlTxRef/DbtrAcct",
+                         "mult":  "0..1",
+                         "type":  "CashAccount38",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "3.44",
+                         "path":  "OrgnlPmtInfAndSts/TxInfAndSts/OrgnlTxRef/DbtrAgt",
+                         "mult":  "0..1",
+                         "type":  "BranchAndFinancialInstitutionIdentification6",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "3.45",
+                         "path":  "OrgnlPmtInfAndSts/TxInfAndSts/OrgnlTxRef/DbtrAgtAcct",
+                         "mult":  "0..1",
+                         "type":  "CashAccount38",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "3.46",
+                         "path":  "OrgnlPmtInfAndSts/TxInfAndSts/OrgnlTxRef/CdtrAgt",
+                         "mult":  "0..1",
+                         "type":  "BranchAndFinancialInstitutionIdentification6",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "3.47",
+                         "path":  "OrgnlPmtInfAndSts/TxInfAndSts/OrgnlTxRef/CdtrAgtAcct",
+                         "mult":  "0..1",
+                         "type":  "CashAccount38",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "3.48",
+                         "path":  "OrgnlPmtInfAndSts/TxInfAndSts/OrgnlTxRef/Cdtr",
+                         "mult":  "1..1",
+                         "type":  "Party40Choice",
+                         "sepa_length":  "",
+                         "sepa_usage":  "Only \u0027Party\u0027 is allowed."
+                     },
+                     {
+                         "ref":  "3.49",
+                         "path":  "OrgnlPmtInfAndSts/TxInfAndSts/OrgnlTxRef/CdtrAcct",
+                         "mult":  "0..1",
+                         "type":  "CashAccount38",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "3.50",
+                         "path":  "OrgnlPmtInfAndSts/TxInfAndSts/OrgnlTxRef/UltmtCdtr",
+                         "mult":  "0..1",
+                         "type":  "Party40Choice",
+                         "sepa_length":  "",
+                         "sepa_usage":  "Only \u0027Party\u0027 is allowed."
+                     },
+                     {
+                         "ref":  "3.51",
+                         "path":  "OrgnlPmtInfAndSts/TxInfAndSts/OrgnlTxRef/Purp",
+                         "mult":  "0..1",
+                         "type":  "Purpose2Choice",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     },
+                     {
+                         "ref":  "3.52",
+                         "path":  "OrgnlPmtInfAndSts/TxInfAndSts/SplmtryData",
+                         "mult":  "0..n",
+                         "type":  "SupplementaryData1",
+                         "sepa_length":  "",
+                         "sepa_usage":  ""
+                     }
+                 ]
+}

@@ -1,0 +1,27 @@
+{
+  "note": "Class C content. How Danish domestic payments are expressed in a pain.001 file, as one bank (Nordea) describes it. Basis NORDEA: Corporate Access Payables appendix Denmark, dated 2026-10-08, which gives the codes of pain.001.001.03. A different bank, or version .09, may use other codes: Nordea publishes a separate guide for pain.001.001.09 and its user guide and message flow, which were not read (NOT_READ). The SEPA profile is in STD_ISO20022",
+  "source": { "title": "Corporate Access Payables, Appendix Denmark", "authority": "Nordea Bank (a bank guide, secondary)", "date": "2026-10-08", "url": "https://www.nordea.com/en/doc/corporate-access-payables-country-appendic-denmark.pdf", "sha256": "65df8e36f603bdf3b024594d20471ecc703de5c537c6192e0301efd88db9b1af", "basis": "NORDEA" },
+  "payment_types": [
+    { "type": "STANDARD_CREDIT_TRANSFER", "pmt_mtd": "TRF", "ctgy_purp": "SUPP", "svc_lvl": "NURG", "lcl_instrm": null, "note": "Standard credit transfer, low value" },
+    { "type": "STANDARD_CREDIT_TRANSFER_NDAV", "pmt_mtd": "TRF", "ctgy_purp": "SUPP", "svc_lvl": "NURG", "lcl_instrm": "NDAV", "note": "With neutral date of availability. Not for salary or pension" },
+    { "type": "SAME_DAY_CREDIT_TRANSFER", "pmt_mtd": "TRF", "ctgy_purp": "SUPP", "svc_lvl": "NURG", "lcl_instrm": "SDCL", "note": "Cut-off is earlier than the standard transfer" },
+    { "type": "TRANSFER_FORM", "pmt_mtd": "TRF", "ctgy_purp": "SUPP", "svc_lvl": "NURG", "lcl_instrm": null, "note": "FIK and giro slips (DK_FIK_71, 73, 75, DK_GIRO). The reference elements per card type are in dk-payment-schemes.json. Where the OCR number sits is NOT_READ" },
+    { "type": "SALARY", "pmt_mtd": "TRF", "ctgy_purp": "SALA", "svc_lvl": "NURG", "lcl_instrm": null, "note": "Own payment information level. Same-day with SDCL" },
+    { "type": "PENSION", "pmt_mtd": "TRF", "ctgy_purp": "PENS", "svc_lvl": "NURG", "lcl_instrm": null, "note": "Own payment information level. Same-day with SDCL" },
+    { "type": "EASY_ACCOUNT_NEMKONTO", "pmt_mtd": "TRF", "ctgy_purp": "SUPP, PENS or SALA", "svc_lvl": "NURG", "lcl_instrm": "SDCL optional", "note": "CPR or CVR number in the creditor element. A separate agreement is needed" },
+    { "type": "INTERCOMPANY_DOMESTIC", "pmt_mtd": "TRF", "ctgy_purp": "INTC", "svc_lvl": "NURG or SDVA", "lcl_instrm": null, "note": "Between accounts of one company group at the bank. Processed as a standard credit transfer within the bank or as a same-day transfer to another Danish bank" }
+  ],
+  "account_rules": [
+    "Debtor account in BBAN form: 14 digits, registration number then account number (dk-reference-algorithms.json)",
+    "Creditor number of a transfer form: 8 digits, padded with leading zeroes",
+    "IBAN is required for payments to the SEPA area, including SEPA credit transfers"
+  ],
+  "name_and_address": [
+    "Structured address: street name up to 70 characters and town name up to 35 characters",
+    "Hybrid address: at most two address lines, town name and country code in their own elements",
+    "The debtor name and address in the file are replaced by the account holder data at the bank"
+  ],
+  "dates_to_check": [
+    { "date": "2027-04-01", "text": "Brief advice of 20 characters and the 41 lines of 35 characters of advice are no longer valid. Structured invoice information (CINV) can be used. Name and address rules for domestic payments change from this date", "basis": "NORDEA", "state": "A statement of one bank. Whether the date is a Denmark-wide infrastructure date is not confirmed" }
+  ]
+}

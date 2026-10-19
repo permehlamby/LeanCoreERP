@@ -1,0 +1,138 @@
+{
+  "note": "Class C content (18, 4.5): the core never reads it. Catalogue of the Danish payment schemes the treasury and invoicing apps (22) need to know. Every fact names its basis: PBS = the PBS handbook for the FIK card +71< (August 2009, hosted by Danske Bank), DANSKE_FIK = Danske Bank terms for FIK (December 2002), NORDEA = Nordea Corporate Access Payables appendix Denmark (dated 2026-10-08, describes pain.001.001.03 codes), BS_RULES = Spar Nord general rules for debtors in Betalingsservice (effective 2019-09-14), PEPPOL = Peppol BIS Billing 3.0 Danish rules (read through a page fetch that summarises: not verbatim), NOT_READ = no source read. The bank documents are commercial usage guides, not law and not scheme rulebooks",
+  "schemes": [
+    {
+      "code": "DK_FIK_71",
+      "name": "FIK card type 71 (joint payment slip with payment id)",
+      "direction": "IN (the company is the creditor and sends the slip with the invoice)",
+      "identifiers": [
+        { "name": "payment_id", "length": 15, "rule": "14 digits plus one check digit, modulus 10", "basis": "PBS", "note": "The handbook states 15 digits including the check digit" },
+        { "name": "creditor_number", "length": 8, "rule": "Assigned by the bank, identifies the creditor, stays the same if the creditor changes bank", "basis": "PBS" }
+      ],
+      "representation": [
+        { "where": "OCR line of the slip", "value": "card type code 71 between + and <, then the payment id, then + and the creditor number and <", "basis": "PBS" },
+        { "where": "Peppol BIS Billing 3 (payment means 93)", "value": "PaymentID starts with 71# followed by the 15 digit id. The account id is the 8 digit creditor number", "basis": "PEPPOL" },
+        { "where": "pain.001 as paid by a customer (Nordea)", "value": "Exactly one Structured creditor reference information. The element that carries the OCR number and the card type code is NOT_READ (the text of the appendix is cut)", "basis": "NORDEA" }
+      ],
+      "core_home": [
+        { "data": "payment id on the invoice", "core": "journal_line_open_item.payment_reference of the AR open item (100 characters, free text)", "state": "MAPPED, set by the app (finding F-DK-21)" },
+        { "data": "creditor number", "core": "company_bank_account.account_identifier with account_scheme DK_FIK (07, 9.5, ADR-223)", "state": "MAPPED" }
+      ],
+      "facts": [
+        { "text": "The payer cannot add free information to the creditor on a type 71 payment. The creditor is advised with the payment id, which allows automatic bookkeeping", "basis": "NORDEA" },
+        { "text": "Statement advice per payment shows the identification number (type 71), the payment date and the amount", "basis": "DANSKE_FIK" }
+      ]
+    },
+    {
+      "code": "DK_FIK_73",
+      "name": "FIK card type 73 (joint payment slip without payment id)",
+      "direction": "IN",
+      "identifiers": [
+        { "name": "payment_id", "length": null, "rule": "None. The payer writes free text, for example a debtor number", "basis": "DANSKE_FIK" },
+        { "name": "creditor_number", "length": 8, "rule": "As type 71", "basis": "PBS" }
+      ],
+      "representation": [
+        { "where": "Peppol BIS Billing 3 (payment means 93)", "value": "PaymentID starts with 73#", "basis": "PEPPOL" },
+        { "where": "pain.001 as paid by a customer (Nordea)", "value": "Free text in the unstructured remittance information, and the creditor reference element carries the code 73", "basis": "NORDEA" }
+      ],
+      "core_home": [ { "data": "creditor number", "core": "company_bank_account.account_identifier with account_scheme DK_FIK or DK_GIRO (07, 9.5, ADR-223)", "state": "MAPPED" } ],
+      "facts": [
+        { "text": "Name and address of the payer come with the payment. Posting is manual: no automatic matching key", "basis": "DANSKE_FIK" },
+        { "text": "Free text up to 41 lines of 35 characters. Nordea states this is not valid after 2027-04-01", "basis": "NORDEA" }
+      ]
+    },
+    {
+      "code": "DK_FIK_75",
+      "name": "FIK card type 75 (combination of 71 and 73)",
+      "direction": "IN",
+      "identifiers": [
+        { "name": "payment_id", "length": 16, "rule": "15 digits plus one check digit, modulus 10", "basis": "DANSKE_FIK" },
+        { "name": "creditor_number", "length": 8, "rule": "As type 71", "basis": "PBS" }
+      ],
+      "representation": [
+        { "where": "Peppol BIS Billing 3 (payment means 93)", "value": "PaymentID starts with 75# followed by the 16 digit id", "basis": "PEPPOL" },
+        { "where": "pain.001 as paid by a customer (Nordea)", "value": "Both the unstructured text and the creditor reference information can be used", "basis": "NORDEA" }
+      ],
+      "core_home": [
+        { "data": "payment id", "core": "journal_line_open_item.payment_reference", "state": "MAPPED, set by the app" },
+        { "data": "creditor number", "core": "company_bank_account.account_identifier with account_scheme DK_FIK or DK_GIRO (07, 9.5, ADR-223)", "state": "MAPPED" }
+      ],
+      "facts": [
+        { "text": "The check digit algorithm of type 75 is stated as modulus 10 by the bank sources. The weights for 15 data digits are not read from a handbook (the FI +75< handbook was not found)", "basis": "NORDEA" }
+      ]
+    },
+    {
+      "code": "DK_GIRO",
+      "name": "Giro payment slip (types 01, 04 and 15)",
+      "direction": "IN",
+      "identifiers": [
+        { "name": "giro_account", "length": "7 or 8", "rule": "Giro account number", "basis": "PEPPOL" },
+        { "name": "payment_id", "length": 16, "rule": "Types 04 and 15: OCR number of 16 digits including a modulus 10 check digit. Type 01 has none", "basis": "NORDEA" }
+      ],
+      "representation": [
+        { "where": "Peppol BIS Billing 3 (payment means 50)", "value": "PaymentID starts with 01#, 04# or 15#. Types 04 and 15 also carry a 16 digit instruction id", "basis": "PEPPOL" }
+      ],
+      "core_home": [ { "data": "giro account", "core": "company_bank_account.account_identifier with account_scheme DK_FIK or DK_GIRO (07, 9.5, ADR-223)", "state": "MAPPED" } ],
+      "facts": [
+        { "text": "Type 01 has a free text field of 4 lines of 35 characters. Types 04 and 15 have no free text", "basis": "NORDEA" },
+        { "text": "The giro system is part of Danske Bank, customers of all banks can pay to a giro account", "basis": "NORDEA" }
+      ]
+    },
+    {
+      "code": "DK_CREDIT_TRANSFER",
+      "name": "Domestic credit transfer (standard, same-day, salary, pension, intercompany)",
+      "direction": "OUT",
+      "representation": [
+        { "where": "pain.001 as accepted by Nordea", "value": "See dk-pain001-profile.json for the codes per payment type", "basis": "NORDEA" }
+      ],
+      "core_home": [
+        { "data": "debtor account", "core": "company_bank_account.iban, from which the 4 digit registration number and the 10 digit account number derive", "state": "DERIVED" },
+        { "data": "creditor account", "core": "partner_bank_account.iban", "state": "MAPPED" }
+      ],
+      "facts": [
+        { "text": "The Danish infrastructure modernisation introduced the standard credit transfer, same-day transfer and express transfer, and two references: the RF creditor reference and the end-to-end reference", "basis": "NORDEA" },
+        { "text": "Salary and pension payments go in a separate payment information level", "basis": "NORDEA" },
+        { "text": "Brief advice (20 characters) and the 41 lines of 35 characters of advice are not valid after 2027-04-01. Structured invoice information (code CINV, one per credit transfer, credit notes not allowed) can be used from 2027-04-01", "basis": "NORDEA" }
+      ]
+    },
+    {
+      "code": "DK_NEMKONTO",
+      "name": "Easy-account payment (NemKonto)",
+      "direction": "OUT",
+      "representation": [ { "where": "pain.001 (Nordea)", "value": "The payee is identified by CPR or CVR number in the creditor element instead of an account number. Payment type codes in dk-pain001-profile.json", "basis": "NORDEA" } ],
+      "core_home": [ { "data": "payee CPR or CVR number", "core": "business_partner_pii.legal_registration_id (CVR) for organisations. A CPR number is personal data and has no field", "state": "PARTIAL" } ],
+      "facts": [
+        { "text": "The bank looks the number up in the NemKonto database and adds the account number. Domestic accounts only: a payee with a foreign account connected to NemKonto is rejected and must be paid as an international payment. A separate agreement with the bank is needed", "basis": "NORDEA" }
+      ]
+    },
+    {
+      "code": "DK_BETALINGSSERVICE",
+      "name": "Betalingsservice (direct debit in DKK, creditor initiated)",
+      "direction": "IN (the company collects) and OUT (the company is debtor)",
+      "representation": [
+        { "where": "Peppol BIS Billing 3 (payment means 49)", "value": "The payment mandate id and the payer financial account id are mandatory", "basis": "PEPPOL" },
+        { "where": "Creditor side: agreements, collection files, payment overview", "value": "NOT_READ. The Nets documentation for creditors was not found in public sources", "basis": "NOT_READ" }
+      ],
+      "core_home": [
+        { "data": "payment agreement (mandate) of a customer", "core": "extension attributes with is_pii on the partner bank account (22, 5.7)", "state": "EXTENSION" },
+        { "data": "customer account", "core": "partner_bank_account.iban", "state": "MAPPED" }
+      ],
+      "facts": [
+        { "text": "A payment service in Danish kroner. After a payment agreement the creditor can initiate the payment from the debtor account to the creditor account. Meant for periodic payments, one-off payments and, exceptionally, refunds", "basis": "BS_RULES" },
+        { "text": "The debtor needs a connection agreement with the bank. Nets Denmark A/S provides the service", "basis": "BS_RULES" },
+        { "text": "The debtor is paid out of on the payment day stated by the creditor on the payment overview, on bank days only", "basis": "BS_RULES" },
+        { "text": "The debtor can reject an upcoming payment or request reversal of a completed payment at the latest on the 7th of the payment month. If that day is not a bank day the deadline is the next bank day. The reversal returns the amount from the creditor account", "basis": "BS_RULES" },
+        { "text": "The debtor bank can reverse a payment, among other reasons when there are no funds on the payment day and the payment exceeds DKK 1,000, or when the debtor has no connection agreement", "basis": "BS_RULES" }
+      ],
+      "treasury_consequence": "A Betalingsservice receipt is not final until the reversal window has passed (the 7th of the payment month). The collection app treats it as a payment that can come back as a returned payment (22, 5.6). Whether to post at the statement or after the window is an app policy"
+    },
+    {
+      "code": "DK_SEPA",
+      "name": "SEPA credit transfer and SEPA direct debit",
+      "direction": "IN and OUT",
+      "representation": [ { "where": "pain.001, pain.002, pain.008, camt", "value": "STD_ISO20022 (the profile SEPA_CT and SEPA_DD)", "basis": "see STD_ISO20022" } ],
+      "core_home": [],
+      "facts": []
+    }
+  ]
+}

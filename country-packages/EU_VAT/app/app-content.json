@@ -1,0 +1,6 @@
+{
+  "note": "Class C content. The core never reads these artefacts (18, 4.5)",
+  "artefacts": [
+    { "app_role": "vat-regime", "name": "scenario-catalogue", "file": "eu-vat/scenario-catalogue.json", "media_type": "application/json", "status": "DRAFT", "digest": null, "note": "13 scenarios with determination keys (including origin_eu and destination_eu), code attributes, EN 16931 pairing, evidence and return type" }
+  ]
+}

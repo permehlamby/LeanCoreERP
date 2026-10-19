@@ -1,0 +1,59 @@
+{
+  "note": "Class C content. The payment related Danish rules of Peppol BIS Billing 3.0 (all fatal), what they need from the core and where the core falls short. Source: docs.peppol.eu, the UBL Peppol rules page, read through a page fetch that summarises: the rule wording is paraphrased and the exact text and XPath must be checked on the page. A search result named the same rules DK-R-005 to DK-R-011. Core sources refer to STD_EN16931 term mapping and 12, section 10",
+  "source": { "title": "Peppol BIS Billing 3.0, UBL syntax rules, Danish rules", "authority": "OpenPeppol", "url": "https://docs.peppol.eu/poacc/billing/3.0/rules/ubl-peppol/", "basis": "PEPPOL" },
+  "rules": [
+    {
+      "rule": "DK-R-005", "flag": "fatal",
+      "text": "A Danish supplier may only use the payment means codes 1, 10, 31, 42, 48, 49, 50, 58, 59, 93 and 97",
+      "needs": "company_bank_account.payment_means_code (BT-81)",
+      "state": "MAPPED",
+      "package_check": "The company readiness or the e-invoice app checks the code of every account marked use_on_invoices against this list. The core does not validate the value set"
+    },
+    {
+      "rule": "DK-R-006", "flag": "fatal",
+      "text": "For payment means 31 and 42 both a bank account and a registration account are mandatory",
+      "needs": "payment account identifier (BT-84) and the registration number of the bank",
+      "state": "DERIVED",
+      "detail": "For a Danish account the registration number is characters 5 to 8 of the IBAN and the account number is characters 9 to 18 (dk-reference-algorithms.json). Which Peppol element carries the registration number is not stated in the text read: check the page. BT-84 is mapped to the IBAN in STD_EN16931, a Danish account may need the BBAN form here"
+    },
+    {
+      "rule": "DK-R-007", "flag": "fatal",
+      "text": "For payment means 49 both the payment mandate id and the payer financial account id are mandatory",
+      "needs": "mandate id and the payer account",
+      "state": "EXTENSION",
+      "detail": "Mandate: extension attribute of the partner bank account (22, 5.7). Payer account: partner_bank_account.iban. These terms are not in the term mapping of STD_EN16931 (finding F-DK-20)"
+    },
+    {
+      "rule": "DK-R-008", "flag": "fatal",
+      "text": "For payment means 50 the PaymentID must start with 01#, 04# or 15# and the giro account must be 7 or 8 digits",
+      "needs": "giro account number as payee account id, payment reference",
+      "state": "MAPPED",
+      "detail": "The giro account is a company_bank_account row with account_scheme DK_GIRO and account_identifier (ADR-223, accepted 2026-10-19). The PaymentID comes from payment_reference (BT-83)"
+    },
+    {
+      "rule": "DK-R-009", "flag": "fatal",
+      "text": "For payment means 50 a PaymentID with prefix 04# or 15# must also include a 16 digit instruction id",
+      "needs": "payment reference of 16 digits",
+      "state": "DERIVED",
+      "detail": "From the AR open item payment_reference, built by the app with the check digit rule (dk-reference-algorithms.json, ASSUMED for 16 digits)"
+    },
+    {
+      "rule": "DK-R-010", "flag": "fatal",
+      "text": "For payment means 93 the PaymentID is mandatory and starts with 71#, 73# or 75#, and the payee account id must be exactly 8 characters (the creditor number)",
+      "needs": "creditor number as payee account id and the payment reference with the card type prefix",
+      "state": "MAPPED",
+      "detail": "The creditor number is a company_bank_account row with account_scheme DK_FIK and account_identifier. The payment id is BT-83, derived from the AR open item payment_reference and read by the data set (ADR-223, STD_EN16931 1.0.1, 12, section 10). The app sets payment_reference after the post (F-DK-21)"
+    },
+    {
+      "rule": "DK-R-011", "flag": "fatal",
+      "text": "For payment means 93 a PaymentID with prefix 71# or 75# must include a 15 or 16 digit instruction id",
+      "needs": "payment reference of 15 digits (71) or 16 digits (75)",
+      "state": "DERIVED",
+      "detail": "From the AR open item payment_reference. Length and check digit by the FIK algorithm"
+    }
+  ],
+  "findings": [
+    { "ref": "F-DK-19", "text": "CLOSED by ADR-223 (accepted 2026-10-19): FIK creditor numbers and giro accounts are company_bank_account rows with an account scheme and an account identifier (07, 9.5)" },
+    { "ref": "F-DK-20", "text": "PARTLY CLOSED by ADR-223: BT-83 is in the STD_EN16931 mapping (1.0.1) and the data set reads payment_reference (12, section 10). Still open: DK-R-006 and DK-R-007 name terms the mapping does not carry (mandate id, payer account, registration number of the bank)" }
+  ]
+}

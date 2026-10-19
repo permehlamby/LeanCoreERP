@@ -1,0 +1,11 @@
+{
+  "resource": "vat-deduction-keys",
+  "scope": "COMPANY",
+  "note": "Deduction keys (07, 8.6, ADR-203) used by the tax codes of the official list. A key is a named variable deduction rate of the VAT registration. The package creates the four keys, never a rate: rates are company input (inputs of package.json, core/vat_deduction_rate.json, or vat-deduction-rates:create-version later). A company that needs several sector or area keys or several estimate keys adds them itself. The core never computes a rate (19, A1)",
+  "objects": [
+    { "item_id": "DK-DKEY-PRO_RATA", "ref": "key_pro_rata", "registration": "$registration", "key_code": "PRO_RATA", "kind": "PRO_RATA", "description": "Pro rata (forholdet mellem momspligtig og samlet omsætning), delvis fradragsret", "active": true },
+    { "item_id": "DK-DKEY-ESTIMATE", "ref": "key_estimate", "registration": "$registration", "key_code": "ESTIMATE", "kind": "ESTIMATE", "description": "Skønnet fradrag efter faktisk anvendelse", "active": true },
+    { "item_id": "DK-DKEY-SECTOR", "ref": "key_sector", "registration": "$registration", "key_code": "SECTOR", "kind": "SECTOR", "description": "Sektorbaseret fradragsret", "active": true },
+    { "item_id": "DK-DKEY-AREA", "ref": "key_area", "registration": "$registration", "key_code": "AREA", "kind": "AREA", "description": "Arealbaseret fradragsret, fast ejendom", "active": true }
+  ]
+}
