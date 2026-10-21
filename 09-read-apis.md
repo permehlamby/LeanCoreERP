@@ -44,11 +44,11 @@ Response:
 | `read.ledger` | Documents, lines, open items, clearings, balances, aging, VAT returns and positions, periods, fiscal calendars, posting windows, number series and their assignments (company access applies) |
 | `read.inventory` | Stock reads of 10, section 8 (`stock-documents`, `stock-ledgers:query`, `stock-balances:query`, `stock-valuations:query`, `lot-traces:query`, `availability:query`), reservations, and with `read.orders` `supply-demand:query` (16, 4) |
 | `read.orders` | Order and fulfilment reads of 11, section 8 (orders, deliveries, receipts, returns, dropship confirmations, invoice link records, `open-orders:query`, `uninvoiced:query`), and with `read.ledger` `credit-exposures:query` |
-| `read.config` | Configuration and non-personal master data (accounts, dimensions, tax, partners without personal data, terms, item-partner terms, business calendars) and the calendar helpers `calendar:add-working-days`, `calendar:working-days-between` (16, 3.3) |
+| `read.config` | Configuration and non-personal master data (accounts, dimensions, tax, partners without personal data, terms, item-partner terms, business calendars), the applied configuration packages with their items and the company policy settings (18, 7.2), and the calendar helpers `calendar:add-working-days`, `calendar:working-days-between` (16, 3.3) |
 | `read.events` | `events:list`, `events:head` for the event types the calling app is subscribed to, except the sensitive families that need `read.audit` (2.3a, 15, 5.3) |
 | `read.pii` | Personal-data fields of partners (identity, address, contact), partner bank accounts, VAT ids of persons. Every such read is logged (5.2) |
 | `read.legal_snapshot` | The legal snapshot of a document the caller can already read (name, address, VAT id as printed on the invoice). Narrower than `read.pii`: it gives no access to the partner master. Every such read is logged (5.2, Q10 decided) |
-| `read.audit` | Audit events (outbox events with `is_audit`, 4.8), change logs, master change log, command log, applied config packages, `chains:status`, anchors, migration batches and their control totals, reconciliations and commit chunks (13), `read_access_log`, export jobs, runs, holds and requests (12), `outbox:verify` (15, 7), and the sensitive event families in the app feed (2.3a). Running a verification (`chains:verify`) is a command with its own permission `chain.verify` (06), not a read |
+| `read.audit` | Audit events (outbox events with `is_audit`, 4.8), change logs, master change log, command log, `chains:status`, anchors, migration batches and their control totals, reconciliations and commit chunks (13), `read_access_log`, export jobs, runs, holds and requests (12), `outbox:verify` (15, 7), and the sensitive event families in the app feed (2.3a). Running a verification (`chains:verify`) is a command with its own permission `chain.verify` (06), not a read |
 | `read.cross_company` | Reads across several companies of the tenant in one request (balances, aging). The caller must have company access to each company |
 
 There is **no separate `read.ext` permission** (F9, 17 section 4). Extension values and definitions (15, 4.4) are readable with the `read.*` permission of the entity they extend (`read.config` for definitions). Values of `is_pii` definitions also need `read.pii` (5.1).
@@ -119,7 +119,7 @@ Error area `READ`: `NOT_FOUND`, `INVALID_FILTER`, `SORT_NOT_ALLOWED`, `LIMIT_EXC
 | Resource | Filterable fields | Sort | Includes |
 |---|---|---|---|
 | `journal-documents` | `document_type`, `document_number` (eq, prefix), `fiscal_year`, `fiscal_period`, `posting_date` (range), `document_date` (range), `status`, `source_system`, `source_document_ref` (eq, prefix), `external_reference` (eq, prefix), `posted_by`, `correlation_id`, `ic_transaction_id`, `partner_id` (via legal snapshot or open item), `is_system_generated`, `migration_batch_id` (eq, `is_null`: finds the documents committed by a migration batch, 13) | **`chain_seq`**, `posting_date`, `document_number` | `lines`, `tax`, `open_items`, `dimensions`, `legal_snapshot` (needs `read.legal_snapshot`) |
-| `journal-lines` | `document_id`, `account_id`, `line_type`, `posting_date` (range), `fiscal_year`, `fiscal_period`, `cost_center_id`, `project_id`, `profit_center_id`, `business_unit_id`, free dimension (type and value), `tax_code_id`, `partner_id` (open items) | **`posting_date`, `document_id`, `line_no`** | `document`, `open_item`, `tax` |
+| `journal-lines` | `document_id`, `account_id`, `line_type`, `posting_date` (range), `fiscal_year`, `fiscal_period`, `cost_center_id`, `project_id`, `profit_center_id`, `business_unit_id`, free dimension (type and value), `tax_code_id`, `partner_id` (open items), `ic_counterpart_company_id`, `is_intercompany` (derived: marker not null, ADR-226) | **`posting_date`, `document_id`, `line_no`** | `document`, `open_item`, `tax` |
 | `open-items` | `account_id`, `partner_id`, `clearing_status`, `due_date` (range), `currency`, `posting_date` (range), `payment_block` | **`due_date`**, `posting_date` | `line`, `clearings`, `extensions` (2.4.2) |
 | `clearings` | `account_id`, `partner_id`, `clearing_type`, `clearing_date` (range), `document_id`, `matching_ref` | **`chain_seq`**, `clearing_date` | `items` |
 | `invoice-issue-records` (12, 11). `read.ledger` | `invoice_kind`, `invoice_id`, `document_id`, `delivery_channel`, `issued_at` (range), `document_sha256` (eq) | **`issued_at`**, `issue_id` | |
@@ -136,7 +136,9 @@ Error area `READ`: `NOT_FOUND`, `INVALID_FILTER`, `SORT_NOT_ALLOWED`, `LIMIT_EXC
 | `change-log` | `document_id`, `line_no`, `field_name`, `changed_by`, `changed_at` (range), `correlation_id` | **`changed_at`** | |
 | `master-change-log` (07, 10.1) | `entity_type`, `entity_id`, `action`, `changed_by`, `changed_at` (range), `correlation_id`, `change_set_id`, `is_pii`. Values of `is_pii` rows are always null | **`changed_at`** | |
 | `command-log` (06, 4.1) | `command_name`, `actor`, `executed_at` (range), `correlation_id` (eq), `company_id`, `idempotency_key` (eq) | **`executed_at`**, `command_log_id` | `results` (`command_log_result`) |
-| `applied-config-package` (07, 10.2) | `company_id`, `package_code`, `package_version`, `applied_by`, `applied_at` (range) | **`applied_at`** | |
+| `applied-config-package` (07, 10.2). `read.config` (ADR-196, 18, 7.2) | `company_id`, `package_code`, `package_version`, `kind`, `country_code`, `state`, `applied_by`, `applied_at` (range) | **`applied_at`** | `items` |
+| `applied-config-package-item` (07, 10.3). `read.config` | `applied_id` (Req unless `entity_type` and `entity_id` are given), `item_id`, `entity_type`, `entity_id` (eq: which package item an object came from), `action` | **`applied_id`, `item_no`** | |
+| `company-policy-setting` (18, 5.1). `read.config` | `company_id`, `policy_key`, `valid_from` (range), `as_of`, `applied_id` (eq, `is_null`: manual rows) | **`policy_key`, `valid_from`** | |
 | Config and master resources of 07 | As in 07, 11.1: key, `code`, `active`, validity, `as_of` for versioned tables. Includes `item-partners` (16, 3.1: filters `item_id`, `partner_id`, `relation`, `is_preferred`, `as_of`) `business-calendars` (16, 3.2), `vat-deduction-keys` and `vat-deduction-rates` (07, 8.6: filters `registration_id`, `key_code`, `kind`, `rate_status`, `as_of`) | **`code`** | `extensions` for extendable entities (2.4.2) |
 | `extension-definitions` | `entity_type`, `namespace`, `attr_key`, `active` (2.4.2) | **key** | |
 | Order, fulfilment and stock resources of 10 and 11 | As in 10, section 8 and 11, section 8, each with the filter `migration_batch_id` (eq, `is_null`) where the table has the column (orders, deliveries, receipts, dropship confirmations, journal documents) | As in 10 and 11 | `extensions` for orders and order lines (2.4.2) |
@@ -156,12 +158,12 @@ The one aggregation operation. All other balance reports are views of it.
 
 | Parameter | Req | Notes |
 |---|---|---|
-| company_ids | Req | One company, or several companies of the tenant with `read.cross_company` (4.1.2) |
+| company_ids or group_id | Req | One company, or several companies of the tenant with `read.cross_company` (4.1.2). `group_id` instead of the list: the member companies of the group as of the reporting date (ADR-018, 4.1.3, ADR-227) |
 | mode | Req | `CUMULATIVE`: sum of everything up to `as_of_date`. `MOVEMENT`: sum between `from_date` and `to_date` |
 | as_of_date / from_date, to_date | Req | Posting dates |
 | rule | Opt | `AUTO` (default) or `RAW` (4.1.1) |
-| group_by | Opt | Any of: `company_id`, `account_id`, `account_type`, `account_group`, `fiscal_year`, `fiscal_period`, `posting_date`, `cost_center_id`, `project_id`, `profit_center_id`, `business_unit_id`, a free dimension type, `partner_id` (open items only), `transaction_currency`, `document_type`, `line_type`, `ledger_id` |
-| filter | Opt | `account_id`, account number range, `account_type`, `account_group`, dimension values, `document_type`, `line_type`, `ledger_id`, `exclude_document_types`, `include_reversed` (default true) |
+| group_by | Opt | Any of: `company_id`, `account_id`, `account_type`, `account_group`, `fiscal_year`, `fiscal_period`, `posting_date`, `cost_center_id`, `project_id`, `profit_center_id`, `business_unit_id`, a free dimension type, `partner_id` (open items only), `transaction_currency`, `document_type`, `line_type`, `ledger_id`, `group_account_id`, `ic_counterpart_company_id` (4.1.3) |
+| filter | Opt | `account_id`, account number range, `account_type`, `account_group`, dimension values, `document_type`, `line_type`, `ledger_id`, `exclude_document_types`, `include_reversed` (default true), `group_account_id`, `ic_counterpart_company_id`, `is_intercompany` (4.1.3) |
 | sort, page | Opt | Over the group keys |
 
 Result rows: the group keys, and for each row `debit`, `credit` and `net` as four-currency blocks (LC, GC, RC always, TC only when the row has a single transaction currency, that is when `transaction_currency` is a group key or filter), and `line_count`. Debit and credit are the sums of positive and negative signed amounts (02, A1), derived at read time.
@@ -184,6 +186,13 @@ Revaluation documents and their reversals are ordinary ledger documents and are 
 With several `company_ids` (Q4 decided): allowed with `read.cross_company` for any companies of the tenant the caller can access, whether or not they belong to one group. The core performs no translation, consolidation or elimination (ADR-017).
 
 **Rule: amounts are never summed across different currency codes.** Every amount is stored with its currency code (ADR-020). The aggregation adds `currency_lc`, `currency_gc` and `currency_rc` (and `transaction_currency` where applicable) to the row identity. Where all selected lines share a currency, a group has one row. Where companies have different local, group or reporting currencies, the same group key appears in several rows, one per currency combination, each labelled with its currencies. A caller that wants a single figure restricts the companies (or `group_by` `company_id`) or converts outside the core. This replaces any mixed-currency error, nothing is ever silently added up across currencies.
+
+#### 4.1.3 Group reads (ADR-227, spec 23)
+
+- **`group_id`.** Selects the companies that are members of the group at the reporting date (`as_of_date`, or `to_date` for a movement), by `group_membership` (07, 5.6). Needs `read.cross_company`. The response lists the companies and the date of the membership used. A company that left the group before the date is not included, as ADR-018 says.
+- **`group_account_id`.** Resolved through `account_group_mapping` (07, 6.4) at the reporting date. The row carries the code, name, account type and `translation_rate_basis` of the group account. Lines whose account has no mapping at that date form the row with `group_account_id` null. A group key and a filter.
+- **`ic_counterpart_company_id`, `is_intercompany`.** The marker of 02, 5.4 (ADR-226). Group key and filters. Lines posted by `journal-documents:post` have no marker.
+- **Currencies and position.** The rule of 4.1.2 stays: amounts are never summed across currencies, rows split by currency combination. The response returns the `ledger_seq` of every company read, as the consistency token of section 2.
 
 ### 4.2 `trial-balances:query`
 
@@ -326,6 +335,27 @@ Defined in 15, 5.3 (ADR-138). `events:list` returns app events and audit-relevan
 
 `calendar:add-working-days` and `calendar:working-days-between` (16, 3.3, ADR-144): `{calendar_id | company_id + warehouse_id, date, days}` returns a date, or the number of working days between two dates. Read-only, permission `read.config`. No ledger, clearing, tax or period rule uses a calendar, and the business-day rule of A5 below is unchanged for aging.
 
+### 4.14 `ic-reconciliations:query` (ADR-227, spec 23)
+
+Read-only control of intercompany positions. Permissions `read.ledger` and `read.cross_company`. Sums use the L1 amounts of the lines in four currencies (02) and need no new table.
+
+| Parameter | Req | Notes |
+|---|---|---|
+| company_ids or group_id | Req | At least two companies, else `READ.INVALID_FILTER` |
+| as_of_date | Req | |
+| view | Opt | `BALANCES` (default) or `DOCUMENTS` |
+| tolerance_gc | Opt | Absolute group amount up to which a difference is not flagged. Default 0 |
+
+**View BALANCES.** One row per unordered pair of companies {A, B}:
+- `a_to_b`: the net of the marked balance sheet lines (account type ASSET or LIABILITY) of company A with counterpart B at the date, as a block of LC, GC and RC. `b_to_a`: the same for B with counterpart A.
+- `difference_gc`: `a_to_b` GC plus `b_to_a` GC, zero when the positions agree. The same by `transaction_currency` as `difference_tc` where the lines of one transaction currency are compared.
+- `pnl_a_to_b_gc`, `pnl_b_to_a_gc`, `pnl_difference_gc`: the net of the marked BASE lines of REVENUE and EXPENSE accounts for the fiscal year to date (excluding YEAR_END and CLOSING documents, 4.1.1).
+- `flags`: `BALANCE_DIFFERENCE`, `PNL_DIFFERENCE`. A balance difference is expected for a settlement in transit and for manual postings: the read shows it, the consolidation app explains it.
+
+**View DOCUMENTS.** One row per intercompany document pair or single document with a finding: `ONE_SIDED` (a document with `ic_transaction_id` whose counterpart is not in the tenant, or `COUNTERPART_NOT_VISIBLE` when the caller lacks access to that company), `GC_DIFFERENT`, `TC_DIFFERENT`, `DATE_DIFFERENT` (the two sides differ although ADR-016 copies them: cannot occur through the IC commands, so a finding means migrated data or a defect), `ONE_SIDE_REVERSED`.
+
+The response returns the `ledger_seq` of every company read. The core still performs no translation, elimination or consolidation (4.1.2).
+
 ## 5. Personal data
 
 ### 5.1 What counts
@@ -368,11 +398,12 @@ An interactive list or search returning N partners with personal data writes up 
 |---|---|---|
 | `clearing_item` | New L1 column `clearing_date` DATE (copied from `clearing`), index (`tenant_id`, `company_id`, `open_item_document_id`, `open_item_line_no`, `clearing_date`) | As-of open items and aging without joining `clearing` |
 | `journal_document` | Indexes (`tenant_id`, `company_id`, `posting_date`, `chain_seq`), (`tenant_id`, `company_id`, `document_type`, `posting_date`), (`tenant_id`, `company_id`, `source_system`, `source_document_ref`), (`tenant_id`, `company_id`, `external_reference`) | Document lists and lookups from source systems |
-| `journal_line` | Indexes already in 02 (account and posting date, fiscal year and account). Add (`tenant_id`, `company_id`, `posting_date`, `account_id`) for date-range scans | Account ledger and movement queries |
+| `journal_line` | Indexes already in 02 (account and posting date, fiscal year and account). Add (`tenant_id`, `company_id`, `posting_date`, `account_id`) for date-range scans, and a partial index (`tenant_id`, `company_id`, `ic_counterpart_company_id`, `posting_date`) over the lines with a marker (ADR-226) | Account ledger and movement queries, intercompany reads |
 | `journal_line_open_item` | Indexes already in 02, 5A (partner and status, partner and due date) | Aging |
 | `change_log`, `master_change_log` | Indexes already specified, add (`tenant_id`, `correlation_id`) on both (`change_log`: in 02. `master_change_log`: not yet in 07, 10.1) | Audit events by correlation id |
 | `command_log` | Index (`tenant_id`, `correlation_id`) (in 06, 4.1) | Audit events and drill-down |
 | `read_access_log` | Index (`tenant_id`, `export_job_id`) (5.2) | Which reads an export job made |
+| `applied_config_package_item` | Index (`tenant_id`, `entity_type`, `entity_id`) (07, 10.3) | Which package item an object came from |
 | `outbox_event` | PK (`tenant_id`, `position`) (15, 3.7). Secondary indexes (confirmed, in 15, 3.7): (`tenant_id`, `is_audit`, `occurred_at`), (`tenant_id`, `correlation_id`), (`tenant_id`, `entity_type`, `entity_key`, `position`) | `audit-events:query` (time range, correlation, entity), `events:list` filters |
 
 A materialised balance cache is not part of R1 (05 Q5). The balance operation scans lines through these indexes. If volumes require it, a derived cache can be added behind the same operation without changing the contract.
@@ -459,6 +490,20 @@ These deltas are applied with this spec.
 |---|---|---|
 | ADR-203, ADR-204 | Resources `vat-deduction-keys` and `vat-deduction-rates` (section 3). The include `tax` returns the deduction columns and the allocation rows. `TAX_NONDEDUCTIBLE` is a `line_type` value for filters and grouping. `vat-positions:get` reports `nondeductible_amount` per BOX row (4.10) | 02, 07, 08, 19 |
 | ADR-200 | The include `tax` returns `origin_eu` and `destination_eu` | 02, 07 |
+
+### 9.5 Deltas of ADR-225 to ADR-227 (2026-10-19, spec 23)
+
+| Ref | Change in this spec | Other specs |
+|---|---|---|
+| ADR-226 | The filters `ic_counterpart_company_id` and `is_intercompany` on `journal-lines` (3). Group key and filters on `balances:query` (4.1, 4.1.3). Partial index on `journal_line` (6) | 02, 06, 11 |
+| ADR-227 | `group_id`, `group_account_id` in `balances:query` (4.1, 4.1.3). New read `ic-reconciliations:query` (4.14) | 07 |
+| ADR-225 | No change here: AVERAGE and HISTORICAL rates are read with the generic list and a `rate_type` filter (3) | 07 |
+
+### 9.6 Package deltas (ADR-196, 2026-10-19)
+
+| Ref | Change in this spec | Other specs |
+|---|---|---|
+| ADR-196 | Resources `applied-config-package-item` and `company-policy-setting`, the include `items` on `applied-config-package` and its filters `kind`, `country_code`, `state` (3). Applied config packages move from `read.audit` to `read.config` (2.3, as 18, 7.2 decided). Index of the items (6). The event `package.applied` already maps to PACKAGE_APPLIED (4.8) | 06, 07, 18 |
 
 ## 10. ADRs raised by this spec (now in 01-adr-log, which is authoritative)
 

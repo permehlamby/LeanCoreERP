@@ -73,7 +73,7 @@ PK: (`tenant_id`, `company_id`, `rule_id`, `effective_from`). Resolution: for a 
 | record_class | CODE | N | `LEDGER` (journal documents, lines, open items, clearings, revaluation, year-end), `VAT_RETURN`, `STOCK`, `ORDER`, `FULFILMENT`, `INVOICE_ISSUE`, `LEGAL_SNAPSHOT`, `ADDRESS_SNAPSHOT`, `AUDIT_LOG` (change logs, `master_change_log`, `order_change_log` and the audit events of the outbox, 4.6), `READ_LOG` (`read_access_log`, 4.6). The `command_log` is **not** in `AUDIT_LOG`: it is purged after its own tenant setting `command_log_retention_days` (06, Q2, 07) and has no record class (4.6) |
 | country_code | CODE | N | Country whose law the rule reflects (normally the company country). A company may have rules for several countries |
 | retention_years | SMALLINT | N | Whole years |
-| start_event | CODE | N | `FISCAL_YEAR_END` (retention runs from the end of the fiscal year of the record, default) or `RECORD_DATE` |
+| start_event | CODE | N | `FISCAL_YEAR_END` (retention runs from the end of the fiscal year of the record, default), `RECORD_DATE`, `CALENDAR_YEAR_END_OF_RECORD` (from the end of the calendar year of the record date) or `CALENDAR_YEAR_END_OF_FISCAL_YEAR` (from the end of the calendar year in which the fiscal year of the record ends). The two calendar values were added by ADR-198 (found by the DE and SE test of 18, section 9: the legal basis is UNVERIFIED and is verified in the country package). No schema change beyond the code list |
 | legal_basis | TEXT(200) | Y | Reference to the law or contract. Informational |
 | effective_from | TS | N | Insert-only |
 

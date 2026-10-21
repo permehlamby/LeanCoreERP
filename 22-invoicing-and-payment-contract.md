@@ -273,7 +273,7 @@ ADR-223 (accepted 2026-10-19) adds a seventh delta from the Danish payment conte
 | 5 | 00 | Status line: invoicing and payment contract specified | | Open |
 | 6 | 09, 11 | Filter `issue_state` on `journal-documents` (invoice types), `sales-invoices` and `purchase-invoices`, include `issue_records`, list `invoice-issue-records` (OQ5 closed) | 4.2 | **Applied 2026-10-19** |
 
-Deltas 1, 3 and 6 were the only schema or contract changes. The ERD has not been updated (pending since the delta pass of 2026-10-14).
+Deltas 1, 3 and 6 were the only schema or contract changes. The ERD was updated on 2026-10-19 (page 15 shows the `document_id` of the issue record, page 7 the new bank account columns).
 
 ## 10. E-invoice completeness rule set (D6, ADR-221)
 

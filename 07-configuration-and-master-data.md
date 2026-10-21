@@ -124,6 +124,9 @@ Listed here so that this overview is complete. The owning spec defines the colum
 | `business_calendar` | M | Calendars | 16, 3.2 |
 | `business_calendar_version`, `business_calendar_exception` | V | Calendars. The key of the exception gets `created_at`, the latest row wins (F5) | 16, 3.2 |
 | `company_calendar_assignment` | V | Calendars. Sentinel 0 for "company level" instead of NULL in the key (F6) | 16, 3.2 |
+| `company_policy_setting` | V (insert only) | Policy selections of a company from the closed catalogue of 18, section 5 (ADR-194). Written by `config-packages:apply` or manually, `write.config` | 18, 5.1 |
+| `applied_config_package_item` | E | Audit. One row per object a package apply created, versioned or skipped (ADR-196). Insert only | 10.3, 18, 7.1 |
+| `company_consolidation_setting_version` | V | Organisation. Parent, ownership percentage, consolidation method and translation method per company (ADR-224, 23) | 5.6a |
 | `vat_deduction_key` | M | Tax. Named variable deduction rate per VAT registration (ADR-203) | 8.6 |
 | `vat_deduction_rate` | V | Tax. Rate of a key, valid from a date, insert only (ADR-203) | 8.6 |
 
@@ -239,6 +242,19 @@ PK: (`tenant_id`, `company_id`, `effective_from`). Resolution: the row with the 
 
 PK: (`tenant_id`, `company_id`, `valid_from`). Columns: `group_id`, `valid_to` (set by the next version or by leaving). A company belongs to one group at a time (no overlap, checked on insert). Posted data is never restated on a change (ADR-018). **Cost scope rule (10, Q10, 3.10):** a new membership row is rejected with `CONFIG.COST_SCOPE_CONFLICT` if the new group's `inventory_cost_scope` differs from the scope in force for a company that already has a stock document. A change of `company_group.inventory_cost_scope` itself stays IAP (5.3).
 
+### 5.6a `company_consolidation_setting_version` (V)
+
+ADR-224, spec 23, section 3. PK: (`tenant_id`, `company_id`, `effective_from`). Resolution as `company_setting_version` (5.5): the row with the highest `effective_from` not later than the reporting date. Organisation data, no personal data. A new row never restates anything (ADR-018).
+
+| Column | Type | Null | Notes |
+|---|---|---|---|
+| parent_company_id | ID | Y | The immediate parent in the group. Null for the top company. A member of the same group at `effective_from`, not the company itself, no cycle at any date |
+| ownership_pct | RATE | Y | The parent's direct share, above 0 and at most 100. Required with a parent, null without one. The effective group share is computed by the consolidation app |
+| consolidation_method | CODE | N | `FULL`, `PROPORTIONAL`, `EQUITY` or `NOT_CONSOLIDATED`. The core does not judge the method against the percentage |
+| translation_method | CODE | N | `NONE` (local currency equals the group currency), `CURRENT_RATE` or `TEMPORAL` (23, 3.2). `NONE` is rejected while the currencies differ and the other values while they are equal |
+
+Errors: `CONFIG.NOT_A_GROUP_MEMBER` (no group membership at `effective_from`), `CONFIG.OWNERSHIP_INVALID`, `CONFIG.OWNERSHIP_CYCLE`, `CONFIG.TRANSLATION_METHOD_INVALID`. Acquisition and exit dates are the `valid_from` and `valid_to` of `group_membership` (5.6). The core stores no equity, purchase price or goodwill. Permission `write.config` (11.1).
+
 Business units are dimension values (section 6.5), not organisation tables.
 
 ### 5.7 `company_order_setting_version` (V), thinned (S1, S2, S3)
@@ -324,8 +340,8 @@ Resolution at command time: the most specific row (currency, counterpart and VAT
 ### 6.4 `group_chart_account` (M) and `account_group_mapping` (V)
 
 Group reporting needs a common chart (ADR-011, ADR-017).
-- `group_chart_account`: PK (`tenant_id`, `group_id`, `group_account_id`). Unique code. `name`, `account_type`, `active`.
-- `account_group_mapping` (V): PK (`tenant_id`, `company_id`, `account_id`, `valid_from`). `group_account_id`, `valid_to`. Mapping of a company account to a group account, effective-dated. One group account per company account at a time.
+- `group_chart_account`: PK (`tenant_id`, `group_id`, `group_account_id`). Unique code. `name`, `account_type`, `active`, and `translation_rate_basis` (CODE, null: `CLOSING`, `AVERAGE` or `HISTORICAL`; null means the default of the account type: ASSET and LIABILITY `CLOSING`, REVENUE and EXPENSE `AVERAGE`, EQUITY `HISTORICAL`; read by the consolidation app only, ADR-227, 23, 4).
+- `account_group_mapping` (V): PK (`tenant_id`, `company_id`, `account_id`, `valid_from`). `group_account_id`, `valid_to`. Mapping of a company account to a group account, effective-dated. One group account per company account at a time. The group account must belong to the group the company is a member of at `valid_from`, else `CONFIG.GROUP_ACCOUNT_OTHER_GROUP` (ADR-227). A change of group (5.6) remaps nothing: old mappings stay as history and mappings to the new group's accounts are needed from the date of the change (readiness warning, 11.3). In reads a mapping is resolved at the reporting date (09, 4.1, 23, 4).
 
 ### 6.5 Dimensions
 
@@ -369,7 +385,7 @@ Index: (`tenant_id`, `rate_type`, `from_currency`, `to_currency`, `valid_from`) 
 
 | Column | Type | Null | Notes |
 |---|---|---|---|
-| rate_type | CODE | N | SPOT, CLOSING or VAT (VAT reporting amounts of tax lines, 08, 5.1a). IAP |
+| rate_type | CODE | N | SPOT, CLOSING or VAT (VAT reporting amounts of tax lines, 08, 5.1a), and since ADR-225 AVERAGE and HISTORICAL (7.3). IAP |
 | from_currency, to_currency | CODE | N | IAP |
 | valid_from | DATE | N | IAP. Rate applies from this date until the next |
 | rate | RATE | N | Mutable only while `first_used_at` is null |
@@ -384,6 +400,13 @@ Derivation (Q9 decided), in this order, for the pair (A to B), rate type and dat
 Derived rates are rounded to the scale of the `RATE` type and stored as used on the line. Every contributing table row gets `first_used_at` set. The fallback window applies to each contributing row separately.
 
 An error is corrected by creating a new row only if no row exists for that date. If the wrong rate is already used, correction happens through reversal and repost of the documents, never by changing the rate. Because rates are usage-locked rows, they are an M table with a special guard, and are listed in `master_change_log`.
+
+### 7.3 Rate types of consolidation and `exchange-rates:mark-used` (ADR-225, 23, 5)
+
+- **AVERAGE:** the average rate of a period for a currency pair. `valid_from` is the first day of the period, the row applies until the next row. Computed by the app or a provider, never by the core.
+- **HISTORICAL:** the rate at an event date (acquisition, capital contribution, dividend). `valid_from` is the event date, one row per event. The app reads the row with that exact `valid_from`.
+- **No core command uses them.** No posting, clearing or revaluation looks up an AVERAGE or HISTORICAL rate: no fallback window, no override tolerance, no inverse or cross derivation (Q9 above) and no `first_used_at`. The pair is loaded explicitly, normally local to group currency. Reading is the generic list with a `rate_type` filter (09, 3).
+- **`exchange-rates:mark-used`:** payload `rate_ids[]` (up to `master_batch_max_items`) and `purpose_ref` (TEXT(100), for example the consolidation run reference). Sets `first_used_at` on every named row that has none, for any rate type, so the usage lock above applies (the row can no longer change or be deactivated). Idempotent per key. Writes a `master_change_log` row per rate (field `first_used_at`) and the event `master.changed` (15, 6). Permission `write.config`. An unknown rate id rejects the whole command with `SCHEMA.INVALID_VALUE` and the id in `params`.
 
 ## 8. Tax configuration
 
@@ -594,7 +617,36 @@ No UPDATE or DELETE grants. The log is not part of a hash chain (it is operation
 
 ### 10.2 `applied_config_package` (E)
 
-PK: (`tenant_id`, `applied_id`). Columns: `company_id` (null for tenant-level content), `package_code`, `package_version`, `applied_at`, `applied_by`, `command_log_id`, `content_digest` (SHA-256 of the package content), `summary` (counts per table). Insert only.
+PK: (`tenant_id`, `applied_id`). Columns: `company_id` (null for tenant-level content), `package_code`, `package_version`, `applied_at`, `applied_by`, `command_log_id`, `content_digest` (SHA-256 over the core, policy and app files in fixed order, 18, 4.1; 18, 7.1 calls the same value `manifest_digest`), `summary` (counts per table). Insert only.
+
+Added by ADR-196, ADR-197 and ADR-217 (18, 7.1, 20, 11):
+
+| Column | Type | Null | Notes |
+|---|---|---|---|
+| country_code | CODE | Y | For kind COUNTRY |
+| kind | CODE | N | STANDARD, REGIME or COUNTRY |
+| state | CODE | N | The state of the package at apply: DRAFT, REVIEWED, RELEASED or DEPRECATED (18, 6) |
+| inputs_digest | BINARY(32) | N | SHA-256 over the canonical inputs. The values themselves are not stored as package content (18, 4.3) |
+| requires_snapshot | JSON | N | The package codes and versions applied first, as one list |
+| verification_summary | JSON | N | Counts per verification status over the items of the package |
+| app_content_digests | JSON | N | The digest list of the app artefacts (18, 4.5). The core stores the digests and never reads the artefacts |
+| archive_digest | BINARY(32) | N | SHA-256 of the uploaded archive (20, 11) |
+| signing_manifest_digest | BINARY(32) | N | SHA-256 of the signing manifest the signature covers |
+| signer_key_id | TEXT(100) | N | The id of the public key whose signature verified (20, 11). With the trust set of the tenant purpose it shows which key admitted the package |
+
+### 10.3 `applied_config_package_item` (E)
+
+ADR-196, 18, 7.1. PK: (`tenant_id`, `applied_id`, `item_no`). Insert only. It lets a later package version know which objects it may extend and gives the audit trail from an object to the verification record of its source item.
+
+| Column | Type | Null | Notes |
+|---|---|---|---|
+| item_id | TEXT(100) | N | The stable id of the package item, the key of its verification record (18, 4.2) |
+| entity_type | CODE | N | The resource of the object, for example GL_ACCOUNT, TAX_CODE |
+| entity_id | TEXT(100) | N | Canonical text of the key of the object |
+| action | CODE | N | `CREATED`, `VERSIONED`, `SKIPPED_EXISTS`, `SKIPPED_MODIFIED` |
+| valid_from | DATE | Y | For versioned objects |
+
+Index (`tenant_id`, `entity_type`, `entity_id`): which package item an object came from.
 
 ## 11. Contract for configuration and master data
 
@@ -618,7 +670,7 @@ Resource names follow the tables (`gl-accounts`, `tax-codes`, `business-partners
 
 | Permission | Resources |
 |---|---|
-| `write.config` | `tenant_setting`, `company_group`, `company` (not activation), `company_setting_version`, `group_membership`, `gl_account`, `account_dimension_rule`, `account_role_assignment`, `group_chart_account`, `account_group_mapping`, `tenant_currency`, `exchange_rate`, `tax_class`, `tax_return_box`, `tax_code` and versions, `tax_determination_rule` and alternatives, `company_vat_registration`, `account_determination`, `company_order_setting_version`, `external_code_mapping`, `business_calendar` and versions and exceptions, `company_calendar_assignment`, `payment_terms`, `vat_deduction_key`, `vat_deduction_rate` |
+| `write.config` | `tenant_setting`, `company_group`, `company` (not activation), `company_setting_version`, `company_consolidation_setting_version`, `company_policy_setting`, `group_membership`, `gl_account`, `account_dimension_rule`, `account_role_assignment`, `group_chart_account`, `account_group_mapping`, `tenant_currency`, `exchange_rate`, `tax_class`, `tax_return_box`, `tax_code` and versions, `tax_determination_rule` and alternatives, `company_vat_registration`, `account_determination`, `company_order_setting_version`, `external_code_mapping`, `business_calendar` and versions and exceptions, `company_calendar_assignment`, `payment_terms`, `vat_deduction_key`, `vat_deduction_rate` |
 | `write.master` | `dimension_type`, `dimension_value`, `business_partner` with PII, relations, tax registrations and bank accounts, `company_bank_account`, `item_group`, `item` and unit conversions, `item_company`, `warehouse`, `warehouse_location`, `item_warehouse`, `item_tracking`, `item_partner` |
 | `config.apply` | `config-packages:apply` (11.4). The package may touch any resource, the single permission replaces the per-resource ones for that command |
 | `company.activate` | `companies:activate` (11.3) |
@@ -633,6 +685,8 @@ Reads use `read.config` (09). The permission table is fixed (06, 8). A resource 
 ### 11.2 Error codes (area `CONFIG`)
 
 `DUPLICATE_CODE`, `ROW_VERSION_MISMATCH`, `IMMUTABLE_AFTER_POSTING`, `REFERENCED`, `VALID_FROM_NOT_LATER`, `VALID_FROM_IN_CLOSED_PERIOD`, `OVERLAPPING_RULE`, `ROLE_NOT_ASSIGNED`, `ROLE_ACCOUNT_RULE_VIOLATED` (an account that does not satisfy the role table of 6.3, including the required open-item mode), `REVALUE_FLAG_ON_RETAINED_EARNINGS` (new, 17, section 5: `revalue_flag` on the account of the role `RETAINED_EARNINGS`, either by setting the flag or by assigning the role, 6.1), `INVALID_REFERENCE`, `CURRENCY_NOT_ENABLED`, `DIMENSION_COMPANY_MISMATCH`, `HIERARCHY_CYCLE`, `COMPANY_NOT_READY`, `COST_SCOPE_CONFLICT` (a `group_membership` change or `inventory_cost_scope` change that would give a company with stock documents a different cost scope, 10, Q10), `DEDUCTION_ON_NON_INPUT_CODE` (a tax code version that is not of type INPUT with a `deductible_pct` other than 100, a `deduction_key` or a `deduction_cap`, 8.3), `DEDUCTION_KEY_UNKNOWN` (a code version names a key that does not exist for its registration, 8.3), `DEDUCTION_KEY_REFERENCED` (a change of `kind` of a key whose rates were used, 8.6).
+Added by ADR-224 and ADR-227 (spec 23): `NOT_A_GROUP_MEMBER`, `OWNERSHIP_INVALID`, `OWNERSHIP_CYCLE`, `TRANSLATION_METHOD_INVALID` (5.6a) and `GROUP_ACCOUNT_OTHER_GROUP` (6.4).
+
 ### 11.3 Company readiness and activation
 
 `companies:check-readiness` (read-only) and `companies:activate` verify that a company can post:
@@ -654,6 +708,9 @@ Reads use `read.config` (09). The permission table is fixed (06, 8). A resource 
 | Tax determination covers every active tax code (warning, not error) | 8.4 |
 | A rate valid at the first tax date for every deduction key that an active tax code version names (warning, not error) | 8.6 |
 | `einvoice_rule_set` set in the current `company_setting_version` when the company has a seller `electronic_address` (warning, not error) | 5.5, 12, 10 |
+| A company whose current `company_consolidation_setting_version` has a method other than `NOT_CONSOLIDATED` is a member of a group today (warning, not error) | 5.6a, 23, 9 |
+| A company that is a member of a group with group accounts has at least one `account_group_mapping` row valid today (warning, not error) | 6.4, 23, 9 |
+| After a change of group the company has mappings to accounts of its current group (warning, not error) | 6.4, 23, 9 |
 
 The result lists every failed check with the code `CONFIG.COMPANY_NOT_READY`. A company in DRAFT status accepts configuration but no postings. `companies:check-readiness` needs `read.config`, `companies:activate` needs `company.activate` (06, 8). Apps, extensions, calendars and `item_partner` are not checked (3.4).
 
@@ -663,8 +720,12 @@ Applies a versioned package (JSON document) to a company or the tenant: creates 
 - Create-only and idempotent per `package_code` and `package_version` for a company. Re-applying the same version changes nothing. A new version creates only objects that do not exist.
 - The package is validated as a whole in VALIDATE mode first (all references resolve, role accounts satisfy rules, no overlapping rules).
 - One audit record in `applied_config_package`, and `master_change_log` rows (CREATE) for M objects.
-- Packages are maintained outside the data model (platform or partner repository). Format, ownership, apply semantics (inputs, items, user changes win) and the verification gate are specified in 18-country-packages (DRAFT, ADR-193 to ADR-197 PROPOSED). Q10 is closed by it once accepted.
-- Permission `config.apply` (06, 8). Country packages may also create business-calendar exceptions (public holidays, 16, 3.2).
+- Packages are maintained outside the data model (platform repository). Format, ownership, apply semantics and the verification gate are specified in 18-country-packages (DRAFT v0.2, ADR-193 to ADR-197 ACCEPTED 2026-10-14). Signing, trust sets and the repository are in 20, section 11 (ADR-217). Q10 is closed by them.
+- **Payload.** `archive` (the signed package archive, uploaded to the API, never fetched by the core, at most 20 MB, 20, 11), `company_id` (required when the package has company-scope files, null for the tenant-scope part), `inputs` (the values of the input schema of the manifest, 18, 4.3) and `package_ref` (code and version, an assertion: a value that differs from the manifest is `SCHEMA.INVALID_VALUE`). VALIDATE mode checks the whole package without writing (18, 7).
+- **Order of checks (P2, 20, 11).** Signature against the trust set of the tenant `purpose` (`PACKAGE.SIGNATURE_INVALID`), file digests against the signing manifest (`PACKAGE.DIGEST_MISMATCH`), the copied manifest fields against `package.json`, `format_version` (`PACKAGE.UNKNOWN_FORMAT_VERSION`), `requires` (`PACKAGE.REQUIRES_NOT_SATISFIED`), the gate: on a PRODUCTION tenant the state must be RELEASED (`PACKAGE.NOT_RELEASED`, 18, 6), inputs (`PACKAGE.INPUT_INVALID`), policy keys and values against the closed catalogue (`PACKAGE.UNKNOWN_POLICY_KEY`, `PACKAGE.POLICY_VALUE_NOT_AVAILABLE`), references (`PACKAGE.REFERENCE_UNRESOLVED`). The engine does not judge legal content, it checks that the verification record exists and is complete.
+- **Items and user changes.** Every object the apply creates, versions or skips is one row of `applied_config_package_item` (10.3). An existing object is `SKIPPED_EXISTS`, an object a user changed since the package created it is `SKIPPED_MODIFIED`: the package never overwrites (18, 7). Policy selections go to `company_policy_setting` with `applied_id`. The apply is one transaction and writes the event `package.applied` (15, 6).
+- **Reads.** `config-packages:diff` (read-only, permission `read.config`): payload `archive`, optional `company_ids[]` (default: every company that applied the package code) and optional `inputs`. It runs the checks above and returns, per company, the action each item would take (create, version, skip existing, skip modified), without writing. Without `inputs` the items that depend on inputs are listed as `INPUT_DEPENDENT`. `config-packages:list-applied` and `config-packages:get` are the generic `list` and `get` of the resources `applied-config-package` and `applied-config-package-item` (09, 3), permission `read.config`.
+- Permission `config.apply` (06, 8) for the apply. Country packages may also create business-calendar exceptions (public holidays, 16, 3.2).
 
 ### 11.5 Batch variants for master data (13, Q12 decided)
 
@@ -721,6 +782,14 @@ For the resources `gl-accounts`, `business-partners` (with PII, company relation
 | 05 | Gain/loss, retained earnings and FX roles are rows of `account_role_assignment`. 05 Q7 (one account per company with currency overrides) is exactly the `currency_code` column of the role table |
 
 These deltas are applied in 02 and 06 with this spec.
+
+### 13.2g Package deltas (ADR-193 to ADR-198, ADR-217, 2026-10-19)
+
+Applied in this spec: the overview rows for `company_policy_setting` and `applied_config_package_item` (3.2), the new columns of `applied_config_package` (10.2), the new table `applied_config_package_item` (10.3), the payload, order of checks, items, reads and permissions of `config-packages:apply` and `config-packages:diff` (11.4), Q10 closed. Carried by other specs: 06 (error area `PACKAGE`, the diff command), 09 (reads, permission), 12 (retention start values of ADR-198), 18 (deltas marked applied).
+
+### 13.2f ADR-224, ADR-225, ADR-227 (2026-10-19, spec 23)
+
+Applied in this spec: the overview row (3.2), `company_consolidation_setting_version` with its errors (5.6a), `translation_rate_basis` and the group rule of the mapping (6.4), the rate types AVERAGE and HISTORICAL and `exchange-rates:mark-used` (7.2, 7.3), `write.config` for the new table (11.1), the error codes (11.2) and three readiness warnings (11.3). Carried by other specs: 02 and 06 (the intercompany marker, ADR-226), 06 (command, codes), 09 (reads), 11 (6.7), 15 (event note).
 
 ### 13.2e ADR-200 and ADR-203 (2026-10-14)
 
@@ -782,7 +851,7 @@ Changes made in this spec, and what the other specs must carry:
 | Q7 | **Decided:** one group-chart mapping per company account, effective-dated. Local statutory reporting uses `standard_account_code`. |
 | Q8 | **Decided:** dimension rules apply as of command time. No versioned rule table. |
 | Q9 | **Decided:** direct rates are loaded, the core derives the inverse and, through the tenant pivot currency, cross rates (7.2). |
-| Q10 | **Decided:** a maintained, versioned set of packages per country, applied through `config-packages:apply`. The format and the maintenance process are specified before the first onboarding. |
+| Q10 | **Decided and closed:** a maintained, versioned set of packages per country, applied through `config-packages:apply`. The format, the apply semantics and the verification gate are specified in 18 (ADR-193 to ADR-197), signing and repository in 20, section 11 (ADR-217). |
 | Q11 | **Decided:** a company is deactivated, never deleted, merged or moved between tenants. `INACTIVE` keeps all data and reads and rejects postings. Leaving the platform is covered by tenant-level export and deletion (compliance domain). |
 | Q12 | **Decided (14 section 10, D10):** the split of 11.1 stands, including `exchange_rate` and `payment_terms` under `write.config`. |
 | Q13 | **Decided (14 section 10, S1):** `match_mode_default` and `allow_invoice_before_receipt` stay in `company_order_setting_version` (5.7). |
