@@ -95,6 +95,12 @@ select pg_temp.expect_count('rls: tenant A sees its accounts', $t$select pg_temp
 
 insert into platform.tenant (tenant_id, tenant_code, name, purpose)
 values ('99999999-9999-4999-8999-999999999999', 'OTHER', 'Other tenant', 'TEST');
+select pg_temp.expect_count('rls: reference data is readable by a command role',
+    $t$select pg_temp.count_as('cmd_read', 'select count(*) from platform.ref_currency')$t$, 6);
+select pg_temp.expect_count('rls: a command role sees only the tenant of the transaction',
+    $t$select pg_temp.count_as('cmd_read', 'select count(*) from platform.tenant')$t$, 1);
+select pg_temp.expect_count('rls: the migration log is closed to command roles',
+    $t$select pg_temp.count_as('cmd_read', 'select count(*) from platform.schema_migration')$t$, 0);
 select set_config('app.tenant_id', '99999999-9999-4999-8999-999999999999', false);
 select pg_temp.expect_count('rls: tenant B sees none of A''s accounts', $t$select pg_temp.count_as('cmd_read', 'select count(*) from core.gl_account')$t$, 0);
 select pg_temp.expect_error('rls: tenant B cannot insert a row for tenant A',

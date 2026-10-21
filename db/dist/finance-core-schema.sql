@@ -658,6 +658,22 @@ begin
     end loop;
 end $$;
 
+-- Platform tables stay outside tenant isolation (07, A6), but RLS is on as a second line of defence and so that the
+-- Supabase Security Advisor has nothing to report. Reference data is readable by everyone who may query it, a
+-- tenant is readable only as the tenant of the transaction, and the migration log is not readable by command roles.
+-- The migration role bypasses RLS and is the only one that writes these tables.
+alter table platform.ref_currency enable row level security;
+alter table platform.ref_country enable row level security;
+alter table platform.tenant enable row level security;
+alter table platform.schema_migration enable row level security;
+drop policy if exists ref_read on platform.ref_currency;
+create policy ref_read on platform.ref_currency for select using (true);
+drop policy if exists ref_read on platform.ref_country;
+create policy ref_read on platform.ref_country for select using (true);
+drop policy if exists tenant_read on platform.tenant;
+create policy tenant_read on platform.tenant for select using (tenant_id = core.current_tenant_id());
+-- platform.schema_migration has no policy: no command role can read or write it.
+
 -- A command role may move only its own chain (02, 9.2: the owning command role updates the head).
 drop policy if exists chain_head_period on core.chain_head;
 create policy chain_head_period on core.chain_head as restrictive for update to cmd_period
