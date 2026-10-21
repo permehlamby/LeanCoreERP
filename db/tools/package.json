@@ -1,0 +1,12 @@
+{
+  "name": "financecore-db-tools",
+  "private": true,
+  "type": "module",
+  "description": "Runs the SQL migrations and the protection tests against PGlite, an in-process PostgreSQL (WASM)",
+  "scripts": {
+    "test": "node run-pglite.mjs"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "^0.5.10"
+  }
+}

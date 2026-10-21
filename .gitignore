@@ -9,3 +9,5 @@ src/.local/
 .tools/
 *.env
 appsettings.*.local.json
+
+node_modules/
