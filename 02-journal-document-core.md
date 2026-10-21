@@ -373,6 +373,37 @@ The posting command locks the number-range counter row first and then the LEDGER
 
 Algorithm (Q7 decided): unkeyed SHA-256 (all `hash_version` values). Anyone with the data can verify the chain. Protection against an attacker with database write access comes from the externally timestamped anchors of 9.5.
 
+### 9.3a Canonical form of `hash_version` 2 (decided at implementation, 2026-10-21, ADR-211)
+
+9.3 says "fixed column order, UTF-8, ISO dates, plain decimal strings with fixed scale, explicit NULL marker". That does not let two implementations produce the same bytes. This section fixes them. Test vectors are in `test-vectors/hash-v2.json` and every implementation must reproduce them (ADR-211: the C# library and `test-vectors/verify-hash-v2.mjs` do). Only `hash_version` 2 is implemented: no document of version 1 exists yet, so the version 1 field list of 9.3 is history only.
+
+**Value encoding** (by column type):
+
+| Type | Bytes |
+|---|---|
+| ID | The UUID in lower case with hyphens, 36 ASCII characters |
+| CODE, TEXT(n) | The UTF-8 bytes of the stored text. The hash applies no normalisation: commands store text in Unicode normal form C |
+| INT, SMALLINT, BIGINT | ASCII decimal, a minus sign for negative numbers, no plus sign, no leading zeros, `0` for zero |
+| BOOL | `true` or `false` |
+| DATE | `YYYY-MM-DD` |
+| TS | UTC, `YYYY-MM-DDTHH:MM:SS.ffffffZ`, always six fraction digits (microseconds) |
+| AMT | Plain decimal with exactly 4 fraction digits, minus sign for negative, no thousands separator. Zero is `0.0000`, never `-0.0000`. A value with more than 4 fraction digits is an error, it is never rounded |
+| RATE | As AMT with exactly 10 fraction digits |
+| BINARY(32) | 64 lower-case hexadecimal characters |
+
+**Field.** A 4-byte unsigned length in big-endian order, then the value bytes. A NULL value is the length `FFFFFFFF` without value bytes. An empty text is length 0 and is not NULL.
+
+**Block.** The concatenation of fields, wrapped as one field (its length covers all inner fields). A missing optional block is a NULL field. A list is a block that holds one field per element.
+
+**Row hash** = SHA-256 of the concatenation of these fields, in this order: `hash_version` (INT), `tenant_id`, `company_id`, `ledger_id`, `chain_seq` (BIGINT), `prev_hash` (hex), the **header block**, `line_digest` (hex).
+- Header block: the L1 columns of `journal_document` in the order of section 3, without `chain_seq`, `prev_hash` and `row_hash`: `tenant_id`, `company_id`, `document_id`, `ledger_id`, `document_type`, `is_system_generated`, `number_series_id`, `fiscal_year`, `sequence_no`, `document_number`, `fiscal_period`, `soft_close_override`, `migration_batch_id`, `detail_digest`, `document_date`, `posting_date`, `posted_at`, `transaction_currency`, `reversal_of_document_id`, `reversal_reason_code`, `auto_reversal_date`, `ic_transaction_id`, `ic_counterpart_company_id`, `origin`, `source_system`, `source_document_ref`, `idempotency_key`, `command_name`, `posted_by`, `correlation_id`, `hash_version`. The S columns `status` and `reversed_by_document_id` and the L2 columns `header_text` and `external_reference` are not in it.
+- `line_digest` = SHA-256 of the concatenation of the **raw 32 bytes** of `line_hash` of each line, ordered by `line_no`.
+- `line_hash` = SHA-256 of the concatenation of four fields: the **line block**, the **tax block** (NULL unless the line has a `journal_line_tax` row), the **tax base list** (a block with one block per `journal_line_tax_base` row whose `tax_line_no` is this line, ordered by `base_line_no`, an empty block when there is none) and the **open item block** (NULL unless the line has a `journal_line_open_item` row).
+- Line block, the L1 columns of `journal_line` in the order of 5.1, 5.2 and 5.4: `tenant_id`, `company_id`, `document_id`, `line_no`, `ledger_id`, `line_type`, `account_id`, `posting_date`, `fiscal_year`, `fiscal_period`, `reversed_line_no`, `tax_code_id`, `amount_tc`, `amount_lc`, `currency_lc`, `rate_lc`, `rate_lc_table`, `amount_gc`, `currency_gc`, `rate_gc`, `rate_gc_table`, `amount_rc`, `currency_rc`, `rate_rc`, `rate_rc_table`, `rate_type`, `rate_date`, `ic_counterpart_company_id`. The L2 columns (`line_text` and the typed dimensions) are not in it.
+- Tax block: all columns of 7.1 in table order (`tenant_id` to `gross_tax_amount_tc`). Tax base block: `tenant_id`, `company_id`, `document_id`, `tax_line_no`, `base_line_no`, `base_amount_tc`, `nondeductible_tax_tc`, `nondeductible_line_no`. Open item block: `tenant_id`, `company_id`, `document_id`, `line_no`, `partner_id`, `legacy_document_date`, `legacy_posting_date`, `legacy_document_ref`.
+
+**Genesis.** `prev_hash` of `chain_seq` 1 is the SHA-256 of the UTF-8 text `genesis|{tenant_id}|{company_id}|{chain_type}|{scope_key}` (the `scope_key` of 9.2, empty for the five chain types without a scope).
+
 ### 9.4 Verification
 
 `chains:verify` (API, read-only) per chain (chain type, scope) and sequence range: recomputes `row_hash` from stored L1 data, checks `prev_hash` linkage and gap-free `chain_seq`, checks balance per currency, and checks number continuity. Returns the first broken `chain_seq` or OK.
