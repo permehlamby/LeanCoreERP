@@ -114,6 +114,17 @@ public sealed class TestTenant
         return t;
     }
 
+    /// <summary>An ACTIVE company with the year 2026 open, made only by the commands: the state the period commands start from.</summary>
+    public static async Task<TestTenant> CreateReadyAsync(int specialPeriods = 0)
+    {
+        var t = await CreateAsync(bare: true, specialPeriods: specialPeriods);
+        var year = await new FiscalYearOpener(t.App).OpenAsync(t.TenantId, t.Context("ready-year", "period.admin"), new(t.CompanyId, 2026));
+        if (year.Status != Core.Commands.CommandStatus.Ok) throw new InvalidOperationException("year: " + string.Join(", ", year.Errors.Select(e => e.Code)));
+        var activated = await new CompanyActivator(t.App).ActivateAsync(t.TenantId, t.Context("ready-activate", "company.activate"), t.CompanyId);
+        if (activated.Status != Core.Commands.CommandStatus.Ok) throw new InvalidOperationException("activate: " + string.Join(", ", activated.Errors.Select(e => e.Code)));
+        return t;
+    }
+
     /// <summary>A connection as the migration role with the tenant set, for set-up and for tampering.</summary>
     public async Task<NpgsqlConnection> OpenAdminAsync()
     {

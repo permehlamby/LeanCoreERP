@@ -378,7 +378,7 @@ public sealed class JournalDocumentPoster(NpgsqlDataSource source)
         }
         await using (var cmd = tx.Command(
             "insert into core.command_log_result (tenant_id, command_log_id, result_seq, entity_type, entity_id) " +
-            "values (@t, @id, 1, 'JOURNAL_DOCUMENT', @e)"))
+            "values (@t, @id, 1, 'DOCUMENT', @e)"))
         {
             cmd.Parameters.AddWithValue("t", tenantId);
             cmd.Parameters.AddWithValue("id", logId);
@@ -409,7 +409,7 @@ public sealed class JournalDocumentPoster(NpgsqlDataSource source)
         await using (var cmd = tx.Command(
             "insert into core.outbox_event (tenant_id, position, event_type, event_version, company_id, entity_type, entity_key, " +
             "entity_version, change, occurred_at, actor_ref, correlation_id, is_audit, chain_ref, summary) " +
-            "values (@t, @p, 'ledger.document_posted', 1, @c, 'JOURNAL_DOCUMENT', @key, null, 'POSTED', @at, @a, @corr, true, @chain, @sum)"))
+            "values (@t, @p, 'ledger.document_posted', 1, @c, 'DOCUMENT', @key, null, 'POSTED', @at, @a, @corr, true, @chain, @sum)"))
         {
             cmd.Parameters.AddWithValue("t", tenantId);
             cmd.Parameters.AddWithValue("p", position);
@@ -756,7 +756,7 @@ public sealed class JournalDocumentPoster(NpgsqlDataSource source)
     {
         Guid documentId;
         await using (var cmd = tx.Command(
-            "select entity_id from core.command_log_result where tenant_id = @t and command_log_id = @id and entity_type = 'JOURNAL_DOCUMENT' order by result_seq limit 1"))
+            "select entity_id from core.command_log_result where tenant_id = @t and command_log_id = @id and entity_type = 'DOCUMENT' order by result_seq limit 1"))
         {
             cmd.Parameters.AddWithValue("t", tenantId);
             cmd.Parameters.AddWithValue("id", logId);
