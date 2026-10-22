@@ -1,4 +1,4 @@
--- Finance core schema, generated from db/migrations (0001_foundation.sql, 0002_platform_reference.sql, 0003_organisation.sql, 0004_calendar_and_numbers.sql, 0005_ledger.sql, 0006_security_and_integrity.sql, 0007_posting_period_lock.sql).
+-- Finance core schema, generated from db/migrations (0001_foundation.sql, 0002_platform_reference.sql, 0003_organisation.sql, 0004_calendar_and_numbers.sql, 0005_ledger.sql, 0006_security_and_integrity.sql, 0007_posting_period_lock.sql, 0008_migration_role_membership.sql).
 -- Do not edit: change the numbered files and run db/tools/build-all.mjs. Safe to run again.
 
 -- ==================== 0001_foundation.sql ====================
@@ -1022,4 +1022,18 @@ grant update (last_event_id) on core.fiscal_period, core.fiscal_year to cmd_post
 
 insert into platform.schema_migration (version, description)
 values ('0007', 'posting role may lock period rows for share (last_event_id guarded by trigger)')
+on conflict (version) do nothing;
+
+-- ==================== 0008_migration_role_membership.sql ====================
+-- 0008 the migration role may switch to the command roles. Needed to run db/tests/001_protection.sql on Supabase, where
+-- the SQL Editor runs as postgres without superuser rights (set role needs membership). Found when the tests ran there.
+-- It gives the migration role nothing it does not have: it already owns every object. Skipped where no role postgres exists.
+do $$ begin
+    if exists (select 1 from pg_roles where rolname = 'postgres') then
+        grant cmd_read, cmd_config, cmd_period, cmd_post, cmd_retention to postgres;
+    end if;
+end $$;
+
+insert into platform.schema_migration (version, description)
+values ('0008', 'migration role is a member of the command roles (tests on Supabase)')
 on conflict (version) do nothing;
