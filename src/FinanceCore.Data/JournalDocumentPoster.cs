@@ -12,7 +12,8 @@ namespace FinanceCore.Data;
 /// journal-documents:post of 06, 5.2 for the first slice: base lines on plain accounts, one transaction currency,
 /// derived local, group and reporting amounts, gapless number, hash chain, idempotency and outbox event.
 /// Not in the slice (answered with a LIMIT.* error, never silently ignored): tax, partners, open items, dimensions,
-/// special periods, rate overrides, rounding lines, the AP and AR document types.
+/// special periods, rate overrides, the AP and AR document types. Rounding differences of the derived currencies go to one
+/// ROUNDING line on the account of the role ROUNDING (07, 6.3).
 /// One command is one transaction. Everything that can be checked is checked before the first lock (P1 to P6),
 /// the locks come in the order of 06, 9: number counter, ledger chain head, period rows, outbox head.
 /// </summary>
@@ -212,16 +213,24 @@ public sealed class JournalDocumentPoster(NpgsqlDataSource source)
                 PostingRules.Round(l.AmountTc * rateGc.Value, scales[groupCurrency!]),
                 rateRc is null ? null : PostingRules.Round(l.AmountTc * rateRc.Value, scales[company.ReportingCurrency!])));
 
-        // P6: balance of the derived currencies. Rounding lines need configured rounding accounts (03, design
-        // principle 4), which the schema does not have yet. Finding F-IMPL-7.
-        void CheckBalance(string label, string currency, decimal sum)
+        // P5/P6: the derived currencies balance with one ROUNDING line (design principle 4 of 00) on the account of the role
+        // ROUNDING for the transaction currency, else the default row. Its amounts are the differences, TC is 0 (finding F-IMPL-16).
+        decimal diffLc = -derived.Sum(d => d.Lc), diffGc = -derived.Sum(d => d.Gc);
+        decimal? diffRc = rateRc is null ? null : -derived.Sum(d => d.Rc!.Value);
+        Guid? roundingAccount = null;
+        if (diffLc != 0m || diffGc != 0m || diffRc is not null and not 0m)
         {
-            if (sum != 0m)
-                errors.Add(Error("LIMIT.ROUNDING_DIFFERENCE", "P6", "lines", ("currency", currency), ("scope", label), ("difference", sum)));
+            roundingAccount = await AccountRoleResolver.ResolveAsync(tx, tenantId, req.CompanyId, "ROUNDING", req.TransactionCurrency, null, null, ct);
+            if (roundingAccount is null)
+                errors.Add(Error("BALANCE.ROUNDING_ACCOUNT_MISSING", "P6", "lines", ("role_code", "ROUNDING"),
+                    ("currency", req.TransactionCurrency), ("difference_lc", diffLc), ("difference_gc", diffGc), ("difference_rc", diffRc)));
+            else
+            {
+                AccountRow? a = (await ReadAccountRowsAsync(tx, tenantId, req.CompanyId, [roundingAccount.Value], ct)).GetValueOrDefault(roundingAccount.Value);
+                if (a is null || !a.Active || a.PostingBlocked || a.ValidFrom > req.PostingDate || (a.ValidTo is { } to && to < req.PostingDate))
+                    errors.Add(Error("ACCOUNT.ROLE_ACCOUNT_NOT_USABLE", "P6", "lines", ("role_code", "ROUNDING"), ("account_id", roundingAccount)));
+            }
         }
-        CheckBalance("local", company.LocalCurrency, derived.Sum(d => d.Lc));
-        CheckBalance("group", groupCurrency!, derived.Sum(d => d.Gc));
-        if (rateRc is not null) CheckBalance("reporting", company.ReportingCurrency!, derived.Sum(d => d.Rc!.Value));
         if (errors.Count > 0) return CommandResult<PostedDocument>.Rejected(errors);
 
         // P7: locks in the order of 06, 9. Counter first.
@@ -299,31 +308,39 @@ public sealed class JournalDocumentPoster(NpgsqlDataSource source)
             ["correlation_id"] = ctx.CorrelationId, ["hash_version"] = LedgerHash2.Version
         };
 
+        // Base lines first, then the generated lines (06, A2)
         var lines = new List<PostedLine>();
-        var lineHashes = new List<byte[]>();
         for (int i = 0; i < derived.Count; i++)
         {
             var d = derived[i];
-            int lineNo = i + 1;
-            var line = new PostedLine(lineNo, d.Line.LineRef, d.Line.AccountId, "BASE",
+            lines.Add(new PostedLine(i + 1, d.Line.LineRef, d.Line.AccountId, "BASE",
                 d.Line.AmountTc, d.Lc, company.LocalCurrency, rateLc.Value,
                 d.Gc, groupCurrency!, rateGc.Value,
                 d.Rc, company.ReportingCurrency, rateRc?.Value,
-                "SPOT", req.PostingDate);
-            lines.Add(line);
+                "SPOT", req.PostingDate));
+        }
+        if (roundingAccount is not null)
+            // A DERIVED line (02, 5.2, D9): TC 0 and rate 1 in every currency, the amounts are authoritative
+            lines.Add(new PostedLine(lines.Count + 1, null, roundingAccount.Value, "ROUNDING",
+                0m, diffLc, company.LocalCurrency, 1m,
+                diffGc, groupCurrency!, 1m,
+                diffRc, company.ReportingCurrency, rateRc is null ? null : 1m,
+                "DERIVED", req.PostingDate));
+
+        var lineHashes = new List<byte[]>();
+        foreach (PostedLine line in lines)
             lineHashes.Add(LedgerHash2.LineHash(new HashedLine(new Dictionary<string, object?>
             {
-                ["tenant_id"] = tenantId, ["company_id"] = req.CompanyId, ["document_id"] = documentId, ["line_no"] = lineNo,
-                ["ledger_id"] = ledgerId.Value, ["line_type"] = "BASE", ["account_id"] = d.Line.AccountId,
+                ["tenant_id"] = tenantId, ["company_id"] = req.CompanyId, ["document_id"] = documentId, ["line_no"] = line.LineNo,
+                ["ledger_id"] = ledgerId.Value, ["line_type"] = line.LineType, ["account_id"] = line.AccountId,
                 ["posting_date"] = req.PostingDate, ["fiscal_year"] = fiscalYear, ["fiscal_period"] = recheck.PeriodNo!.Value,
                 ["reversed_line_no"] = null, ["tax_code_id"] = null,
                 ["amount_tc"] = line.AmountTc, ["amount_lc"] = line.AmountLc, ["currency_lc"] = line.CurrencyLc,
                 ["rate_lc"] = line.RateLc, ["rate_lc_table"] = null,
                 ["amount_gc"] = line.AmountGc, ["currency_gc"] = line.CurrencyGc, ["rate_gc"] = line.RateGc, ["rate_gc_table"] = null,
                 ["amount_rc"] = line.AmountRc, ["currency_rc"] = line.CurrencyRc, ["rate_rc"] = line.RateRc, ["rate_rc_table"] = null,
-                ["rate_type"] = "SPOT", ["rate_date"] = req.PostingDate, ["ic_counterpart_company_id"] = null
+                ["rate_type"] = line.RateType, ["rate_date"] = line.RateDate, ["ic_counterpart_company_id"] = null
             })));
-        }
         byte[] rowHash = LedgerHash2.RowHash(header, chainSeq, headHash, LedgerHash2.LineDigest(lineHashes));
 
         // Insert document and lines
@@ -331,7 +348,7 @@ public sealed class JournalDocumentPoster(NpgsqlDataSource source)
             sequenceNo, number, softOverride, postedAt, chainSeq, headHash, rowHash, ct);
         foreach (PostedLine l in lines)
             await InsertLineAsync(tx, tenantId, req, documentId, ledgerId.Value, fiscalYear, recheck.PeriodNo!.Value,
-                req.Lines[l.LineNo - 1].LineText, l, ct);
+                l.LineType == "BASE" ? req.Lines[l.LineNo - 1].LineText : null, l, ct);
 
         // Move the chain head
         await using (var cmd = tx.Command(
@@ -495,15 +512,19 @@ public sealed class JournalDocumentPoster(NpgsqlDataSource source)
         return value is null ? null : Convert.ToInt32(value, CultureInfo.InvariantCulture);
     }
 
-    private static async Task<Dictionary<Guid, AccountRow>> ReadAccountsAsync(
-        TenantTransaction tx, Guid tenantId, PostJournalDocumentRequest req, CancellationToken ct)
+    private static Task<Dictionary<Guid, AccountRow>> ReadAccountsAsync(
+        TenantTransaction tx, Guid tenantId, PostJournalDocumentRequest req, CancellationToken ct) =>
+        ReadAccountRowsAsync(tx, tenantId, req.CompanyId, req.Lines.Select(l => l.AccountId).Distinct().ToArray(), ct);
+
+    private static async Task<Dictionary<Guid, AccountRow>> ReadAccountRowsAsync(
+        TenantTransaction tx, Guid tenantId, Guid companyId, Guid[] accountIds, CancellationToken ct)
     {
         await using var cmd = tx.Command(
             "select account_id, account_no, active, valid_from, valid_to, posting_blocked, open_item_mode, tax_code_rule, currency_code " +
             "from core.gl_account where tenant_id = @t and company_id = @c and account_id = any(@ids)");
         cmd.Parameters.AddWithValue("t", tenantId);
-        cmd.Parameters.AddWithValue("c", req.CompanyId);
-        cmd.Parameters.AddWithValue("ids", req.Lines.Select(l => l.AccountId).Distinct().ToArray());
+        cmd.Parameters.AddWithValue("c", companyId);
+        cmd.Parameters.AddWithValue("ids", accountIds);
         var result = new Dictionary<Guid, AccountRow>();
         await using var r = await cmd.ExecuteReaderAsync(ct);
         while (await r.ReadAsync(ct))

@@ -26,6 +26,7 @@ public sealed class TestTenant
     public Guid Revenue { get; } = Guid.NewGuid();
     public Guid Expense { get; } = Guid.NewGuid();
     public Guid Blocked { get; } = Guid.NewGuid();
+    public Guid Rounding { get; } = Guid.NewGuid();
 
     // One small pool per connection string for the whole test run. A hosted session pooler allows few clients
     // (15 on the Supabase free tier, EMAXCONNSESSION), so a pool per test would use them all after a few tests.
@@ -45,8 +46,10 @@ public sealed class TestTenant
 
     /// <param name="bare">A DRAFT company without fiscal year, counters and chain heads: what the commands
     /// fiscal-years:open and companies:activate start from.</param>
+    /// <param name="withRoles">The six roles that activation needs, as default rows on accounts 7900 to 7940 and 8100.</param>
     public static async Task<TestTenant> CreateAsync(
-        bool dkkToEurRate = true, bool bare = false, int specialPeriods = 0, int firstMonth = 1, string labelRule = "START")
+        bool dkkToEurRate = true, bool bare = false, int specialPeriods = 0, int firstMonth = 1, string labelRule = "START",
+        bool withRoles = true)
     {
         var t = new TestTenant();
 
@@ -75,6 +78,17 @@ public sealed class TestTenant
               (@t, @c, @a2, '3000', 'Revenue', 'REVENUE', 'FORBIDDEN', false),
               (@t, @c, @a3, '4000', 'Expenses', 'EXPENSE', 'FORBIDDEN', false),
               (@t, @c, @a4, '9999', 'Blocked', 'EXPENSE', 'FORBIDDEN', true);
+            insert into core.gl_account (tenant_id, company_id, account_id, account_no, name, account_type, tax_code_rule)
+              select @t, @c, v.id, v.no, v.name, v.type, 'FORBIDDEN' from (values
+                (@rounding, '7900', 'Rounding', 'EXPENSE'), (gen_random_uuid(), '7910', 'Tax rounding', 'EXPENSE'),
+                (gen_random_uuid(), '7920', 'FX realised', 'EXPENSE'), (gen_random_uuid(), '7930', 'FX unrealised gain', 'REVENUE'),
+                (gen_random_uuid(), '7940', 'FX unrealised loss', 'EXPENSE'), (gen_random_uuid(), '8100', 'Retained earnings', 'EQUITY')
+              ) v(id, no, name, type) where @roles;
+            insert into core.account_role_assignment (tenant_id, company_id, role_code, account_id, effective_from)
+              select @t, @c, v.role, g.account_id, timestamptz '2026-01-01 00:00:00+00' from (values
+                ('ROUNDING', '7900'), ('TAX_ROUNDING', '7910'), ('FX_REALISED', '7920'), ('FX_UNREALISED_GAIN', '7930'),
+                ('FX_UNREALISED_LOSS', '7940'), ('RETAINED_EARNINGS', '8100')
+              ) v(role, no) join core.gl_account g on g.tenant_id = @t and g.company_id = @c and g.account_no = v.no where @roles;
             insert into core.number_series (tenant_id, company_id, series_id, series_code, prefix, include_fiscal_year, separator, number_length, is_legal)
               values (@t, @c, @s, 'GL-JRN', 'GL', true, '-', 6, true);
             insert into core.number_series_assignment (tenant_id, company_id, document_type, series_id, effective_from, created_by)
@@ -101,6 +115,8 @@ public sealed class TestTenant
             """, admin);
         cmd.Parameters.AddWithValue("dkkEur", dkkToEurRate);
         cmd.Parameters.AddWithValue("bare", bare);
+        cmd.Parameters.AddWithValue("roles", withRoles);
+        cmd.Parameters.AddWithValue("rounding", t.Rounding);
         cmd.Parameters.AddWithValue("special", (short)specialPeriods);
         cmd.Parameters.AddWithValue("firstMonth", (short)firstMonth);
         cmd.Parameters.AddWithValue("labelRule", labelRule);

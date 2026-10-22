@@ -91,7 +91,7 @@ begin
     execute 'reset role';
     return n;
 end $$;
-select pg_temp.expect_count('rls: tenant A sees its accounts', $t$select pg_temp.count_as('cmd_read', 'select count(*) from core.gl_account')$t$, 4);
+select pg_temp.expect_count('rls: tenant A sees its accounts', $t$select pg_temp.count_as('cmd_read', 'select count(*) from core.gl_account')$t$, 10);
 
 insert into platform.tenant (tenant_id, tenant_code, name, purpose)
 values ('99999999-9999-4999-8999-999999999999', 'OTHER', 'Other tenant', 'TEST');
@@ -258,6 +258,26 @@ select pg_temp.expect_error('account: tax_account is never reset',
     '%never reset%');
 select pg_temp.expect_error('company: currency is fixed once the company has postings',
     $t$update core.company set local_currency = 'EUR'$t$, '%fixed once the company has postings%');
+
+-- Account roles (07, 6.3): a role row is a version, never changed, and the account must satisfy the role table
+select pg_temp.expect_error('role: a role row is never updated',
+    $t$update core.account_role_assignment set effective_from = now() where role_code = 'ROUNDING'$t$, '%append-only%');
+select pg_temp.expect_error('role: a role row is never deleted',
+    $t$delete from core.account_role_assignment$t$, '%append-only%');
+select pg_temp.expect_error('role: ROUNDING needs a P&L account',
+    $t$insert into core.account_role_assignment (tenant_id, company_id, role_code, account_id, effective_from)
+       select tenant_id, company_id, 'ROUNDING', account_id, now() from core.gl_account where account_no = '1000'$t$, '%ACCOUNT_TYPE%');
+select pg_temp.expect_error('role: an account has one role only',
+    $t$insert into core.account_role_assignment (tenant_id, company_id, role_code, account_id, effective_from)
+       select tenant_id, company_id, 'FX_REALISED', account_id, now() from core.gl_account where account_no = '7900'$t$, '%ONE_ROLE_PER_ACCOUNT%');
+select pg_temp.expect_error('role: a currency row needs an account without another currency',
+    $t$update core.gl_account set currency_code = 'EUR' where account_no = '7930';
+       insert into core.account_role_assignment (tenant_id, company_id, role_code, account_id, effective_from)
+       select tenant_id, company_id, 'FX_UNREALISED_GAIN', account_id, now() + interval '1 day' from core.gl_account where account_no = '7930'$t$, '%(CURRENCY)%');
+select pg_temp.expect_error('role: type and open item mode of a role account are fixed',
+    $t$update core.gl_account set account_type = 'REVENUE' where account_no = '7900'$t$, '%CONFIG.REFERENCED%');
+select pg_temp.expect_error('role: no revalue flag on the retained earnings account',
+    $t$update core.gl_account set revalue_flag = true where account_no = '8100'$t$, '%REVALUE_FLAG_ON_RETAINED_EARNINGS%');
 
 -- ---------------------------------------------------------------------------------------------------------
 -- 6. Exchange rates are usage-locked
