@@ -24,11 +24,11 @@ public class FiscalYearTests
         Assert.Equal(1, y.FirstPeriodNo);
         Assert.Equal(12, y.Periods.Count);
         Assert.Equal(new DateOnly(2026, 2, 28), y.Periods[1].EndDate);
-        Assert.Equal([t.SeriesId], y.CounterSeriesIds);
+        Assert.Equal(new[] { t.SeriesId, t.ReversalSeriesId }.Order(), y.CounterSeriesIds.Order());
         Assert.Equal(1L, y.EventSeq);
 
         Assert.Equal(12L, await t.ScalarAsync<long>("select count(*) from core.fiscal_period where tenant_id = @t and status = 'OPEN'"));
-        Assert.Equal(0L, await t.ScalarAsync<long>("select last_number from core.number_range_counter where tenant_id = @t"));
+        Assert.Equal(0L, await t.ScalarAsync<long>("select max(last_number) from core.number_range_counter where tenant_id = @t"));
         Assert.Equal(1L, await t.ScalarAsync<long>("select last_seq from core.chain_head where tenant_id = @t and chain_type = 'PERIOD_EVENT'"));
         Assert.Equal("year.opened", await t.ScalarAsync<string>("select event_type from core.outbox_event where tenant_id = @t"));
 
@@ -62,7 +62,7 @@ public class FiscalYearTests
         Assert.True(second.Status == CommandStatus.Ok, Describe(second));
         Assert.Equal(2L, second.Value!.EventSeq);
         Assert.Equal(first.Value!.RowHash, second.Value.PrevHash);
-        Assert.Equal(2L, await t.ScalarAsync<long>("select count(*) from core.number_range_counter where tenant_id = @t"));
+        Assert.Equal(4L, await t.ScalarAsync<long>("select count(*) from core.number_range_counter where tenant_id = @t"));
 
         var gap = await opener.OpenAsync(t.TenantId, Admin(t, "c"), new(t.CompanyId, 2029));
         Assert.Contains("FISCAL_YEAR.NOT_CONTIGUOUS", gap.Errors.Select(e => e.Code));

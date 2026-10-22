@@ -177,13 +177,13 @@ public sealed class JournalDocumentPoster(NpgsqlDataSource source)
             if (a.CurrencyCode is not null) errors.Add(Error("LIMIT.ACCOUNT_CURRENCY", "P2", path, ("account_no", a.AccountNo)));
         }
 
-        SeriesRow? series = ledgerId is null ? null : await ReadSeriesAsync(tx, tenantId, req, ledgerId.Value, ct);
+        SeriesRow? series = ledgerId is null ? null : await ReadSeriesAsync(tx, tenantId, req.CompanyId, req.DocumentType, req.PostingDate, ledgerId.Value, ct);
         if (ledgerId is not null && series is null)
             errors.Add(Error("SERIES.NO_ASSIGNMENT", "P2", "document_type",
                 ("document_type", req.DocumentType), ("ledger_id", ledgerId), ("posting_date", req.PostingDate)));
 
         // P3: posting window, period, year, status (04, 7.1)
-        PeriodCheck period = await CheckPeriodAsync(tx, tenantId, req, ctx, lockShare: false, ct);
+        PeriodCheck period = await CheckPeriodAsync(tx, tenantId, req.CompanyId, req.PostingDate, ctx, lockShare: false, ct);
         errors.AddRange(period.Errors);
         warnings.AddRange(period.Warnings);
 
@@ -272,7 +272,7 @@ public sealed class JournalDocumentPoster(NpgsqlDataSource source)
 
         // Period rows, share lock, and the status check again under the locks (06, 3: the status may have changed
         // between P3 and the locks).
-        PeriodCheck recheck = await CheckPeriodAsync(tx, tenantId, req, ctx, lockShare: true, ct);
+        PeriodCheck recheck = await CheckPeriodAsync(tx, tenantId, req.CompanyId, req.PostingDate, ctx, lockShare: true, ct);
         if (recheck.Errors.Count > 0) return CommandResult<PostedDocument>.Rejected(recheck.Errors);
 
         // Build the document and its hashes. Everything the hash needs is known here.
@@ -436,14 +436,14 @@ public sealed class JournalDocumentPoster(NpgsqlDataSource source)
     // ---------------------------------------------------------------------------------------------------------
     // Reads
     // ---------------------------------------------------------------------------------------------------------
-    private sealed record CompanyRow(string Status, string LocalCurrency, string? ReportingCurrency);
-    private sealed record AccountRow(string AccountNo, bool Active, DateOnly ValidFrom, DateOnly? ValidTo, bool PostingBlocked,
+    internal sealed record CompanyRow(string Status, string LocalCurrency, string? ReportingCurrency);
+    internal sealed record AccountRow(string AccountNo, bool Active, DateOnly ValidFrom, DateOnly? ValidTo, bool PostingBlocked,
         string OpenItemMode, string TaxCodeRule, string? CurrencyCode);
-    private sealed record SeriesRow(Guid SeriesId, string SeriesCode, string? Prefix, bool IncludeFiscalYear, string? Separator, int NumberLength);
-    private sealed record Rate(decimal Value);
-    private sealed record PeriodCheck(int? FiscalYear, int? PeriodNo, bool SoftCloseOverride, List<CommandError> Errors, List<CommandError> Warnings);
+    internal sealed record SeriesRow(Guid SeriesId, string SeriesCode, string? Prefix, bool IncludeFiscalYear, string? Separator, int NumberLength);
+    internal sealed record Rate(decimal Value);
+    internal sealed record PeriodCheck(int? FiscalYear, int? PeriodNo, bool SoftCloseOverride, List<CommandError> Errors, List<CommandError> Warnings);
 
-    private static async Task<CompanyRow?> ReadCompanyAsync(TenantTransaction tx, Guid tenantId, Guid companyId, CancellationToken ct)
+    internal static async Task<CompanyRow?> ReadCompanyAsync(TenantTransaction tx, Guid tenantId, Guid companyId, CancellationToken ct)
     {
         await using var cmd = tx.Command(
             "select status, local_currency, reporting_currency from core.company where tenant_id = @t and company_id = @c");
@@ -515,8 +515,8 @@ public sealed class JournalDocumentPoster(NpgsqlDataSource source)
 
     /// <summary>04, 5.2: the assignment of the ledger, else the one without a ledger, effective at the posting date.
     /// The order "ledger first" is an assumption of this slice, finding F-IMPL-8.</summary>
-    private static async Task<SeriesRow?> ReadSeriesAsync(
-        TenantTransaction tx, Guid tenantId, PostJournalDocumentRequest req, Guid ledgerId, CancellationToken ct)
+    internal static async Task<SeriesRow?> ReadSeriesAsync(
+        TenantTransaction tx, Guid tenantId, Guid companyId, string documentType, DateOnly postingDate, Guid ledgerId, CancellationToken ct)
     {
         await using var cmd = tx.Command(
             "select s.series_id, s.series_code, s.prefix, s.include_fiscal_year, s.separator, s.number_length " +
@@ -526,9 +526,9 @@ public sealed class JournalDocumentPoster(NpgsqlDataSource source)
             "and (a.ledger_id = @l or a.ledger_id is null) " +
             "order by (a.ledger_id is not null) desc, a.effective_from desc limit 1");
         cmd.Parameters.AddWithValue("t", tenantId);
-        cmd.Parameters.AddWithValue("c", req.CompanyId);
-        cmd.Parameters.AddWithValue("dt", req.DocumentType);
-        cmd.Parameters.AddWithValue("d", req.PostingDate);
+        cmd.Parameters.AddWithValue("c", companyId);
+        cmd.Parameters.AddWithValue("dt", documentType);
+        cmd.Parameters.AddWithValue("d", postingDate);
         cmd.Parameters.AddWithValue("l", ledgerId);
         await using var r = await cmd.ExecuteReaderAsync(ct);
         return await r.ReadAsync(ct)
@@ -555,8 +555,8 @@ public sealed class JournalDocumentPoster(NpgsqlDataSource source)
     // ---------------------------------------------------------------------------------------------------------
     // P3 and the check under the locks (04, 7.1)
     // ---------------------------------------------------------------------------------------------------------
-    private static async Task<PeriodCheck> CheckPeriodAsync(
-        TenantTransaction tx, Guid tenantId, PostJournalDocumentRequest req, CommandContext ctx, bool lockShare, CancellationToken ct)
+    internal static async Task<PeriodCheck> CheckPeriodAsync(
+        TenantTransaction tx, Guid tenantId, Guid companyId, DateOnly postingDate, CommandContext ctx, bool lockShare, CancellationToken ct)
     {
         var errors = new List<CommandError>();
         var warnings = new List<CommandError>();
@@ -566,12 +566,12 @@ public sealed class JournalDocumentPoster(NpgsqlDataSource source)
             "where tenant_id = @t and company_id = @c and effective_from <= now() order by effective_from desc limit 1"))
         {
             cmd.Parameters.AddWithValue("t", tenantId);
-            cmd.Parameters.AddWithValue("c", req.CompanyId);
+            cmd.Parameters.AddWithValue("c", companyId);
             await using var r = await cmd.ExecuteReaderAsync(ct);
             if (await r.ReadAsync(ct))
             {
                 DateOnly from = r.GetFieldValue<DateOnly>(0), to = r.GetFieldValue<DateOnly>(1);
-                if (req.PostingDate < from || req.PostingDate > to)
+                if (postingDate < from || postingDate > to)
                     errors.Add(Error("POSTING.OUTSIDE_WINDOW", "P3", "posting_date", ("earliest", from), ("latest", to)));
             }
         }
@@ -585,12 +585,12 @@ public sealed class JournalDocumentPoster(NpgsqlDataSource source)
         await using (var cmd = tx.Command(sql))
         {
             cmd.Parameters.AddWithValue("t", tenantId);
-            cmd.Parameters.AddWithValue("c", req.CompanyId);
-            cmd.Parameters.AddWithValue("d", req.PostingDate);
+            cmd.Parameters.AddWithValue("c", companyId);
+            cmd.Parameters.AddWithValue("d", postingDate);
             await using var r = await cmd.ExecuteReaderAsync(ct);
             if (!await r.ReadAsync(ct))
             {
-                errors.Add(Error("PERIOD.NOT_FOUND", "P3", "posting_date", ("posting_date", req.PostingDate)));
+                errors.Add(Error("PERIOD.NOT_FOUND", "P3", "posting_date", ("posting_date", postingDate)));
                 return new PeriodCheck(null, null, false, errors, warnings);
             }
             int year = r.GetInt32(0), no = r.GetInt32(1);
@@ -770,7 +770,7 @@ public sealed class JournalDocumentPoster(NpgsqlDataSource source)
     private static CommandResult<PostedDocument> Reject(CommandError error) =>
         CommandResult<PostedDocument>.Rejected([error]);
 
-    private static CommandError Error(string code, string phase, string path, params (string Key, object? Value)[] parameters) =>
+    internal static CommandError Error(string code, string phase, string path, params (string Key, object? Value)[] parameters) =>
         Error(code, phase, path, retryable: false, parameters);
 
     private static CommandError Error(string code, string phase, string path, bool retryable, params (string Key, object? Value)[] parameters) =>

@@ -1,4 +1,4 @@
--- Finance core schema, generated from db/migrations (0001_foundation.sql, 0002_platform_reference.sql, 0003_organisation.sql, 0004_calendar_and_numbers.sql, 0005_ledger.sql, 0006_security_and_integrity.sql, 0007_posting_period_lock.sql, 0008_migration_role_membership.sql, 0009_config_outbox_head.sql).
+-- Finance core schema, generated from db/migrations (0001_foundation.sql, 0002_platform_reference.sql, 0003_organisation.sql, 0004_calendar_and_numbers.sql, 0005_ledger.sql, 0006_security_and_integrity.sql, 0007_posting_period_lock.sql, 0008_migration_role_membership.sql, 0009_config_outbox_head.sql, 0010_document_lookup.sql).
 -- Do not edit: change the numbered files and run db/tools/build-all.mjs. Safe to run again.
 
 -- ==================== 0001_foundation.sql ====================
@@ -1047,4 +1047,13 @@ grant update (last_position) on core.outbox_head to cmd_config;
 
 insert into platform.schema_migration (version, description)
 values ('0009', 'configuration role may move outbox_head forward')
+on conflict (version) do nothing;
+
+-- ==================== 0010_document_lookup.sql ====================
+-- 0010 look up a document by its id alone. journal-documents:reverse (06, 5.3) takes only document_id, while the primary
+-- key of journal_document leads with company_id.
+create index if not exists jd_document on core.journal_document (tenant_id, document_id);
+
+insert into platform.schema_migration (version, description)
+values ('0010', 'journal_document lookup by document_id')
 on conflict (version) do nothing;

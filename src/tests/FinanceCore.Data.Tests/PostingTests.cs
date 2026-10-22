@@ -68,7 +68,7 @@ public class PostingTests
         Assert.Equal(first.Value.RowHash, second.Value.RowHash);
         Assert.Equal(first.CommandLogId, second.CommandLogId);
         Assert.Equal(1L, await t.ScalarAsync<long>("select count(*) from core.journal_document where tenant_id = @t"));
-        Assert.Equal(1L, await t.ScalarAsync<long>("select last_number from core.number_range_counter where tenant_id = @t"));
+        Assert.Equal(1L, await t.ScalarAsync<long>("select last_number from core.number_range_counter where tenant_id = @t and series_id = @s", ("s", t.SeriesId)));
     }
 
     [Fact]
@@ -93,7 +93,7 @@ public class PostingTests
 
         Assert.Equal(CommandStatus.Rejected, r.Status);
         Assert.Contains("DOCUMENT.NOT_BALANCED", Codes(r));
-        Assert.Equal(0L, await t.ScalarAsync<long>("select last_number from core.number_range_counter where tenant_id = @t"));
+        Assert.Equal(0L, await t.ScalarAsync<long>("select last_number from core.number_range_counter where tenant_id = @t and series_id = @s", ("s", t.SeriesId)));
         Assert.Equal(0L, await t.ScalarAsync<long>("select count(*) from core.command_log where tenant_id = @t"));
     }
 

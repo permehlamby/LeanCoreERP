@@ -21,6 +21,7 @@ public sealed class TestTenant
     public Guid CompanyId { get; } = Guid.NewGuid();
     public Guid LedgerId { get; } = Guid.NewGuid();
     public Guid SeriesId { get; } = Guid.NewGuid();
+    public Guid ReversalSeriesId { get; } = Guid.NewGuid();
     public Guid Bank { get; } = Guid.NewGuid();
     public Guid Revenue { get; } = Guid.NewGuid();
     public Guid Expense { get; } = Guid.NewGuid();
@@ -78,13 +79,17 @@ public sealed class TestTenant
               values (@t, @c, @s, 'GL-JRN', 'GL', true, '-', 6, true);
             insert into core.number_series_assignment (tenant_id, company_id, document_type, series_id, effective_from, created_by)
               values (@t, @c, 'JOURNAL', @s, date '2026-01-01', 'test');
+            insert into core.number_series (tenant_id, company_id, series_id, series_code, prefix, include_fiscal_year, separator, number_length, is_legal)
+              values (@t, @c, @s2, 'GL-REV', 'RV', true, '-', 6, true);
+            insert into core.number_series_assignment (tenant_id, company_id, document_type, series_id, effective_from, created_by)
+              values (@t, @c, 'REVERSAL', @s2, date '2026-01-01', 'test');
             insert into core.fiscal_year (tenant_id, company_id, fiscal_year, calendar_id, start_date, end_date, opened_by)
               select @t, @c, 2026, @cal, date '2026-01-01', date '2026-12-31', 'test' where not @bare;
             insert into core.fiscal_period (tenant_id, company_id, fiscal_year, period_no, period_type, start_date, end_date)
               select @t, @c, 2026, m, 'REGULAR', make_date(2026, m, 1), (make_date(2026, m, 1) + interval '1 month - 1 day')::date
               from generate_series(1, 12) m where not @bare;
             insert into core.number_range_counter (tenant_id, company_id, series_id, fiscal_year, last_number)
-              select @t, @c, @s, 2026, 0 where not @bare;
+              select @t, @c, s, 2026, 0 from (values (@s), (@s2)) v(s) where not @bare;
             insert into core.chain_head (tenant_id, company_id, chain_type, scope_key, last_seq, last_hash, hash_version)
               select @t, @c, 'LEDGER', @l::text, 0, @genesis, 2 where not @bare;
             insert into core.exchange_rate (tenant_id, rate_type, from_currency, to_currency, valid_from, rate) values
@@ -103,6 +108,7 @@ public sealed class TestTenant
         cmd.Parameters.AddWithValue("c", t.CompanyId);
         cmd.Parameters.AddWithValue("l", t.LedgerId);
         cmd.Parameters.AddWithValue("s", t.SeriesId);
+        cmd.Parameters.AddWithValue("s2", t.ReversalSeriesId);
         cmd.Parameters.AddWithValue("cal", calendar);
         cmd.Parameters.AddWithValue("grp", group);
         cmd.Parameters.AddWithValue("a1", t.Bank);
