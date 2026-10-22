@@ -212,7 +212,7 @@ An order-built purchase invoice for stock items matches the invoice to the recei
 | 10, 11 | `ORDER.PARTIAL_DEDUCTION_NOT_SUPPORTED` on order-built stock invoice lines |
 | 13 | No change (migration documents carry no tax lines). Note on `hash_version` of migrated documents |
 | 18 | The DK package gains the codes of section 2 (0.3.0): attributes `deductible_pct`, `deduction_key`, `deduction_cap` per code, the keys PRO_RATA, ESTIMATE, SECTOR and AREA as package content, no rates (company input) |
-| ERD | `vat_deduction_key`, `vat_deduction_rate`, new columns, new line type |
+| ERD | `vat_deduction_key`, `vat_deduction_rate`, new columns, new line type. **Applied 2026-10-19** (pages 1 and 6) |
 
 ## 12. Open questions
 

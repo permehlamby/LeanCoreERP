@@ -1,0 +1,13 @@
+# build output
+bin/
+obj/
+*.user
+.vs/
+
+# local secrets and tools, never committed
+src/.local/
+.tools/
+*.env
+appsettings.*.local.json
+
+node_modules/

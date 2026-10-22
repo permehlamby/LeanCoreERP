@@ -105,6 +105,7 @@ Format: Context, Decision, Consequences. All status ACCEPTED unless marked PROPO
 - Intercompany flag and counterpart company on IC lines.
 - Group membership with effective dates.
 **Consequences:** Elimination, minority interests and currency translation are a later module on top of these fields.
+**Refined (ADR-222 and ADR-224 to ADR-227, 2026-10-19, spec 23):** the module is an app. The core adds ownership and method per company, the rate types AVERAGE and HISTORICAL, the meaning of the intercompany marker, group-level reads and a reconciliation read. Still no translation, elimination or consolidation in the core.
 
 ## ADR-018: Group membership changes
 **Status:** ACCEPTED
@@ -118,6 +119,7 @@ Format: Context, Decision, Consequences. All status ACCEPTED unless marked PROPO
 - **Override:** a caller may supply an explicit rate on a posting. It must be within a configured tolerance of the table rate. The override and the table rate are both stored on the line.
 **Consequences:** Rate table changes are audited and effective-dated. A rate that has been used in a posted document cannot be changed or deleted. Average and historical rate types are out of scope for release 1 (open item).
 **Amended (ADR-055, ADR-083):** the rate types are now SPOT, CLOSING, VAT (ADR-083) and DERIVED (ADR-055, used on system closing lines). Only SPOT, CLOSING and VAT are loaded as rates.
+**Amended (ADR-225, 2026-10-19):** AVERAGE and HISTORICAL are loaded rate types for consolidation. No core command looks them up (no fallback, no tolerance, no derivation, no `first_used_at`). `exchange-rates:mark-used` locks the rates a consolidation run used. This closes the open item of this ADR.
 
 ## ADR-020: Four amount fields per journal line
 **Status:** ACCEPTED
@@ -1261,3 +1263,24 @@ Entries ADR-030 to ADR-174 come from the specs 02-journal-document-core, 03-clea
 **Context:** The Danish Peppol rules need a creditor number (8 digits, FIK) or a giro account (7 or 8 digits) as the payee account id, and a PaymentID with the card type prefix (DK-R-008, DK-R-010, DK-R-011). `company_bank_account` holds an IBAN only (07, 9.5). The e-invoice data set (12, section 10) takes the payment instructions from the bank account and the payment terms text, and reads no `payment_reference`. The STD_EN16931 term mapping has no entry for BT-83 (F-DK-19, F-DK-20).
 **Decision (recommended):** `company_bank_account` gets `account_scheme` (CODE, default IBAN, further values come from packages, for example DK_FIK and DK_GIRO) and `account_identifier` (TEXT(50), nullable). `iban` becomes nullable and exactly one of `iban` and `account_identifier` is set. A company has one row per creditor number or giro account, each with its own `payment_means_code`. The data set takes BT-84 from `iban` or from `account_identifier` according to the scheme. BT-83 comes from the `payment_reference` of the AR open item of the invoice, with the prefix rule of the country package applied by the app. The package never supplies the value: the app builds the reference (22, 4.2).
 **Consequences:** Amends 07, 9.5, 12, sections 9.2 and 10, and the STD_EN16931 term mapping (BT-83, BT-84). No hash change (master data). The same row type fits other national identifiers (Swedish and Norwegian giro numbers) without a new table. The alternative, extension attributes on the company bank account, fails because the e-invoice data set is assembled by the core and the core never reads app data. Applied 2026-10-19: 07, 9.5, 12 (9.2, 10, 12), 06 (13.6) and STD_EN16931 1.0.1.
+
+## ADR-224: Ownership and consolidation method per company (spec 23)
+**Status:** ACCEPTED (2026-10-19)
+**Context:** ADR-222 keeps the consolidation run in an app and adds only missing data to the core. The core has a group and a membership date but no parent, ownership percentage or method (23, G-C1).
+**Decision (recommended):** A versioned table `company_consolidation_setting_version` with `parent_company_id`, `ownership_pct`, `consolidation_method` (FULL, PROPORTIONAL, EQUITY, NOT_CONSOLIDATED) and `translation_method` (NONE, CURRENT_RATE, TEMPORAL), effective-dated, resolved at the reporting date. Rules: the parent is a member of the same group, no cycle, a percentage in range, `NONE` only when the local and group currencies are equal. The core does not judge the method against the percentage.
+**Consequences:** Four error codes in `CONFIG`. No restatement (ADR-018). Acquisition and exit dates come from the membership. No equity or purchase price in the core.
+
+## ADR-225: Rate types AVERAGE and HISTORICAL, and marking rates as used (amends ADR-019)
+**Status:** ACCEPTED (2026-10-19)
+**Decision (recommended):** `exchange_rate.rate_type` gets AVERAGE and HISTORICAL. No core command looks them up: no fallback, no tolerance, no derivation, no `first_used_at`. A command `exchange-rates:mark-used` (`rate_ids[]`, `purpose_ref`, permission `write.config`) sets `first_used_at` on the named rows of any type, so the usage lock applies to the rates a consolidation run used.
+**Consequences:** Closes the open item of ADR-019 and 00, section 5. A consolidated figure can be reproduced with the same rates. Alternative: no lock and an app snapshot.
+
+## ADR-226: The meaning of the intercompany marker (refines ADR-016 and ADR-017)
+**Status:** ACCEPTED (2026-10-19)
+**Decision (recommended):** The IC commands set `ic_counterpart_company_id` on the generated IC account lines, the control lines and the BASE lines of an IC document, never on TAX, TAX_NONDEDUCTIBLE, ROUNDING or TAX_ROUNDING lines. `balances:query` and `journal-lines` accept the marker as filter, `balances:query` also as group key. No `hash_version` change: the column is already L1 and hashed.
+**Consequences:** Amends 02, 5.4, 06, 5.5 and 11, 6.7. Intercompany revenue and expense can be found by a read. Manual postings to IC accounts carry no marker.
+
+## ADR-227: Group-level reads and the group chart rules
+**Status:** ACCEPTED (2026-10-19)
+**Decision (recommended):** `balances:query` accepts `group_id` (members as of the reporting date), `group_account_id` (the mapping valid at the reporting date, unmapped lines in a null row) and the marker keys of ADR-226. A new read `ic-reconciliations:query` has a BALANCES view (pair positions and differences in four currencies, balance sheet and profit and loss) and a DOCUMENTS view (one-sided and differing IC documents). `account_group_mapping` rejects a group account of another group (`CONFIG.GROUP_ACCOUNT_OTHER_GROUP`), `group_chart_account` gets `translation_rate_basis`, and three readiness warnings are added.
+**Consequences:** Amends 07 (6.4, 11.3) and 09 (4.1, new 4.14). The core still performs no translation, elimination or consolidation (09, 4.1.2).

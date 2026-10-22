@@ -131,6 +131,13 @@ Same scheme as the ledger and clearing chains (02, section 9): unkeyed SHA-256, 
 
 All `period_event` columns are immutable, so the whole row is hashed. For YEAR_END_CLOSE and YEAR_END_REOPEN the referenced `document_id` is part of the hash, and the year-end document stays verifiable through the ledger chain.
 
+**3.5a Canonical form (hash_version 2, written during implementation, finding F-IMPL-10).** 3.5 gives the principle but not the byte layout. The layout is the one of the ledger chain (02, 9.3a): the same value encoding and the same field and block rules. `row_hash` is the SHA-256 of these fields in this order:
+
+1. the hash version as text (`2`), `tenant_id`, `company_id`, `event_seq` as text, and `prev_hash` as 64 lower-case hex characters, each as one field;
+2. one block with the remaining columns of 3.4 in table order, without the hash columns: `event_id`, `fiscal_year`, `period_no`, `event_type`, `from_status`, `to_status`, `reason_code`, `reason_text`, `authorisation`, `document_id`, `event_at`, `event_by`, `correlation_id`, `idempotency_key`. Types: ID, INT, text, and TS for `event_at` (UTC, six fraction digits, `Z`). NULL is the length `FFFFFFFF`.
+
+The genesis value is the one of 02, 9.3a with `chain_type` PERIOD_EVENT and an empty `scope_key`. Two implementations (C# and Node) reproduce `test-vectors/period-event-hash-v2.json` (ADR-211). `chains:verify` recomputes the hash from the stored columns.
+
 Chain head: the row of `chain_head` (02, 9.2) with key (`tenant_id`, `company_id`, `chain_type` = PERIOD_EVENT, `scope_key` = empty), columns `last_seq` (= `event_seq`), `last_hash`, `hash_version`, `updated_at` (all S). Locked by every status command at the position given by 6.3 (K1, ADR-158). Anchored through `chain_anchor` with `chain_type` = PERIOD_EVENT. The table `period_event_chain_head` no longer exists.
 
 ## 4. Posting window

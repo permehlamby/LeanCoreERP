@@ -1,6 +1,6 @@
 # Scoping: Consolidation, Invoicing and Payment
 
-Status: SCOPING v0.2. Decisions D0 to D8 taken as recommended (2026-10-19, ADR-219 to ADR-222), design in 22 (invoicing and payment) and 23 (consolidation, not yet written). Task 3 of the agreed work order. No design yet: this document fixes the boundary, lists what already exists and what is missing, and proposes the decisions that shape the design specs. Builds on 00 v0.4, ADR-001 to ADR-218 and specs 02 to 20.
+Status: SCOPING v0.2. Decisions D0 to D8 taken as recommended (2026-10-19, ADR-219 to ADR-222), design in 22 (invoicing and payment) and 23 (consolidation data, written 2026-10-19 as DRAFT, ADR-224 to ADR-227 accepted and applied). Task 3 of the agreed work order. No design yet: this document fixes the boundary, lists what already exists and what is missing, and proposes the decisions that shape the design specs. Builds on 00 v0.4, ADR-001 to ADR-218 and specs 02 to 20.
 Scope: what each of the three areas needs from the core, from country or standard packages, and from apps.
 Out of scope: the design itself (comes after the decisions of section 6), app design, UI.
 

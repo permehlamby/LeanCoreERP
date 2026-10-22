@@ -286,18 +286,18 @@ Written 2026-10-14 as DRAFT: `EU_VAT` 1.0.0, `STD_EN16931` 1.0.0 and `STD_SAFT_O
 
 ADR-193 package classes and ownership boundary. ADR-194 closed policy catalogue. ADR-195 layered packages and standards packages. ADR-196 apply and update semantics with item records. ADR-197 verification gate and lifecycle. ADR-198 retention start values found by the country test (two calendar-year values). ADR-199 tax-point event for cash VAT. ADR-200 derived EU keys in tax determination (found by the DK draft). ADR-201 partial input VAT deduction in release 1 (scope, design pending). ADR-202 the standard-chart number rule is enforced outside the core.
 
-## 13. Deltas to earlier specs (the ADRs are accepted, the rows for ADR-200 and ADR-201 are applied, the package rows are still to be applied)
+## 13. Deltas to earlier specs (the ADRs are accepted. **All rows are applied** as of 2026-10-19, the ERD row included)
 
 | Spec | Change |
 |---|---|
-| 07, 11.4 | Replace "The format is a later spec (Q10)" by a reference to this spec. Add `package_ref`, `inputs`, items, user-changes-win. 10.2 gets the new columns and `applied_config_package_item`. New table `company_policy_setting` in 3.2 (V, `write.config`). Q10 closed |
-| 12, 4.1 | `retention_rule.start_event` adds CALENDAR_YEAR_END_OF_RECORD (DE) and CALENDAR_YEAR_END_OF_FISCAL_YEAR (SE) |
+| 07, 11.4 | **Applied 2026-10-19** (07, 3.2, 10.2, 10.3, 11.4, 13.2g). Replace "The format is a later spec (Q10)" by a reference to this spec. Add `package_ref`, `inputs`, items, user-changes-win. 10.2 gets the new columns and `applied_config_package_item`. New table `company_policy_setting` in 3.2 (V, `write.config`). Q10 closed |
+| 12, 4.1 | **Applied 2026-10-19.** `retention_rule.start_event` adds CALENDAR_YEAR_END_OF_RECORD (DE) and CALENDAR_YEAR_END_OF_FISCAL_YEAR (SE) |
 | 08, 7.1 and Q6, 02, 09 | ADR-201 to ADR-206: partial and non-deductible input VAT in release 1. **Applied 2026-10-14** in 02, 06, 07, 08, 09, 10, 11, 13 (design in 19) |
 | 07, 8.4 and 02 | ADR-200: nullable `origin_eu` and `destination_eu` on `tax_determination_rule`, resolved values stored on `journal_line_tax`, matching algorithm updated. **Applied 2026-10-14** in 02, 06, 07, 08, 09 |
-| 06 | Error area `PACKAGE`, commands `config-packages:diff`, `:list-applied`, `:get` |
-| 09, 3 and 4.8 | Resources `applied-config-package-item`, `company-policy-setting`. Event `package.applied` already maps to PACKAGE_APPLIED |
+| 06 | **Applied 2026-10-19** (2.4, 7.4, 8.2, 13.8). Error area `PACKAGE`, commands `config-packages:diff`, `:list-applied`, `:get` |
+| 09, 3 and 4.8 | **Applied 2026-10-19** (3, 6, 9.6). Resources `applied-config-package-item`, `company-policy-setting`. Event `package.applied` already maps to PACKAGE_APPLIED |
 | 00, section 5 | "Country package format" moves from not specified to this spec (DRAFT) |
-| ERD | New table boxes on the configuration page. ERD regeneration is pending anyway |
+| ERD | **Applied 2026-10-19:** `company_policy_setting` on page 5, `applied_config_package_item` and the new columns of `applied_config_package` on page 7 |
 
 ## Sources (secondary, UNVERIFIED, used only as test inputs)
 
