@@ -20,6 +20,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\FinanceCore.Data\FinanceCore.Data.csproj" />
+    <Content Include="..\..\..\db\tools\cleanup-test-tenants.sql" Link="db-tools\cleanup-test-tenants.sql" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

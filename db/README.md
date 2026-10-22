@@ -74,3 +74,13 @@ Every script uses `if not exists`, `on conflict do nothing` or `create or replac
 ## The Supabase dialog "This query creates tables without enabling Row Level Security"
 
 The SQL Editor shows it for every script that creates tables. Choose **Run without RLS** for 0001 to 0005. The schemas `core` and `platform` are not exposed through the data API and the Supabase roles have no rights on them (0001). 0006 then turns row-level security on for every `core` table, forced, with the tenant policy, and on the `platform` tables with read-only policies. "Run and enable RLS" would enable RLS without policies and hide the reference data from the command roles.
+
+## Cleaning up test tenants
+
+Every database test creates its own TEST tenant (code `T` and eight hex characters) and leaves it behind. On a hosted
+database they add up. `db/tools/cleanup-test-tenants.sql` removes them with all their rows. It only touches tenants with
+purpose TEST and that code pattern, never the dev tenant. It lists the tenants first, switches the protection triggers off
+inside one transaction, deletes in foreign key order, switches them on again and shows what is left. `CleanupTests` proves it
+on a tenant with documents, a reversal, period events and outbox events, and that another tenant stays intact. In the Supabase
+SQL Editor run it without selecting text, and answer "Run without RLS". To remove one tenant only, run
+`select set_config('cleanup.only_tenant', '<tenant id>', false);` in the same session first.
