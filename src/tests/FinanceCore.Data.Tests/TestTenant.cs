@@ -26,13 +26,25 @@ public sealed class TestTenant
     public Guid Expense { get; } = Guid.NewGuid();
     public Guid Blocked { get; } = Guid.NewGuid();
 
-    public DbSettings Settings { get; } = DbSettings.FromEnvironment();
-    public NpgsqlDataSource App { get; private set; } = null!;
+    // One small pool per connection string for the whole test run. A hosted session pooler allows few clients
+    // (15 on the Supabase free tier, EMAXCONNSESSION), so a pool per test would use them all after a few tests.
+    private static readonly DbSettings SharedSettings = DbSettings.FromEnvironment();
+    private static readonly NpgsqlDataSource SharedApp = Pool(SharedSettings.AppConnection, 8);
+    private static readonly NpgsqlDataSource SharedAdmin = Pool(SharedSettings.AdminConnection, 2);
+
+    private static NpgsqlDataSource Pool(string connectionString, int max)
+    {
+        var builder = new NpgsqlConnectionStringBuilder(connectionString);
+        if (builder.Pooling) { builder.MaxPoolSize = max; builder.ConnectionIdleLifetime = 10; }
+        return NpgsqlDataSource.Create(builder.ConnectionString);
+    }
+
+    public DbSettings Settings => SharedSettings;
+    public NpgsqlDataSource App => SharedApp;
 
     public static async Task<TestTenant> CreateAsync(bool dkkToEurRate = true)
     {
         var t = new TestTenant();
-        t.App = NpgsqlDataSource.Create(t.Settings.AppConnection);
 
         Guid calendar = Guid.NewGuid(), group = Guid.NewGuid();
         byte[] genesis = LedgerHash2.Genesis(t.TenantId, t.CompanyId, "LEDGER", t.LedgerId.ToString("D"));
@@ -96,8 +108,7 @@ public sealed class TestTenant
     /// <summary>A connection as the migration role with the tenant set, for set-up and for tampering.</summary>
     public async Task<NpgsqlConnection> OpenAdminAsync()
     {
-        var connection = new NpgsqlConnection(Settings.AdminConnection);
-        await connection.OpenAsync();
+        NpgsqlConnection connection = await SharedAdmin.OpenConnectionAsync();
         await using var cmd = new NpgsqlCommand("select set_config('app.tenant_id', @t, false)", connection);
         cmd.Parameters.AddWithValue("t", TenantId.ToString("D"));
         await cmd.ExecuteNonQueryAsync();
