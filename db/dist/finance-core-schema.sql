@@ -1,4 +1,4 @@
--- Finance core schema, generated from db/migrations (0001_foundation.sql, 0002_platform_reference.sql, 0003_organisation.sql, 0004_calendar_and_numbers.sql, 0005_ledger.sql, 0006_security_and_integrity.sql).
+-- Finance core schema, generated from db/migrations (0001_foundation.sql, 0002_platform_reference.sql, 0003_organisation.sql, 0004_calendar_and_numbers.sql, 0005_ledger.sql, 0006_security_and_integrity.sql, 0007_posting_period_lock.sql).
 -- Do not edit: change the numbered files and run db/tools/build-all.mjs. Safe to run again.
 
 -- ==================== 0001_foundation.sql ====================
@@ -1009,4 +1009,17 @@ create constraint trigger outbox_event_position after insert on core.outbox_even
 
 insert into platform.schema_migration (version, description)
 values ('0006', 'security: RLS, grants, protection and integrity triggers')
+on conflict (version) do nothing;
+
+-- ==================== 0007_posting_period_lock.sql ====================
+-- 0007 the posting command takes a share lock on the period rows (06, 9, lock order step 3).
+-- PostgreSQL only allows SELECT ... FOR SHARE for a role with UPDATE privilege on at least one column. cmd_post got no
+-- UPDATE on the period tables in 0006, so the lock failed with 42501 (finding F-IMPL-9, found by the posting tests).
+-- The grant is on last_event_id only, and the guard trigger of 0006 (guard_period_status) rejects every change of it that
+-- does not match the latest period_event of the same period and status. The role can lock the row, it cannot change it.
+-- The share lock is what makes a period close wait for a running posting, and a posting after the close see the new status.
+grant update (last_event_id) on core.fiscal_period, core.fiscal_year to cmd_post;
+
+insert into platform.schema_migration (version, description)
+values ('0007', 'posting role may lock period rows for share (last_event_id guarded by trigger)')
 on conflict (version) do nothing;
