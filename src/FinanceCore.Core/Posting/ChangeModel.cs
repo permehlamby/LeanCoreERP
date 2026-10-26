@@ -26,17 +26,65 @@ public static class OpenFieldRules
     public static readonly IReadOnlyDictionary<string, int> LineFields =
         new Dictionary<string, int> { ["line_text"] = 200 };
 
+    /// <summary>The kinds of value of an L2 field. The log row stores the kind (02, 8: value_type) and the text form is canonical: a date
+    /// as yyyy-MM-dd, an amount with four fraction digits (the scale of core.amt), text as it is.</summary>
+    public enum Kind { Text, Code, Date, Amount }
+
+    public sealed record FieldKind(Kind Kind, int MaxLength = 0, string DbType = "text");
+
+    /// <summary>L2 columns of journal_line_open_item (02, 5A) that the first slice can change.</summary>
+    public static readonly IReadOnlyDictionary<string, FieldKind> OpenItemFields = new Dictionary<string, FieldKind>
+    {
+        ["baseline_date"] = new(Kind.Date, 0, "date"), ["due_date"] = new(Kind.Date, 0, "date"),
+        ["discount_due_date"] = new(Kind.Date, 0, "date"), ["discount_amount_tc"] = new(Kind.Amount, 0, "numeric"),
+        ["payment_block"] = new(Kind.Code, 50), ["dunning_block"] = new(Kind.Code, 50), ["payment_reference"] = new(Kind.Text, 100)
+    };
+
     /// <summary>L2 fields of the spec whose tables or validation do not exist yet: the typed dimensions of a line need the dimension
-    /// tables to be validated like a posting (06, 5.4 P4), the open-item fields need journal_line_open_item.</summary>
+    /// tables to be validated like a posting (06, 5.4 P4), the payment terms and the bank account of an open item need their tables.</summary>
     public static readonly IReadOnlySet<string> LineFieldsNotBuilt = new HashSet<string>
     {
-        "cost_center_id", "project_id", "profit_center_id", "business_unit_id",
-        "baseline_date", "payment_terms_id", "due_date", "discount_due_date", "discount_amount_tc",
-        "payment_block", "dunning_block", "payment_reference", "bank_account_id"
+        "cost_center_id", "project_id", "profit_center_id", "business_unit_id"
     };
+
+    public static readonly IReadOnlySet<string> OpenItemFieldsNotBuilt = new HashSet<string> { "payment_terms_id", "bank_account_id" };
+
+    public static FieldKind? KindOf(string entityType, string field) => entityType switch
+    {
+        "DOCUMENT" => HeaderFields.TryGetValue(field, out int h) ? new(Kind.Text, h) : null,
+        "LINE" => LineFields.TryGetValue(field, out int l) ? new(Kind.Text, l) : null,
+        "LINE_OPEN_ITEM" => OpenItemFields.GetValueOrDefault(field),
+        _ => null
+    };
+
+    /// <summary>Checks a new value against the kind of its field and returns the canonical text, or the reason it is rejected.</summary>
+    public static string? Canonicalise(FieldKind kind, string? value, out string? reason)
+    {
+        reason = null;
+        if (value is null) return null;
+        switch (kind.Kind)
+        {
+            case Kind.Date:
+                if (!DateOnly.TryParseExact(value, "yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.None, out DateOnly d))
+                { reason = "a date as yyyy-MM-dd"; return null; }
+                return d.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
+            case Kind.Amount:
+                if (!decimal.TryParse(value, System.Globalization.NumberStyles.AllowLeadingSign | System.Globalization.NumberStyles.AllowDecimalPoint,
+                        System.Globalization.CultureInfo.InvariantCulture, out decimal a) || a < 0 || Math.Round(a, Canonical.AmountScale) != a)
+                { reason = $"a non-negative amount with at most {Canonical.AmountScale} fraction digits"; return null; }
+                return a.ToString("F" + Canonical.AmountScale, System.Globalization.CultureInfo.InvariantCulture);
+            default:
+                if (value.Length == 0) { reason = "use null to clear a field"; return null; }
+                if (value.Length > kind.MaxLength) { reason = $"at most {kind.MaxLength} characters"; return null; }
+                return value;
+        }
+    }
 
     /// <summary>Entity types of the spec that this slice does not build, with the reason.</summary>
     public static readonly IReadOnlySet<string> EntityTypesNotBuilt = new HashSet<string> { "LINE_DIMENSION", "TAX_EVIDENCE" };
+
+    /// <summary>The entity types the command takes. LINE and LINE_OPEN_ITEM name a line.</summary>
+    public static readonly IReadOnlySet<string> EntityTypes = new HashSet<string> { "DOCUMENT", "LINE", "LINE_OPEN_ITEM" };
 
     public const string ReservedReason = "SYSTEM";
 

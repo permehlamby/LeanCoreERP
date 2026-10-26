@@ -173,7 +173,7 @@ public sealed class JournalDocumentPoster(NpgsqlDataSource source)
             if (a.ValidFrom > req.PostingDate || (a.ValidTo is { } to && to < req.PostingDate))
                 errors.Add(Error("ACCOUNT.NOT_VALID_AT_DATE", "P2", path, ("account_no", a.AccountNo), ("posting_date", req.PostingDate)));
             if (a.PostingBlocked) errors.Add(Error("ACCOUNT.POSTING_BLOCKED", "P2", path, ("account_no", a.AccountNo)));
-            if (a.OpenItemMode != "NONE") errors.Add(Error("LIMIT.OPEN_ITEM_ACCOUNT", "P2", path, ("account_no", a.AccountNo)));
+            ValidateOpenItem(errors, i, a, req.Lines[i].OpenItem, scales.GetValueOrDefault(req.TransactionCurrency, 4));
             if (a.TaxCodeRule == "MANDATORY") errors.Add(Error("LIMIT.TAX_CODE_MANDATORY", "P2", path, ("account_no", a.AccountNo)));
             if (a.CurrencyCode is not null) errors.Add(Error("LIMIT.ACCOUNT_CURRENCY", "P2", path, ("account_no", a.AccountNo)));
         }
@@ -329,7 +329,7 @@ public sealed class JournalDocumentPoster(NpgsqlDataSource source)
 
         var lineHashes = new List<byte[]>();
         foreach (PostedLine line in lines)
-            lineHashes.Add(LedgerHash2.LineHash(new HashedLine(new Dictionary<string, object?>
+            lineHashes.Add(LedgerHash2.LineHash(new HashedLine(OpenItem: OpenItemHashRow(tenantId, req, documentId, line), Line: new Dictionary<string, object?>
             {
                 ["tenant_id"] = tenantId, ["company_id"] = req.CompanyId, ["document_id"] = documentId, ["line_no"] = line.LineNo,
                 ["ledger_id"] = ledgerId.Value, ["line_type"] = line.LineType, ["account_id"] = line.AccountId,
@@ -349,6 +349,8 @@ public sealed class JournalDocumentPoster(NpgsqlDataSource source)
         foreach (PostedLine l in lines)
             await InsertLineAsync(tx, tenantId, req, documentId, ledgerId.Value, fiscalYear, recheck.PeriodNo!.Value,
                 l.LineType == "BASE" ? req.Lines[l.LineNo - 1].LineText : null, l, ct);
+        foreach (PostedLine l in lines.Where(l => l.LineType == "BASE" && req.Lines[l.LineNo - 1].OpenItem is not null))
+            await InsertOpenItemAsync(tx, tenantId, req.CompanyId, documentId, l, req.Lines[l.LineNo - 1].OpenItem!, ct);
 
         // Move the chain head
         await using (var cmd = tx.Command(
@@ -732,6 +734,74 @@ public sealed class JournalDocumentPoster(NpgsqlDataSource source)
         cmd.Parameters.AddWithValue("prev", prevHash);
         cmd.Parameters.AddWithValue("row", rowHash);
         cmd.Parameters.AddWithValue("hv", (short)LedgerHash2.Version);
+        await cmd.ExecuteNonQueryAsync(ct);
+    }
+
+    /// <summary>The open item rules of 02, 5A and 06, 5.2 (P4) for the accounts the slice supports. A CONTROL account needs a partner,
+    /// and there is no partner table yet. The attributes that point at tables that do not exist yet are rejected, not stored unchecked.</summary>
+    private static void ValidateOpenItem(List<CommandError> errors, int i, AccountRow account, OpenItemRequest? oi, int tcScale)
+    {
+        string at = $"lines[{i}].open_item";
+        if (account.OpenItemMode == "CONTROL")
+        {
+            errors.Add(Error("LIMIT.CONTROL_ACCOUNT_NEEDS_PARTNER", "P4", $"lines[{i}].account_id", ("account_no", account.AccountNo)));
+            return;
+        }
+        if (account.OpenItemMode == "NONE")
+        {
+            if (oi is not null) errors.Add(Error("ACCOUNT_RULE.OPEN_ITEM_FORBIDDEN", "P4", at, ("account_no", account.AccountNo)));
+            return;
+        }
+        if (oi is null)
+        {
+            errors.Add(Error("ACCOUNT_RULE.OPEN_ITEM_REQUIRED", "P4", at, ("account_no", account.AccountNo)));
+            return;
+        }
+        if (oi.PartnerId is not null) errors.Add(Error("ACCOUNT_RULE.PARTNER_FORBIDDEN", "P4", $"{at}/partner_id", ("account_no", account.AccountNo)));
+        if (oi.PaymentTermsId is not null) errors.Add(Error("LIMIT.OPEN_ITEM_FIELD_NOT_BUILT", "P4", $"{at}/payment_terms_id"));
+        if (oi.BankAccountId is not null) errors.Add(Error("LIMIT.OPEN_ITEM_FIELD_NOT_BUILT", "P4", $"{at}/bank_account_id"));
+        if (oi.DiscountAmountTc is { } d && (d < 0 || Math.Round(d, tcScale) != d))
+            errors.Add(Error("SCHEMA.INVALID_VALUE", "P1", $"{at}/discount_amount_tc", ("reason", $"not negative, at most {tcScale} fraction digits")));
+        void Text(string name, string? value, int max)
+        {
+            if (value is not null && (value.Length == 0 || value.Length > max))
+                errors.Add(Error("SCHEMA.INVALID_VALUE", "P1", $"{at}/{name}", ("reason", $"1 to {max} characters, or absent")));
+        }
+        Text("payment_block", oi.PaymentBlock, 50);
+        Text("dunning_block", oi.DunningBlock, 50);
+        Text("payment_reference", oi.PaymentReference, 100);
+    }
+
+    /// <summary>The L1 columns of the open item row that the line hash covers (02, 5A, 9.3a). Null for a line without a row.</summary>
+    private static Dictionary<string, object?>? OpenItemHashRow(Guid tenantId, PostJournalDocumentRequest req, Guid documentId, PostedLine line) =>
+        line.LineType == "BASE" && req.Lines[line.LineNo - 1].OpenItem is not null
+            ? new Dictionary<string, object?>
+            {
+                ["tenant_id"] = tenantId, ["company_id"] = req.CompanyId, ["document_id"] = documentId, ["line_no"] = line.LineNo,
+                ["partner_id"] = null, ["legacy_document_date"] = null, ["legacy_posting_date"] = null, ["legacy_document_ref"] = null
+            }
+            : null;
+
+    private static async Task InsertOpenItemAsync(
+        TenantTransaction tx, Guid tenantId, Guid companyId, Guid documentId, PostedLine line, OpenItemRequest oi, CancellationToken ct)
+    {
+        await using var cmd = tx.Command(
+            "insert into core.journal_line_open_item (tenant_id, company_id, document_id, line_no, baseline_date, due_date, discount_due_date, " +
+            "discount_amount_tc, payment_block, dunning_block, payment_reference, cleared_amount_rc) " +
+            "values (@t, @c, @d, @n, @bd, @dd, @ddd, @da, @pb, @db, @pr, @rc)");
+        cmd.Parameters.AddWithValue("t", tenantId);
+        cmd.Parameters.AddWithValue("c", companyId);
+        cmd.Parameters.AddWithValue("d", documentId);
+        cmd.Parameters.AddWithValue("n", line.LineNo);
+        cmd.Parameters.Add(new NpgsqlParameter("bd", NpgsqlDbType.Date) { Value = (object?)oi.BaselineDate ?? DBNull.Value });
+        cmd.Parameters.Add(new NpgsqlParameter("dd", NpgsqlDbType.Date) { Value = (object?)oi.DueDate ?? DBNull.Value });
+        cmd.Parameters.Add(new NpgsqlParameter("ddd", NpgsqlDbType.Date) { Value = (object?)oi.DiscountDueDate ?? DBNull.Value });
+        cmd.Parameters.Add(new NpgsqlParameter("da", NpgsqlDbType.Numeric) { Value = (object?)oi.DiscountAmountTc ?? DBNull.Value });
+        cmd.Parameters.Add(new NpgsqlParameter("pb", NpgsqlDbType.Text) { Value = (object?)oi.PaymentBlock ?? DBNull.Value });
+        cmd.Parameters.Add(new NpgsqlParameter("db", NpgsqlDbType.Text) { Value = (object?)oi.DunningBlock ?? DBNull.Value });
+        cmd.Parameters.Add(new NpgsqlParameter("pr", NpgsqlDbType.Text) { Value = (object?)oi.PaymentReference ?? DBNull.Value });
+        // the cleared reporting amount is 0 when the line has a reporting amount, null when it has none (02, 5A)
+        cmd.Parameters.Add(new NpgsqlParameter("rc", NpgsqlDbType.Numeric) { Value = line.AmountRc is null ? DBNull.Value : 0m });
         await cmd.ExecuteNonQueryAsync(ct);
     }
 

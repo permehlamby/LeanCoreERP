@@ -8,9 +8,9 @@ namespace FinanceCore.Data;
 
 /// <summary>
 /// journal-documents:change-open-fields (06, 5.4): changes the L2 fields of a posted document, compare-and-set, all or nothing,
-/// one change_log row per changed field (02, 8). The first slice changes header_text and external_reference of the document
-/// and line_text of a line. The typed dimensions, the free dimensions, the open-item fields and the tax evidence need tables
-/// that do not exist yet and answer with a LIMIT code. The exception of F2 (new tax evidence in a hard-closed period) is not built.
+/// one change_log row per changed field (02, 8). The first slice changes header_text and external_reference of the document,
+/// line_text of a line and the open-item fields of a line (entity type LINE_OPEN_ITEM) except the payment terms and the bank account.
+/// The typed dimensions, the free dimensions, those two and the tax evidence need tables that do not exist yet and answer with a LIMIT code. The exception of F2 (new tax evidence in a hard-closed period) is not built.
 /// The database guard of migration 0013 accepts an L2 change only together with a matching change_log row of the same
 /// transaction and never in a hard-closed period, so this command writes the log rows first.
 /// Locks (06, 9): the document row and the lines it changes, the period row in share mode, outbox_head last. No chain head:
@@ -92,22 +92,22 @@ public sealed class DocumentChanger(NpgsqlDataSource source)
                 errors.Add(JournalDocumentPoster.Error("LIMIT.ENTITY_TYPE_NOT_BUILT", "P1", $"{at}/entity_type", ("entity_type", c.EntityType)));
                 continue;
             }
-            if (c.EntityType is not ("DOCUMENT" or "LINE"))
+            if (!OpenFieldRules.EntityTypes.Contains(c.EntityType))
             {
-                Invalid($"{at}/entity_type", "DOCUMENT or LINE");
+                Invalid($"{at}/entity_type", "DOCUMENT, LINE or LINE_OPEN_ITEM");
                 continue;
             }
             if (c.EntityType == "DOCUMENT" && c.LineNo is not null) Invalid($"{at}/line_no", "a header change has no line_no");
-            if (c.EntityType == "LINE" && (c.LineNo is null || c.LineNo < 1)) Invalid($"{at}/line_no", "required for LINE, at least 1");
+            if (c.EntityType != "DOCUMENT" && (c.LineNo is null || c.LineNo < 1)) Invalid($"{at}/line_no", $"required for {c.EntityType}, at least 1");
             if (string.IsNullOrWhiteSpace(c.FieldName)) { Invalid($"{at}/field_name", "required"); continue; }
             if (!seen.Add((c.EntityType, c.LineNo, c.FieldName))) Invalid($"{at}/field_name", "the same field twice in one command");
 
-            // A text field cannot be an empty string: null clears it. A value longer than the column is rejected here, not by the database.
-            IReadOnlyDictionary<string, int> fields = c.EntityType == "DOCUMENT" ? OpenFieldRules.HeaderFields : OpenFieldRules.LineFields;
-            if (fields.TryGetValue(c.FieldName, out int max))
+            // A text field cannot be an empty string: null clears it. A value that does not fit its column or its kind (a date, an amount)
+            // is rejected here, not by the database.
+            if (OpenFieldRules.KindOf(c.EntityType, c.FieldName) is { } kind)
             {
-                if (c.NewValue is { Length: 0 }) Invalid($"{at}/new_value", "use null to clear a field");
-                if (c.NewValue?.Length > max) Invalid($"{at}/new_value", $"at most {max} characters");
+                OpenFieldRules.Canonicalise(kind, c.NewValue, out string? reason);
+                if (reason is not null) Invalid($"{at}/new_value", reason);
             }
         }
         return errors;
@@ -130,13 +130,23 @@ public sealed class DocumentChanger(NpgsqlDataSource source)
                 : CommandResult<ChangedDocument>.Ok(replay, earlier.CommandLogId, replay: true);
         }
 
+        // The new values in canonical text form (a date as yyyy-MM-dd, an amount with four fraction digits). Validate has accepted them.
+        var changes = req.Changes.Select(c => OpenFieldRules.KindOf(c.EntityType, c.FieldName) is { } k
+            ? c with { NewValue = OpenFieldRules.Canonicalise(k, c.NewValue, out _) } : c).ToList();
+
         // P2 and P7: the document row is locked, so what is compared below is what is changed.
         Header? header = await LockHeaderAsync(tx, tenantId, req.DocumentId, ct);
         if (header is null)
             return Reject(JournalDocumentPoster.Error("DOCUMENT.NOT_FOUND", "P2", "document_id"));
 
-        int[] lineNos = req.Changes.Where(c => c.EntityType == "LINE").Select(c => c.LineNo!.Value).Distinct().Order().ToArray();
+        int[] lineNos = changes.Where(c => c.EntityType == "LINE").Select(c => c.LineNo!.Value).Distinct().Order().ToArray();
         Dictionary<int, string?> lines = await LockLinesAsync(tx, tenantId, header.CompanyId, req.DocumentId, lineNos, ct);
+        // All lines named by any change must exist, whether the change is on the line or on its open item
+        int[] namedLines = changes.Where(c => c.EntityType != "DOCUMENT").Select(c => c.LineNo!.Value).Distinct().Order().ToArray();
+        HashSet<int> existingLines = await ReadLineNosAsync(tx, tenantId, header.CompanyId, req.DocumentId, namedLines, ct);
+        int[] openItemLines = changes.Where(c => c.EntityType == "LINE_OPEN_ITEM").Select(c => c.LineNo!.Value).Distinct().Order().ToArray();
+        Dictionary<int, Dictionary<string, string?>> openItems = await LockOpenItemsAsync(tx, tenantId, header.CompanyId, req.DocumentId, openItemLines, ct);
+        int tcScale = await ReadMinorUnitsAsync(tx, tenantId, header.CompanyId, req.DocumentId, ct);
 
         // P3: the period of the document header. OPEN allows, SOFT_CLOSED needs change.soft_closed, HARD_CLOSED is L3.
         string? periodStatus = await LockPeriodAsync(tx, tenantId, header, ct);
@@ -152,9 +162,10 @@ public sealed class DocumentChanger(NpgsqlDataSource source)
         // P2: which fields can change at all
         HashSet<string> documentColumns = await ReadColumnsAsync(tx, "journal_document", ct);
         HashSet<string> lineColumns = await ReadColumnsAsync(tx, "journal_line", ct);
-        for (int i = 0; i < req.Changes.Count; i++)
+        HashSet<string> openItemColumns = await ReadColumnsAsync(tx, "journal_line_open_item", ct);
+        for (int i = 0; i < changes.Count; i++)
         {
-            FieldChange c = req.Changes[i];
+            FieldChange c = changes[i];
             string path = $"/changes/{i}/field_name";
             if (c.EntityType == "DOCUMENT")
             {
@@ -165,17 +176,24 @@ public sealed class DocumentChanger(NpgsqlDataSource source)
             }
             else
             {
-                if (!OpenFieldRules.LineFields.ContainsKey(c.FieldName))
+                bool open = c.EntityType == "LINE_OPEN_ITEM";
+                if (OpenFieldRules.KindOf(c.EntityType, c.FieldName) is null)
                 {
-                    if (OpenFieldRules.LineFieldsNotBuilt.Contains(c.FieldName))
+                    if (open ? OpenFieldRules.OpenItemFieldsNotBuilt.Contains(c.FieldName) : OpenFieldRules.LineFieldsNotBuilt.Contains(c.FieldName))
                         errors.Add(JournalDocumentPoster.Error("LIMIT.FIELD_NOT_BUILT", "P2", path, ("field_name", c.FieldName)));
                     else
-                        errors.Add(lineColumns.Contains(c.FieldName)
+                        errors.Add((open ? openItemColumns : lineColumns).Contains(c.FieldName)
                             ? JournalDocumentPoster.Error("LOCK.FIELD_LOCKED_L1", "P2", path, ("field_name", c.FieldName))
                             : JournalDocumentPoster.Error("LOCK.FIELD_UNKNOWN", "P2", path, ("field_name", c.FieldName)));
                 }
-                if (!lines.ContainsKey(c.LineNo!.Value))
+                if (!existingLines.Contains(c.LineNo!.Value))
                     errors.Add(JournalDocumentPoster.Error("DOCUMENT.LINE_NOT_FOUND", "P2", $"/changes/{i}/line_no", ("line_no", c.LineNo)));
+                else if (open && !openItems.ContainsKey(c.LineNo!.Value))
+                    errors.Add(JournalDocumentPoster.Error("DOCUMENT.OPEN_ITEM_NOT_FOUND", "P2", $"/changes/{i}/line_no", ("line_no", c.LineNo)));
+                if (open && c.FieldName == "discount_amount_tc" && c.NewValue is not null
+                    && decimal.Parse(c.NewValue, System.Globalization.CultureInfo.InvariantCulture) is var da && Math.Round(da, tcScale) != da)
+                    errors.Add(JournalDocumentPoster.Error("SCHEMA.INVALID_VALUE", "P1", $"/changes/{i}/new_value",
+                        ("reason", $"the document currency has {tcScale} fraction digits")));
             }
         }
         if (errors.Count > 0) return CommandResult<ChangedDocument>.Rejected(errors);
@@ -183,10 +201,10 @@ public sealed class DocumentChanger(NpgsqlDataSource source)
         // P6 under the locks: compare and set. All mismatches are reported, none is applied.
         var effective = new List<FieldChange>();
         var warnings = new List<CommandError>();
-        for (int i = 0; i < req.Changes.Count; i++)
+        for (int i = 0; i < changes.Count; i++)
         {
-            FieldChange c = req.Changes[i];
-            string? current = Current(header, lines, c);
+            FieldChange c = changes[i];
+            string? current = Current(header, lines, openItems, c);
             if (current != c.ExpectedOldValue)
             {
                 errors.Add(JournalDocumentPoster.Error("CONFLICT.EXPECTED_VALUE_MISMATCH", "P6", $"/changes/{i}/expected_old_value",
@@ -210,6 +228,8 @@ public sealed class DocumentChanger(NpgsqlDataSource source)
             await UpdateAsync(tx, "journal_document", c.FieldName, c.NewValue, tenantId, req.DocumentId, null, ct);
         foreach (FieldChange c in effective.Where(c => c.EntityType == "LINE"))
             await UpdateAsync(tx, "journal_line", c.FieldName, c.NewValue, tenantId, req.DocumentId, c.LineNo, ct);
+        foreach (FieldChange c in effective.Where(c => c.EntityType == "LINE_OPEN_ITEM"))
+            await UpdateAsync(tx, "journal_line_open_item", c.FieldName, c.NewValue, tenantId, req.DocumentId, c.LineNo, ct);
 
         Guid logId = await CommandSupport.WriteLogAsync(tx, tenantId, header.CompanyId, ctx, CommandName, fingerprint, "DOCUMENT", req.DocumentId, ct);
         DateTime now = DateTime.UtcNow;
@@ -230,9 +250,13 @@ public sealed class DocumentChanger(NpgsqlDataSource source)
     // ---------------------------------------------------------------------------------------------------------
     private sealed record Header(Guid CompanyId, int FiscalYear, int FiscalPeriod, string? HeaderText, string? ExternalReference);
 
-    private static string? Current(Header header, Dictionary<int, string?> lines, FieldChange c) => c.EntityType == "DOCUMENT"
-        ? c.FieldName switch { "header_text" => header.HeaderText, _ => header.ExternalReference }
-        : lines[c.LineNo!.Value];
+    private static string? Current(Header header, Dictionary<int, string?> lines, Dictionary<int, Dictionary<string, string?>> openItems, FieldChange c) =>
+        c.EntityType switch
+        {
+            "DOCUMENT" => c.FieldName switch { "header_text" => header.HeaderText, _ => header.ExternalReference },
+            "LINE" => lines[c.LineNo!.Value],
+            _ => openItems[c.LineNo!.Value][c.FieldName]
+        };
 
     private static async Task<Header?> LockHeaderAsync(TenantTransaction tx, Guid tenantId, Guid documentId, CancellationToken ct)
     {
@@ -261,6 +285,58 @@ public sealed class DocumentChanger(NpgsqlDataSource source)
         await using var r = await cmd.ExecuteReaderAsync(ct);
         while (await r.ReadAsync(ct)) lines[r.GetInt32(0)] = r.IsDBNull(1) ? null : r.GetString(1);
         return lines;
+    }
+
+    private static async Task<HashSet<int>> ReadLineNosAsync(
+        TenantTransaction tx, Guid tenantId, Guid companyId, Guid documentId, int[] lineNos, CancellationToken ct)
+    {
+        var found = new HashSet<int>();
+        if (lineNos.Length == 0) return found;
+        await using var cmd = tx.Command(
+            "select line_no from core.journal_line where tenant_id = @t and company_id = @c and document_id = @d and line_no = any(@n)");
+        cmd.Parameters.AddWithValue("t", tenantId);
+        cmd.Parameters.AddWithValue("c", companyId);
+        cmd.Parameters.AddWithValue("d", documentId);
+        cmd.Parameters.Add(new NpgsqlParameter("n", NpgsqlDbType.Array | NpgsqlDbType.Integer) { Value = lineNos });
+        await using var r = await cmd.ExecuteReaderAsync(ct);
+        while (await r.ReadAsync(ct)) found.Add(r.GetInt32(0));
+        return found;
+    }
+
+    /// <summary>The open item rows of the named lines, locked, with every changeable column as canonical text (a date as yyyy-MM-dd, an amount with four fraction digits).</summary>
+    private static async Task<Dictionary<int, Dictionary<string, string?>>> LockOpenItemsAsync(
+        TenantTransaction tx, Guid tenantId, Guid companyId, Guid documentId, int[] lineNos, CancellationToken ct)
+    {
+        var rows = new Dictionary<int, Dictionary<string, string?>>();
+        if (lineNos.Length == 0) return rows;
+        string[] columns = OpenFieldRules.OpenItemFields.Keys.ToArray();
+        await using var cmd = tx.Command(
+            "select line_no, " + string.Join(", ", columns.Select(c => c + "::text")) + " from core.journal_line_open_item " +
+            "where tenant_id = @t and company_id = @c and document_id = @d and line_no = any(@n) order by line_no for update");
+        cmd.Parameters.AddWithValue("t", tenantId);
+        cmd.Parameters.AddWithValue("c", companyId);
+        cmd.Parameters.AddWithValue("d", documentId);
+        cmd.Parameters.Add(new NpgsqlParameter("n", NpgsqlDbType.Array | NpgsqlDbType.Integer) { Value = lineNos });
+        await using var r = await cmd.ExecuteReaderAsync(ct);
+        while (await r.ReadAsync(ct))
+        {
+            var row = new Dictionary<string, string?>();
+            for (int i = 0; i < columns.Length; i++) row[columns[i]] = r.IsDBNull(i + 1) ? null : r.GetString(i + 1);
+            rows[r.GetInt32(0)] = row;
+        }
+        return rows;
+    }
+
+    /// <summary>Fraction digits of the transaction currency of the document, for an amount that is stated in it.</summary>
+    private static async Task<int> ReadMinorUnitsAsync(TenantTransaction tx, Guid tenantId, Guid companyId, Guid documentId, CancellationToken ct)
+    {
+        await using var cmd = tx.Command(
+            "select c.minor_units from core.journal_document d join platform.ref_currency c on c.currency_code = d.transaction_currency " +
+            "where d.tenant_id = @t and d.company_id = @c and d.document_id = @d");
+        cmd.Parameters.AddWithValue("t", tenantId);
+        cmd.Parameters.AddWithValue("c", companyId);
+        cmd.Parameters.AddWithValue("d", documentId);
+        return Convert.ToInt32(await cmd.ExecuteScalarAsync(ct) ?? 4);
     }
 
     private static async Task<string?> LockPeriodAsync(TenantTransaction tx, Guid tenantId, Header header, CancellationToken ct)
@@ -292,7 +368,7 @@ public sealed class DocumentChanger(NpgsqlDataSource source)
         await using var cmd = tx.Command(
             "insert into core.change_log (tenant_id, change_set_id, company_id, entity_type, document_id, line_no, field_name, value_type, " +
             "old_value, new_value, lock_class, period_status, reason_code, reason_text, changed_by, changed_at, correlation_id, idempotency_key) " +
-            "values (@t, @cs, @c, @et, @d, @ln, @f, 'TEXT', @old, @new, 'L2', @ps, @rc, @rt, @by, now(), @corr, @key)");
+            "values (@t, @cs, @c, @et, @d, @ln, @f, @vt, @old, @new, 'L2', @ps, @rc, @rt, @by, now(), @corr, @key)");
         cmd.Parameters.AddWithValue("t", tenantId);
         cmd.Parameters.AddWithValue("cs", changeSetId);
         cmd.Parameters.AddWithValue("c", companyId);
@@ -300,6 +376,10 @@ public sealed class DocumentChanger(NpgsqlDataSource source)
         cmd.Parameters.AddWithValue("d", req.DocumentId);
         cmd.Parameters.Add(new NpgsqlParameter("ln", NpgsqlDbType.Integer) { Value = (object?)c.LineNo ?? DBNull.Value });
         cmd.Parameters.AddWithValue("f", c.FieldName);
+        cmd.Parameters.AddWithValue("vt", OpenFieldRules.KindOf(c.EntityType, c.FieldName)!.Kind switch
+        {
+            OpenFieldRules.Kind.Date => "DATE", OpenFieldRules.Kind.Amount => "AMOUNT", OpenFieldRules.Kind.Code => "CODE", _ => "TEXT"
+        });
         cmd.Parameters.Add(new NpgsqlParameter("old", NpgsqlDbType.Text) { Value = (object?)c.ExpectedOldValue ?? DBNull.Value });
         cmd.Parameters.Add(new NpgsqlParameter("new", NpgsqlDbType.Text) { Value = (object?)c.NewValue ?? DBNull.Value });
         cmd.Parameters.AddWithValue("ps", periodStatus);
@@ -316,10 +396,12 @@ public sealed class DocumentChanger(NpgsqlDataSource source)
         TenantTransaction tx, string table, string column, string? value, Guid tenantId, Guid documentId, int? lineNo, CancellationToken ct)
     {
         if (!(table == "journal_document" && OpenFieldRules.HeaderFields.ContainsKey(column)) &&
-            !(table == "journal_line" && OpenFieldRules.LineFields.ContainsKey(column)))
+            !(table == "journal_line" && OpenFieldRules.LineFields.ContainsKey(column)) &&
+            !(table == "journal_line_open_item" && OpenFieldRules.OpenItemFields.ContainsKey(column)))
             throw new InvalidOperationException($"{table}.{column} is not an open column");
+        string cast = table == "journal_line_open_item" ? "::" + OpenFieldRules.OpenItemFields[column].DbType : "";
         await using var cmd = tx.Command(
-            $"update core.{table} set {column} = @v where tenant_id = @t and document_id = @d" + (lineNo is null ? "" : " and line_no = @ln"));
+            $"update core.{table} set {column} = @v{cast} where tenant_id = @t and document_id = @d" + (lineNo is null ? "" : " and line_no = @ln"));
         cmd.Parameters.Add(new NpgsqlParameter("v", NpgsqlDbType.Text) { Value = (object?)value ?? DBNull.Value });
         cmd.Parameters.AddWithValue("t", tenantId);
         cmd.Parameters.AddWithValue("d", documentId);

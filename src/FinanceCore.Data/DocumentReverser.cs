@@ -95,6 +95,11 @@ public sealed class DocumentReverser(NpgsqlDataSource source)
                 ("document_type", type), ("owning_command", ReversalRules.OwningCommand(type))));
         if (original.Status != "posted")
             return Reject(JournalDocumentPoster.Error("REVERSAL.ALREADY_REVERSED", "P2", "document_id"));
+        // The mirror of an open item line is an open item that is cleared against its original in the same transaction (03, 5.7, B3).
+        // That needs the clearing tables, so a document with open item lines cannot be reversed yet.
+        if (original.OpenItems.Count > 0)
+            return Reject(JournalDocumentPoster.Error("LIMIT.REVERSAL_OF_OPEN_ITEMS_NOT_BUILT", "P2", "document_id",
+                ("open_item_lines", original.OpenItems.Keys.Order().ToArray())));
 
         JournalDocumentPoster.CompanyRow? company = await JournalDocumentPoster.ReadCompanyAsync(tx, tenantId, companyId, ct);
         if (company is null || company.Status != "ACTIVE")

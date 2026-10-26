@@ -227,6 +227,8 @@ Account is not repeated here. Aging queries join `journal_line` for `account_id`
 
 The side table isolates all S columns of the line domain in one table with its own grant (section 10). `journal_line` itself holds only L1 and L2 columns.
 
+**Built in the first slice (2026-10-26).** The table exists for the accounts of mode GL_OPEN_ITEM. `partner_id`, `payment_terms_id`, `bank_account_id` and `last_clearing_id` have no foreign key yet (the tables do not exist). **Backstop at commit:** a deferred constraint trigger checks that a line on an open-item account has a row, a line on a NONE account has none, a CONTROL line has a partner and a GL_OPEN_ITEM line has none. The lines of REVAL_ADJUSTMENT, CLOSING, HISTORY_PL and OPENING are exempt, as above. **Lock classes in the trigger:** an L1 column never changes. An L2 column changes only with a `change_log` row of entity type LINE_OPEN_ITEM in the same transaction (the guard of 8) and never in a hard-closed period. The S columns cannot change at all until the clearing tables and the clearing command role exist. The posting role may INSERT and UPDATE the L2 columns, and nobody may DELETE. The line hash covers the row (9.3a): `test-vectors/hash-v2.json` has two cases for it, an open item without partner and a migrated one with legacy columns, produced by `verify-hash-v2.mjs` and reproduced by the C# library.
+
 ## 6. `journal_line_dimension`
 
 PK: (`tenant_id`, `company_id`, `document_id`, `line_no`, `dimension_type_id`)

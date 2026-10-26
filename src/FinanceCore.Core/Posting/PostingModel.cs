@@ -2,7 +2,7 @@ using FinanceCore.Core.Hashing;
 
 namespace FinanceCore.Core.Posting;
 
-/// <summary>Payload of journal-documents:post as far as the first slice supports it (06, 5.2): no tax, no partners, no open items.</summary>
+/// <summary>Payload of journal-documents:post as far as the first slice supports it (06, 5.2): no tax, no partners, open items on GL_OPEN_ITEM accounts only.</summary>
 public sealed record PostJournalDocumentRequest(
     Guid CompanyId,
     Guid? LedgerId,
@@ -15,7 +15,17 @@ public sealed record PostJournalDocumentRequest(
     string? SourceDocumentRef,
     IReadOnlyList<RequestLine> Lines);
 
-public sealed record RequestLine(string LineRef, Guid AccountId, decimal AmountTc, string? LineText = null);
+/// <summary>
+/// The open_item object of a line (06, 5.2). Required on a line of a GL_OPEN_ITEM account (it may be empty: every attribute is optional),
+/// forbidden on a line of a NONE account. PartnerId, PaymentTermsId and BankAccountId are accepted by the model and rejected by the
+/// command until the partner, payment terms and bank account tables exist.
+/// </summary>
+public sealed record OpenItemRequest(
+    Guid? PartnerId = null, DateOnly? BaselineDate = null, Guid? PaymentTermsId = null, DateOnly? DueDate = null,
+    DateOnly? DiscountDueDate = null, decimal? DiscountAmountTc = null, string? PaymentBlock = null, string? DunningBlock = null,
+    string? PaymentReference = null, Guid? BankAccountId = null);
+
+public sealed record RequestLine(string LineRef, Guid AccountId, decimal AmountTc, string? LineText = null, OpenItemRequest? OpenItem = null);
 
 public sealed record PostedLine(
     int LineNo, string? LineRef, Guid AccountId, string LineType,
@@ -48,6 +58,14 @@ public static class RequestFingerprint
         new("line_text", FieldType.Text, true)
     ];
 
+    private static readonly FieldSpec[] OpenItemSpec =
+    [
+        new("partner_id", FieldType.Id, true), new("baseline_date", FieldType.Date, true), new("payment_terms_id", FieldType.Id, true),
+        new("due_date", FieldType.Date, true), new("discount_due_date", FieldType.Date, true), new("discount_amount_tc", FieldType.Amount, true),
+        new("payment_block", FieldType.Text, true), new("dunning_block", FieldType.Text, true), new("payment_reference", FieldType.Text, true),
+        new("bank_account_id", FieldType.Id, true)
+    ];
+
     public static byte[] Compute(PostJournalDocumentRequest r)
     {
         var head = Canonical.EncodeFields(Header, new Dictionary<string, object?>
@@ -63,6 +81,15 @@ public static class RequestFingerprint
             all.Write(Canonical.Block(Canonical.EncodeFields(Line, new Dictionary<string, object?>
             {
                 ["line_ref"] = l.LineRef, ["account_id"] = l.AccountId, ["amount_tc"] = l.AmountTc, ["line_text"] = l.LineText
+            })));
+        // The open_item objects follow, one field per line in request order: a line without one is a NULL field. They are part of the
+        // request, so a repeated key with another open_item is a different request (IDEMPOTENCY.KEY_REUSED_DIFFERENT_REQUEST).
+        foreach (RequestLine l in r.Lines)
+            all.Write(l.OpenItem is not { } o ? Canonical.NullField() : Canonical.Block(Canonical.EncodeFields(OpenItemSpec, new Dictionary<string, object?>
+            {
+                ["partner_id"] = o.PartnerId, ["baseline_date"] = o.BaselineDate, ["payment_terms_id"] = o.PaymentTermsId, ["due_date"] = o.DueDate,
+                ["discount_due_date"] = o.DiscountDueDate, ["discount_amount_tc"] = o.DiscountAmountTc, ["payment_block"] = o.PaymentBlock,
+                ["dunning_block"] = o.DunningBlock, ["payment_reference"] = o.PaymentReference, ["bank_account_id"] = o.BankAccountId
             })));
         return System.Security.Cryptography.SHA256.HashData(all.ToArray());
     }
