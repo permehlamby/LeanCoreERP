@@ -148,16 +148,6 @@ public class OpenItemTests
         Assert.Equal("2026-04-15", await Nullable(t, OpenItemSql("due_date", doc.DocumentId, 1)));
     }
 
-    [Fact]
-    public async Task ADocumentWithOpenItemsCannotBeReversedYet()
-    {
-        var s = await CreateAsync();
-        var doc = await Post(s, "p1", Item());
-        var r = await new DocumentReverser(s.Tenant.App).ReverseAsync(s.Tenant.TenantId, s.Tenant.Context("rev", "journal.reverse"), new(doc.DocumentId, null, "CORRECTION", null));
-        Assert.Equal(["LIMIT.REVERSAL_OF_OPEN_ITEMS_NOT_BUILT"], Codes(r));
-        Assert.Equal("posted", await s.Tenant.ScalarAsync<string>("select status from core.journal_document where tenant_id = @t and document_id = @d", ("d", doc.DocumentId)));
-    }
-
     // ---------------------------------------------------------------------------------------------------------
     // journal-documents:change-open-fields on the entity type LINE_OPEN_ITEM
     // ---------------------------------------------------------------------------------------------------------

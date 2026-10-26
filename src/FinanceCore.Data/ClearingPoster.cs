@@ -529,7 +529,7 @@ public sealed partial class ClearingPoster(NpgsqlDataSource source)
         return (r.GetInt64(0), (byte[])r[1]);
     }
 
-    private static async Task MoveHeadAsync(
+    internal static async Task MoveHeadAsync(
         TenantTransaction tx, Guid tenantId, Guid companyId, string chainType, string scopeKey, long seq, byte[] hash, int version, CancellationToken ct)
     {
         await using var cmd = tx.Command(
@@ -575,7 +575,7 @@ public sealed partial class ClearingPoster(NpgsqlDataSource source)
         return rows;
     }
 
-    private static async Task InsertClearingAsync(
+    internal static async Task InsertClearingAsync(
         TenantTransaction tx, Guid tenantId, PostClearingRequest req, CommandContext ctx, Guid clearingId, Guid? documentId, long seq, int fiscalYear, int period,
         DateTime clearedAt, byte[] prevHash, byte[] rowHash, string type, Guid? resetOf, string command, CancellationToken ct)
     {
@@ -610,7 +610,7 @@ public sealed partial class ClearingPoster(NpgsqlDataSource source)
         await cmd.ExecuteNonQueryAsync(ct);
     }
 
-    private static async Task InsertItemAsync(
+    internal static async Task InsertItemAsync(
         TenantTransaction tx, Guid tenantId, PostClearingRequest req, Guid clearingId, int itemNo, Guid documentId, int lineNo, string currencyTc,
         decimal tc, decimal lc, decimal gc, decimal? rc, CancellationToken ct)
     {
@@ -633,7 +633,7 @@ public sealed partial class ClearingPoster(NpgsqlDataSource source)
         await cmd.ExecuteNonQueryAsync(ct);
     }
 
-    private static async Task UpdateOpenItemAsync(
+    internal static async Task UpdateOpenItemAsync(
         TenantTransaction tx, Guid tenantId, Guid companyId, Guid documentId, int lineNo, Guid clearingId, string status,
         decimal tc, decimal lc, decimal gc, decimal? rc, CancellationToken ct)
     {

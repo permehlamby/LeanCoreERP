@@ -67,7 +67,17 @@ public sealed class DocumentReverser(NpgsqlDataSource source)
     private async Task<CommandResult<PostedDocument>> ReverseOnceAsync(
         Guid tenantId, CommandContext ctx, ReverseDocumentRequest req, byte[] fingerprint, CancellationToken ct)
     {
-        await using TenantTransaction tx = await TenantTransaction.BeginAsync(source, tenantId, CommandRole.Post, ct: ct);
+        // A document with open item lines is reversed together with the automatic clearing of its mirror (03, 5.7, B3), which only the
+        // clearing role may write. That a document has open item lines never changes, so it is read before the role is chosen.
+        bool hasOpenItems;
+        await using (TenantTransaction probe = await TenantTransaction.BeginAsync(source, tenantId, CommandRole.Read, ct: ct))
+        await using (var cmd = probe.Command("select exists (select 1 from core.journal_line_open_item where tenant_id = @t and document_id = @d)"))
+        {
+            cmd.Parameters.AddWithValue("t", tenantId);
+            cmd.Parameters.AddWithValue("d", req.DocumentId);
+            hasOpenItems = (bool)(await cmd.ExecuteScalarAsync(ct))!;
+        }
+        await using TenantTransaction tx = await TenantTransaction.BeginAsync(source, tenantId, hasOpenItems ? CommandRole.Clearing : CommandRole.Post, ct: ct);
 
         // Idempotency
         CommandSupport.EarlierCommand? earlier = await CommandSupport.FindEarlierAsync(tx, tenantId, ctx.IdempotencyKey, ct);
@@ -95,11 +105,6 @@ public sealed class DocumentReverser(NpgsqlDataSource source)
                 ("document_type", type), ("owning_command", ReversalRules.OwningCommand(type))));
         if (original.Status != "posted")
             return Reject(JournalDocumentPoster.Error("REVERSAL.ALREADY_REVERSED", "P2", "document_id"));
-        // The mirror of an open item line is an open item that is cleared against its original in the same transaction (03, 5.7, B3).
-        // That needs the clearing tables, so a document with open item lines cannot be reversed yet.
-        if (original.OpenItems.Count > 0)
-            return Reject(JournalDocumentPoster.Error("LIMIT.REVERSAL_OF_OPEN_ITEMS_NOT_BUILT", "P2", "document_id",
-                ("open_item_lines", original.OpenItems.Keys.Order().ToArray())));
 
         JournalDocumentPoster.CompanyRow? company = await JournalDocumentPoster.ReadCompanyAsync(tx, tenantId, companyId, ct);
         if (company is null || company.Status != "ACTIVE")
@@ -163,6 +168,11 @@ public sealed class DocumentReverser(NpgsqlDataSource source)
                 return CommandResult<PostedDocument>.Failed(JournalDocumentPoster.Error("SYSTEM.CHAIN_HEAD_MISSING", "P7", "", ("ledger_id", ledgerId)));
             headSeq = r.GetInt64(0); headHash = (byte[])r[1];
         }
+        // The CLEARING head follows the LEDGER head (04, 6.3) when the mirror's open items are cleared against the original ones
+        long clearingSeq = 0; byte[] clearingHash = [];
+        if (original.OpenItems.Count > 0)
+            (clearingSeq, clearingHash, _) = await CommandSupport.LockOrCreateHeadAsync(
+                tx, tenantId, companyId, ClearingHash2.ChainType, "", LedgerHash2.Genesis(tenantId, companyId, ClearingHash2.ChainType, ""), ct);
 
         // The original, locked, and its status read again: two reversals of one document are serialised by the head above,
         // the second one sees status reversed here.
@@ -181,6 +191,31 @@ public sealed class DocumentReverser(NpgsqlDataSource source)
         if (recheck.Errors.Count > 0)
             return CommandResult<PostedDocument>.Rejected(recheck.Errors.Select(e => e with { Path = "reversal_date" }).ToList());
         int periodNo = recheck.PeriodNo!.Value;
+
+        // The open items of the original, sorted by key (04, 6.3), and none of them may be cleared in any amount (ADR-039)
+        if (original.OpenItems.Count > 0)
+        {
+            var cleared = new List<int>();
+            await using (var cmd = tx.Command(
+                "select line_no from core.journal_line_open_item where tenant_id = @t and company_id = @c and document_id = @d " +
+                "and (clearing_status <> 'OPEN' or cleared_amount_tc <> 0 or cleared_amount_lc <> 0 or cleared_amount_gc <> 0 or coalesce(cleared_amount_rc, 0) <> 0) " +
+                "order by line_no"))
+            {
+                // the rows are locked first, in key order, by the select below
+                await using (var lockCmd = tx.Command(
+                    "select line_no from core.journal_line_open_item where tenant_id = @t and company_id = @c and document_id = @d order by line_no for update"))
+                {
+                    lockCmd.Parameters.AddWithValue("t", tenantId); lockCmd.Parameters.AddWithValue("c", companyId); lockCmd.Parameters.AddWithValue("d", req.DocumentId);
+                    await using var lr = await lockCmd.ExecuteReaderAsync(ct);
+                    while (await lr.ReadAsync(ct)) { }
+                }
+                cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("c", companyId); cmd.Parameters.AddWithValue("d", req.DocumentId);
+                await using var r = await cmd.ExecuteReaderAsync(ct);
+                while (await r.ReadAsync(ct)) cleared.Add(r.GetInt32(0));
+            }
+            if (cleared.Count > 0)
+                return Reject(JournalDocumentPoster.Error("REVERSAL.HAS_CLEARED_LINES", "P6", "document_id", ("line_nos", cleared.ToArray())));
+        }
 
         // The mirror: opposite sign, everything else of the line as it was
         Guid mirrorId = Guid.NewGuid();
@@ -222,13 +257,31 @@ public sealed class DocumentReverser(NpgsqlDataSource source)
                 ["rate_type"] = o["rate_type"], ["rate_date"] = o["rate_date"], ["ic_counterpart_company_id"] = o["ic_counterpart_company_id"]
             };
             mirrorLines.Add(m);
-            lineHashes.Add(LedgerHash2.LineHash(new HashedLine(m)));
+            int lineNo = (int)o["line_no"]!;
+            lineHashes.Add(LedgerHash2.LineHash(new HashedLine(m, OpenItem: original.OpenItems.TryGetValue(lineNo, out var oi)
+                ? new Dictionary<string, object?>
+                {
+                    ["tenant_id"] = tenantId, ["company_id"] = companyId, ["document_id"] = mirrorId, ["line_no"] = lineNo,
+                    ["partner_id"] = oi["partner_id"], ["legacy_document_date"] = null, ["legacy_posting_date"] = null, ["legacy_document_ref"] = null
+                }
+                : null)));
         }
         byte[] rowHash = LedgerHash2.RowHash(header, chainSeq, headHash, LedgerHash2.LineDigest(lineHashes));
 
         await InsertDocumentAsync(tx, tenantId, companyId, ctx, req, mirrorId, ledgerId, series.SeriesId, fiscalYear, periodNo, sequenceNo,
             number, recheck.SoftCloseOverride, postedAt, currency, reversalDate, chainSeq, headHash, rowHash, ct);
         foreach (var m in mirrorLines) await InsertLineAsync(tx, m, ct);
+        // The mirror's open items start OPEN with nothing cleared. The automatic clearing below clears them (03, 5.7, B3).
+        foreach (var m in mirrorLines.Where(m => original.OpenItems.ContainsKey((int)m["line_no"]!)))
+        {
+            await using var cmd = tx.Command(
+                "insert into core.journal_line_open_item (tenant_id, company_id, document_id, line_no, partner_id, cleared_amount_rc) values (@t, @c, @d, @n, @p, @rc)");
+            cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("c", companyId);
+            cmd.Parameters.AddWithValue("d", mirrorId); cmd.Parameters.AddWithValue("n", (int)m["line_no"]!);
+            cmd.Parameters.Add(new NpgsqlParameter("p", NpgsqlDbType.Uuid) { Value = (object?)original.OpenItems[(int)m["line_no"]!]["partner_id"] ?? DBNull.Value });
+            cmd.Parameters.Add(new NpgsqlParameter("rc", NpgsqlDbType.Numeric) { Value = m["amount_rc"] is null ? DBNull.Value : 0m });
+            await cmd.ExecuteNonQueryAsync(ct);
+        }
 
         await using (var cmd = tx.Command(
             "update core.chain_head set last_seq = @s, last_hash = @h, hash_version = @v, updated_at = now() " +
@@ -255,6 +308,11 @@ public sealed class DocumentReverser(NpgsqlDataSource source)
             await cmd.ExecuteNonQueryAsync(ct);
         }
 
+        // The automatic clearing of the mirror open items against their originals: one clearing per account and partner of the open item
+        // lines, method REVERSAL, dated like the mirror, no document, no legal number (03, 5.7, B3)
+        var autoClearings = await ClearOpenItemsAsync(
+            tx, tenantId, companyId, ctx, original, mirrorId, mirrorLines, reversalDate, fiscalYear, periodNo, postedAt, clearingSeq, clearingHash, ct);
+
         Guid logId = await CommandSupport.WriteLogAsync(tx, tenantId, companyId, ctx, CommandName, fingerprint, "DOCUMENT", mirrorId, ct);
 
         string rowHashHex = Canonical.FormatHex32(rowHash);
@@ -270,6 +328,29 @@ public sealed class DocumentReverser(NpgsqlDataSource source)
                 ["period"] = periodNo, ["ledger_ids"] = new[] { ledgerId.ToString("D") }, ["ledger_seq"] = chainSeq
             }), ct);
 
+        foreach (var ac in autoClearings)
+        {
+            await CommandSupport.WriteOutboxAsync(tx, tenantId, companyId, ctx, "clearing.posted", "CLEARING", $"{companyId:D}/{ac.ClearingId:D}", "POSTED",
+                postedAt, isAudit: true,
+                JsonSerializer.Serialize(new Dictionary<string, object?>
+                {
+                    ["chain_type"] = "CLEARING", ["scope"] = "", ["chain_seq"] = ac.Seq, ["row_hash"] = Canonical.FormatHex32(ac.RowHash)
+                }),
+                JsonSerializer.Serialize(new Dictionary<string, object?>
+                {
+                    ["clearing_id"] = ac.ClearingId, ["partner_id"] = ac.PartnerId, ["account_id"] = ac.AccountId, ["items"] = ac.Items.Count
+                }), ct);
+            foreach (var item in ac.Items)
+                await CommandSupport.WriteOutboxAsync(tx, tenantId, companyId, ctx, "open_item.cleared", "OPEN_ITEM",
+                    $"{companyId:D}/{item.DocumentId:D}/{item.LineNo}", "CLEARED", postedAt, isAudit: false, null,
+                    JsonSerializer.Serialize(new Dictionary<string, object?>
+                    {
+                        ["account_id"] = ac.AccountId, ["partner_id"] = ac.PartnerId, ["due_date"] = null,
+                        ["amount_tc"] = item.Tc.ToString("F4", CultureInfo.InvariantCulture), ["currency"] = item.Currency,
+                        ["clearing_id"] = ac.ClearingId, ["status"] = "CLEARED"
+                    }), ct);
+        }
+
         await tx.CommitAsync(ct);   // runs the deferred checks: balance, lines present, chain link and head, outbox position
 
         var lines = mirrorLines.Select(m => new PostedLine(
@@ -281,6 +362,72 @@ public sealed class DocumentReverser(NpgsqlDataSource source)
             reversalDate, currency, "posted", recheck.SoftCloseOverride, chainSeq, rowHashHex, Canonical.FormatHex32(headHash), LedgerHash2.Version, lines);
         warnings.AddRange(recheck.Warnings.Where(w => warnings.All(x => x.Code != w.Code)));
         return CommandResult<PostedDocument>.Ok(posted, logId, warnings);
+    }
+
+    private sealed record AutoItem(Guid DocumentId, int LineNo, string Currency, decimal Tc, decimal Lc, decimal Gc, decimal? Rc);
+    private sealed record AutoClearing(Guid ClearingId, long Seq, byte[] RowHash, Guid AccountId, Guid? PartnerId, List<AutoItem> Items);
+
+    /// <summary>
+    /// The automatic clearing at reversal (03, 5.7, B3): per account and partner of the open item lines one clearing of method REVERSAL with
+    /// an item for every original line and one for every mirror line, each for its full line amounts. The mirror reverses the lines 1:1, so
+    /// the items net to zero in every currency and no difference can arise. The clearings take the next nodes of the CLEARING chain.
+    /// </summary>
+    private static async Task<List<AutoClearing>> ClearOpenItemsAsync(
+        TenantTransaction tx, Guid tenantId, Guid companyId, CommandContext ctx, LedgerReader.StoredDocument original, Guid mirrorId,
+        List<Dictionary<string, object?>> mirrorLines, DateOnly date, int fiscalYear, int periodNo, DateTime clearedAt, long headSeq, byte[] headHash, CancellationToken ct)
+    {
+        var result = new List<AutoClearing>();
+        if (original.OpenItems.Count == 0) return result;
+        string currency = (string)original.Header["transaction_currency"]!;
+        var groups = original.Lines.Where(l => original.OpenItems.ContainsKey((int)l["line_no"]!))
+            .GroupBy(l => ((Guid)l["account_id"]!, (Guid?)original.OpenItems[(int)l["line_no"]!]["partner_id"]))
+            .OrderBy(g => g.Key.Item1).ThenBy(g => g.Key.Item2);
+        long seq = headSeq; byte[] prev = headHash; int n = 0;
+        Guid originalId = (Guid)original.Header["document_id"]!;
+        foreach (var g in groups)
+        {
+            n++;
+            seq++;
+            Guid clearingId = Guid.NewGuid();
+            // the key of a clearing is unique, and one reversal can write several: the key of the command with the number of the group
+            string baseKey = ctx.IdempotencyKey.Length > 90 ? ctx.IdempotencyKey[..90] : ctx.IdempotencyKey;
+            CommandContext gctx = ctx with { IdempotencyKey = $"{baseKey}#{n}" };
+            var items = new List<AutoItem>();
+            foreach (var l in g.OrderBy(l => (int)l["line_no"]!))
+                items.Add(new AutoItem(originalId, (int)l["line_no"]!, currency, (decimal)l["amount_tc"]!, (decimal)l["amount_lc"]!, (decimal)l["amount_gc"]!, (decimal?)l["amount_rc"]));
+            foreach (var l in g.OrderBy(l => (int)l["line_no"]!))
+                items.Add(new AutoItem(mirrorId, (int)l["line_no"]!, currency, -(decimal)l["amount_tc"]!, -(decimal)l["amount_lc"]!, -(decimal)l["amount_gc"]!,
+                    l["amount_rc"] is decimal rc ? -rc : null));
+
+            var body = new Dictionary<string, object?>
+            {
+                ["clearing_id"] = clearingId, ["clearing_type"] = "CLEAR", ["clearing_date"] = date, ["fiscal_year"] = fiscalYear, ["fiscal_period"] = periodNo,
+                ["cleared_at"] = clearedAt, ["account_id"] = g.Key.Item1, ["partner_id"] = g.Key.Item2, ["document_id"] = null, ["reset_of_clearing_id"] = null,
+                ["clearing_method"] = "REVERSAL", ["matching_ref"] = null, ["source_system"] = ctx.SourceSystem, ["idempotency_key"] = gctx.IdempotencyKey,
+                ["command_name"] = CommandName, ["cleared_by"] = ctx.Actor, ["correlation_id"] = ctx.CorrelationId
+            };
+            var itemRows = items.Select((i, k) => (IReadOnlyDictionary<string, object?>)new Dictionary<string, object?>
+            {
+                ["tenant_id"] = tenantId, ["company_id"] = companyId, ["clearing_id"] = clearingId, ["item_no"] = k + 1, ["clearing_date"] = date,
+                ["open_item_document_id"] = i.DocumentId, ["open_item_line_no"] = i.LineNo, ["currency_tc"] = i.Currency,
+                ["cleared_amount_tc"] = i.Tc, ["cleared_amount_lc"] = i.Lc, ["cleared_amount_gc"] = i.Gc, ["cleared_amount_rc"] = i.Rc
+            }).ToList();
+            byte[] rowHash = ClearingHash2.RowHash(tenantId, companyId, seq, prev, body, ClearingHash2.ItemsDigest(itemRows), null);
+
+            var synthetic = new PostClearingRequest(companyId, g.Key.Item1, g.Key.Item2, date, "REVERSAL", null, null, []);
+            await ClearingPoster.InsertClearingAsync(tx, tenantId, synthetic, gctx, clearingId, null, seq, fiscalYear, periodNo, clearedAt, prev, rowHash, "CLEAR", null, CommandName, ct);
+            for (int k = 0; k < items.Count; k++)
+            {
+                AutoItem i = items[k];
+                await ClearingPoster.InsertItemAsync(tx, tenantId, synthetic, clearingId, k + 1, i.DocumentId, i.LineNo, i.Currency, i.Tc, i.Lc, i.Gc, i.Rc, ct);
+                // every item clears its line in full, so the open item is CLEARED with the amounts of its line
+                await ClearingPoster.UpdateOpenItemAsync(tx, tenantId, companyId, i.DocumentId, i.LineNo, clearingId, "CLEARED", i.Tc, i.Lc, i.Gc, i.Rc, ct);
+            }
+            await ClearingPoster.MoveHeadAsync(tx, tenantId, companyId, "CLEARING", "", seq, rowHash, ClearingHash2.Version, ct);
+            result.Add(new AutoClearing(clearingId, seq, rowHash, g.Key.Item1, g.Key.Item2, items));
+            prev = rowHash;
+        }
+        return result;
     }
 
     private static async Task InsertDocumentAsync(
