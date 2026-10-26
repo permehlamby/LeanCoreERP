@@ -1,5 +1,6 @@
 using FinanceCore.Core.Hashing;
 using FinanceCore.Core.Posting;
+using FinanceCore.Core.Retention;
 using Npgsql;
 
 namespace FinanceCore.Data;
@@ -376,6 +377,41 @@ public sealed class ChainVerifier(NpgsqlDataSource source)
                 problems.Add(new("CHAIN.HEAD_HASH_MISMATCH", 0, "head hash is not the genesis value"));
         }
 
+        await VerifySnapshotsAsync(tx, tenantId, companyId, ledgerId, problems, ct);
+
         return new VerificationResult(problems.Count == 0, docs.Count, problems);
+    }
+
+    /// <summary>
+    /// The legal snapshots of the ledger's documents (02, 4, 12, 4.1). The snapshot is outside the hash, so these checks are the evidence that it
+    /// exists and was not shortened: (a) every document has one, (b) its retention_until is not earlier than what the retention rules in force when the
+    /// document was posted give (an extension may lengthen it, never shorten it), (c) the personal columns agree with the partner: a snapshot with a
+    /// partner holds its name unless it was anonymised, a snapshot without a partner holds no personal data. The breaks are named SNAPSHOT.*.
+    /// </summary>
+    private static async Task VerifySnapshotsAsync(
+        TenantTransaction tx, Guid tenantId, Guid companyId, Guid ledgerId, List<VerificationProblem> problems, CancellationToken ct)
+    {
+        var versions = await RetentionRuleCommands.ReadVersionsAsync(tx, tenantId, companyId, ct);
+        await using var cmd = tx.Command(
+            "select d.chain_seq, d.posted_at, d.posting_date, y.end_date, s.document_id is not null, s.retention_until, " +
+            "s.partner_id is not null, s.legal_name is not null, s.anonymised_at is not null " +
+            "from core.journal_document d join core.fiscal_year y on y.tenant_id = d.tenant_id and y.company_id = d.company_id and y.fiscal_year = d.fiscal_year " +
+            "left join core.document_legal_snapshot s on s.tenant_id = d.tenant_id and s.company_id = d.company_id and s.document_id = d.document_id " +
+            "where d.tenant_id = @t and d.company_id = @c and d.ledger_id = @l order by d.chain_seq");
+        cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("c", companyId); cmd.Parameters.AddWithValue("l", ledgerId);
+        await using var r = await cmd.ExecuteReaderAsync(ct);
+        while (await r.ReadAsync(ct))
+        {
+            long seq = r.GetInt64(0);
+            if (!r.GetBoolean(4)) { problems.Add(new("SNAPSHOT.MISSING", seq, "the document has no legal snapshot")); continue; }
+            DateOnly stored = DateOnly.FromDateTime(r.GetDateTime(5));
+            DateOnly? due = RetentionRules.ForLegalSnapshot(versions, DateTime.SpecifyKind(r.GetDateTime(1), DateTimeKind.Utc),
+                DateOnly.FromDateTime(r.GetDateTime(3)), DateOnly.FromDateTime(r.GetDateTime(2)));
+            if (due is null) problems.Add(new("SNAPSHOT.RETENTION_SHORTER_THAN_RULE", seq, "no retention rule was in force when the document was posted"));
+            else if (stored < due) problems.Add(new("SNAPSHOT.RETENTION_SHORTER_THAN_RULE", seq, $"retention_until {stored:yyyy-MM-dd}, the rules give {due:yyyy-MM-dd}"));
+            bool hasPartner = r.GetBoolean(6), hasName = r.GetBoolean(7), anonymised = r.GetBoolean(8);
+            if (hasPartner && !hasName && !anonymised) problems.Add(new("SNAPSHOT.PARTNER_DATA_INCONSISTENT", seq, "the snapshot names a partner but holds no name"));
+            else if (!hasPartner && hasName) problems.Add(new("SNAPSHOT.PARTNER_DATA_INCONSISTENT", seq, "the snapshot holds a name but no partner"));
+        }
     }
 }
