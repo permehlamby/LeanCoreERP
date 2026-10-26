@@ -69,6 +69,29 @@ To run the tests in Supabase, grant the command roles to the SQL Editor user fir
 | F-IMPL-9 | The posting role takes `FOR SHARE` on the period and year rows (06, 9). PostgreSQL requires UPDATE privilege on one column for that, and 0006 gave `cmd_post` none. Migration 0007 grants `update (last_event_id)` on both tables. The guard trigger rejects every change of it that is not the matching latest `period_event`, so the role can lock the row but not change it. Tests: `PostingRoleCanLockPeriodRowsButNotChangeThem`, `PostingRoleCannotPointAPeriodAtAnotherEvent`. Supabase needs `0007` run once |
 | F-IMPL-16 | Rounding and role tables (07, 6.3). (a) The rate table of 02, 5.2 (D9) puts ROUNDING under "TC non-zero", but a rounding line exists because TC balances and the derived currencies do not. The slice posts one ROUNDING line per document: `amount_tc` 0, the three differences as its LC, GC and RC amounts, rates 1, `rate_type` DERIVED, no `line_ref`, the line after the base lines (06, A2). The spec says "rounding lines per currency": one line carries all three currencies here. Needs a row in D9. (b) The ROUNDING account is resolved by the transaction currency, then the default row. 07 does not say which currency is meant. (c) Roles resolve at `now()`, as 07, 6.3 says, not at the posting date: a back-dated posting uses the role in force today. (d) `account-role-assignments:create` is a name by the pattern of 07, 11.1 (`{resource}:create-version` for V tables, a first row is a version too). Its event is `config.version_created` with `is_audit` true as 15, 7 says, but `master_change_log` does not exist, so the event refers to nothing. (e) A new version must have an `effective_from` later than the newest version of the same key (`CONFIG.VALID_FROM_NOT_LATER`). `CONFIG.VALID_FROM_IN_CLOSED_PERIOD` is not checked. (f) Not built: `VAT_SETTLEMENT` (answers `LIMIT.VAT_REGISTRATION_NOT_BUILT`, `vat_registration_id` has no FK and `tax_account` is not set by the system), "no mandatory dimension rules" for `RETAINED_EARNINGS` and the migration roles (`account_dimension_rule` does not exist), deactivation of a referenced role account. (g) Readiness: ROUNDING and the two FX_UNREALISED roles need a default row or a row for each of the local, group and reporting currencies. 07, 11.3 says "each currency in use", which the core cannot know. A role account that is inactive or posting-blocked fails `ROLE_ACCOUNT_RULES` (`ACCOUNT_USABLE`), which 07 does not say. Supabase needs `0011` run once |
 
+### Where the findings went in the specs (2026-10-26)
+
+The deltas are PROPOSED, not accepted: they write down what the slice does, so that spec and code agree, and the owner of the specs confirms or changes them. ADR-228 to ADR-230 are in `01-adr-log.md.txt`.
+
+| Finding | Spec delta | Code owes |
+|---|---|---|
+| F-IMPL-1 | 07, 3.1 and 5.4a (table `ledger`), 06, 5.2, ADR-228 | Nothing |
+| F-IMPL-2 | 04, 8 ("Form of the same-transaction check") | Nothing |
+| F-IMPL-3 | Not changed. Waits for `change_log` (next step) | |
+| F-IMPL-4 | 02, 5.2 (`amount_rc` row) | Nothing |
+| F-IMPL-5 | Not changed. Waits for the deduction and tax tables, open items and `change_log` | |
+| F-IMPL-6 | 02, 5.2 "Rounding of derived amounts", 03, 5.2, ADR-229 | Nothing |
+| F-IMPL-7 | 06, 2.4 (new rows) and 13.9, ADR-230 | Rename `AUTH.PERMISSION_DENIED` to `AUTH.PERMISSION_MISSING`, `DOCUMENT.NOT_BALANCED` to `BALANCE.UNBALANCED_TC` in the posting command. The chain verification names two breaks like command errors, see 06, 13.9 |
+| F-IMPL-8 | 04, 5.2 ("Precedence"). The spec already had the rule, now stated for the case of a row that does not yet apply | Nothing |
+| F-IMPL-9 | 04, 8 ("Row locks of the posting role") | Nothing |
+| F-IMPL-10 | 04, 3.5 ("Who creates a chain head"). (a) was already in 04, 3.5a | Nothing |
+| F-IMPL-11 | Not changed. 0009 is a grant, the rule of 06, 6.3 class 7 stands | |
+| F-IMPL-12 | 07, 11.3 ("in use" for number series, ledger and group membership rows) | Nothing |
+| F-IMPL-13 | 04, 13 open points 6 and 7. **Needs a decision before `chain_anchor` is built** | |
+| F-IMPL-14 | 06, 7.3 (`PERIOD.STATUS_INVALID`, reopen reason vocabulary and event) | Nothing |
+| F-IMPL-15 | 06, 5.3 ("Points settled while implementing"), 07, 11.3 | The readiness check does not yet ask for a number series of type `REVERSAL` (11.3 now requires it) |
+| F-IMPL-16 | 02, 5.2 (D9 row of ROUNDING), 07, 6.3 items 1 to 5 and 11.3, ADR-230. A limit for the size of a rounding line is open (ADR-230) | Nothing: the readiness check already covers the three currencies and usable role accounts |
+
 ## Re-running
 
 Every script uses `if not exists`, `on conflict do nothing` or `create or replace`, and the runner applies all of them twice. Changing a table that exists needs a new numbered migration (forward only, 20, 12), never an edit of an applied one.

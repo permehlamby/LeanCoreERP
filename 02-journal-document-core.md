@@ -153,7 +153,7 @@ All L1. Signed (A1).
 | currency_gc | CODE | N | |
 | rate_gc | RATE | N | |
 | rate_gc_table | RATE | Y | |
-| amount_rc | AMT | Y | Reporting currency. Null if not configured for the company |
+| amount_rc | AMT | Y | Reporting currency. Null if not configured for the company. **All or none (F-IMPL-4, 2026-10-26):** `amount_rc`, `currency_rc` and `rate_rc` are all present or all absent on a line, and a document has them on all lines or on none. A company with a `reporting_currency` (07, 5.4) posts them on every line, a company without posts none. The deferred balance check of the reporting currency applies to documents that have them |
 | currency_rc | CODE | Y | |
 | rate_rc | RATE | Y | |
 | rate_rc_table | RATE | Y | |
@@ -164,13 +164,16 @@ All L1. Signed (A1).
 
 | Line type | Situation | `rate_lc` | `rate_gc`, `rate_rc` | `rate_type` |
 |---|---|---|---|---|
-| BASE, TAX, TAX_NONDEDUCTIBLE, ROUNDING, TAX_ROUNDING | TC non-zero | Rate of ADR-019 (1 if TC = LC) | Rate of ADR-019 | SPOT or CLOSING as posted |
+| BASE, TAX, TAX_NONDEDUCTIBLE, TAX_ROUNDING | TC non-zero | Rate of ADR-019 (1 if TC = LC) | Rate of ADR-019 | SPOT or CLOSING as posted |
+| ROUNDING (ADR-230, F-IMPL-16a) | Always `amount_tc` = 0. The line exists because TC balances and LC, GC or RC do not | 1 | 1 | DERIVED |
 | FX_REALISED, CLEARING_DIFF (03, 3.1) | Always `amount_tc` = 0 | 1 | 1 | DERIVED |
 | FX_UNREALISED, REVAL_ADJUSTMENT (05, 3.3) | Always `amount_tc` = 0 | 1 | 1 | DERIVED |
 | CLOSING (YEAR_END document, 05, 5.2) | `amount_tc` = `amount_lc`, non-zero | 1 | Implied ratio `amount_x / amount_lc` | DERIVED |
 | CLOSING, OPENING, HISTORY_PL (migration, 13) | `amount_tc` = 0 or `amount_lc` = 0 (D9, 17, section 5) | 1 | Let A be the **first non-zero amount in the order LC, GC, RC**. `rate_x` = `amount_x` / A for each other currency, and 1 for the currency of A itself. A currency whose own amount is 0 gets rate 1 | DERIVED |
 
 General rules: a rate is never null and never 0. When the ratio to LC cannot be formed because `amount_lc` is 0 (LC = 0 and GC or RC not 0), the rates are the ratio to the first non-zero amount as in the last row (D9, final). The amounts are authoritative and the rates are derived from them: the rates on `DERIVED` lines are informational and are not used to recompute amounts. A document whose lines are non-zero only in GC or RC (LC = 0 on all lines) is valid, because "non-zero" means non-zero in at least one currency.
+
+**Rounding of derived amounts (ADR-229, ADR-230, F-IMPL-6 and F-IMPL-16, 2026-10-26).** Every amount derived from another by a rate or a ratio is rounded to the scale of its currency, half away from zero, so that a value and its mirror round to opposite amounts. If LC, GC or RC of a document then do not sum to 0 while TC does, the posting command adds **one** `ROUNDING` line, after the base lines. Its `amount_tc` is 0, its LC, GC and RC amounts are the three differences (one line for all three currencies, where earlier text said "per currency"), its rates are 1 and its `rate_type` is DERIVED, it has no `line_ref`, and its account is the role `ROUNDING` (07, 6.3 item 1). A document whose TC amounts do not sum to 0 is rejected (`BALANCE.UNBALANCED_TC`), a rounding line never closes a transaction-currency difference.
 
 ### 5.3 Dimensions (ADR-010, P11)
 
@@ -542,4 +545,5 @@ Decisions from 14, sections 8 to 11, and the deltas of 15 (section 10) and 16 (s
 | Propagation pass (17, section 5, v0.6) | Document type GR_IR_WRITE_OFF: system generated, `origin` ORDER, owning command `gr-ir:reverse-write-off`, mirror keeps the type (3: type list, `is_system_generated`, origin, mirror and derived-document rules). D9 rate rule at LC = 0 final: ratio to the first non-zero amount, amounts authoritative (5.2). CLOSING and `origin` confirmed present (3). Open question list closed (12) |
 | ADR-200, ADR-203 to ADR-206 (2026-10-14) | `journal_line_tax`: `origin_eu`, `destination_eu` (7.1, ADR-200) and the deduction columns (7.1, ADR-203). `journal_line_tax_base`: `nondeductible_tax_tc`, `nondeductible_line_no` (7.2). New line type `TAX_NONDEDUCTIBLE` (5.1) with its rate rule (5.2). `hash_version` 2 (9.3) |
 | ADR-226 (2026-10-19, spec 23) | 5.4: the lines that carry `ic_counterpart_company_id` (IC account lines, control lines and BASE lines of an IC document pair, never tax or rounding lines). No hash change |
+| ADR-228 to ADR-230 (2026-10-26, first implementation slice) | 5.2: `amount_rc`, `currency_rc` and `rate_rc` all or none per line and per document (F-IMPL-4). The rate rule of ROUNDING has its own row in D9 (F-IMPL-16a). New paragraph "Rounding of derived amounts": half away from zero and one ROUNDING line per document (ADR-229, ADR-230). No hash change: the line type and the columns were already L1 |
 | Skipped | exemptions of CLOSING, HISTORY_PL and OPENING lines from the partner and open-item rule (owned by 05 and 13). Number series fiscal year resolution is in 04 |

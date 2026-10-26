@@ -66,6 +66,7 @@ The shared columns are not repeated in the table specs below.
 | 5 | `tenant_setting` | M | Organisation |
 | 6 | `company_group` | M | Organisation |
 | 7 | `company` | M | Organisation |
+| 7a | `ledger` | M | Organisation (5.4a, ADR-228) |
 | 8 | `company_setting_version` | V | Organisation |
 | 9 | `group_membership` | V | Organisation |
 | 10 | `gl_account` | M | Chart of accounts |
@@ -226,6 +227,19 @@ PK: (`tenant_id`, `company_id`). Unique (`tenant_id`, `company_code`).
 
 Group membership is not a column (see 5.6). A company must be ACTIVE for any posting.
 
+### 5.4a `ledger` (M, ADR-228, F-IMPL-1)
+
+The specs use `ledger_id` on documents, lines, number series assignments and as the scope of the LEDGER chain (02, 3 and 9.2, 04, 5.2, 06, 5.2). This table is the object they refer to.
+PK: (`tenant_id`, `company_id`, `ledger_id`). Unique (`tenant_id`, `company_id`, `ledger_code`). FK (`tenant_id`, `company_id`) to `company`.
+
+| Column | Type | Null | Notes |
+|---|---|---|---|
+| ledger_code | CODE | N | |
+| is_default | BOOLEAN | N | Exactly one default ledger per company (partial unique index). A request without `ledger_id` takes the default ledger (06, 5.2) |
+| active | BOOLEAN | N | An inactive ledger takes no posting. A posting to a ledger that is unknown, inactive or of another company is rejected with `LEDGER.NOT_FOUND` (06, 2.4) |
+
+Release 1 has one ledger per company, created by the configuration (the configuration package or the master data commands) while the company is DRAFT. `companies:activate` does not create it: the readiness check requires an active default ledger (11.3). The commands that write the table follow the master data pattern of 11.1 and need `write.config`. Parallel ledgers (02, Q4) stay a later decision.
+
 ### 5.5 `company_setting_version` (V)
 
 PK: (`tenant_id`, `company_id`, `effective_from`). Resolution: the row with the highest `effective_from` not later than the command time (as `posting_window`).
@@ -336,6 +350,13 @@ The authoritative list of all account roles of the core, with the **required ope
 The earlier statement of 10 that "GR_IR must be GL_OPEN_ITEM, others NONE" is replaced by this table. The account type rules of the determination roles stay with 10 and 11 (this table lists only what D5 fixes). Role codes beyond release 1 need an ADR.
 
 Resolution at command time: the most specific row (currency, counterpart and VAT registration match) with the highest `effective_from` not later than now. No match: the command that needs the role is rejected with `CONFIG.ROLE_NOT_ASSIGNED` and the role code in `params`. Companies cannot be activated without the roles needed for the enabled features (11.3).
+
+**Rounding and the writing of role rows (F-IMPL-16, ADR-230, 2026-10-26).**
+1. **Which currency the `ROUNDING` row is resolved by.** By the transaction currency of the document: the row with that `currency_code`, else the default row (null currency). A document has one ROUNDING line whose three amounts are the differences in LC, GC and RC (02, 5.2, D9), so the one account serves all three. "Per currency" in the role table means per transaction currency.
+2. **Resolution time.** Roles resolve at the time of the command, as written above, not at the posting date. A back-dated posting uses the role in force today. The history of the role table is the audit trail of which account was used when, and the document line carries the account that was used.
+3. **Writing a row.** The command is `account-role-assignments:create` and writes the first row or a later version of the same key (role, currency, counterpart, registration). A version needs an `effective_from` later than the newest version of the key (`CONFIG.VALID_FROM_NOT_LATER`). `CONFIG.VALID_FROM_IN_CLOSED_PERIOD` does not apply to this table, because roles resolve at command time and not at a posting date. It writes an audit event `config.version_created` (15, 7) and a `master_change_log` row (10.1) in the same transaction.
+4. **`VAT_SETTLEMENT`.** A row needs an existing VAT registration (08, 6.2). The system does not set `tax_account` from the role. Both follow the VAT domain.
+5. **Role account usable.** A role account that is inactive, posting-blocked or outside its validity at the posting date makes a posting that needs the role fail with `ACCOUNT.ROLE_ACCOUNT_NOT_USABLE` (06, 2.4), and makes the readiness check fail (11.3).
 
 ### 6.4 `group_chart_account` (M) and `account_group_mapping` (V)
 
@@ -696,10 +717,11 @@ Added by ADR-224 and ADR-227 (spec 23): `NOT_A_GROUP_MEMBER`, `OWNERSHIP_INVALID
 | Local, reporting and group currency enabled in `tenant_currency` | 7.1 |
 | Fiscal calendar assigned, at least one fiscal year open (04) | 04 |
 | Current `company_setting_version` exists | 5.5 |
-| Number series assigned for each document type in use (04), including the order management document types when orders are used (11, 3.2) | 04 |
+| Number series assigned for each document type in use (04), including the order management document types when orders are used (11, 3.2). **"In use" (F-IMPL-12, 2026-10-26):** a type is in use when the core itself needs it or an enabled feature does. The core needs `JOURNAL` and `REVERSAL` (the mirror of `journal-documents:reverse`, 06, 5.3, F-IMPL-15). The other external types (`AP_INVOICE`, `AP_CREDIT`, `AR_INVOICE`, `AR_CREDIT`, `PAYMENT`) are not required by the check: a posting of such a type without an assignment is rejected at posting with `SERIES.NO_ASSIGNMENT`. The types of a feature (orders, inventory, VAT settlement, year-end, migration) are required when the feature is enabled | 04 |
+| An active default `ledger` and a `group_membership` valid today. What the posting command needs and this list did not yet name (F-IMPL-12) | 5.4a, 5.6 |
 | A current `company_order_setting_version` exists when orders are used (11, 3.1, 5.7), with `sales_invoice_mode` set | 11 |
-| Roles: `ROUNDING` for each currency in use or a default, `TAX_ROUNDING`, `FX_REALISED`, `FX_UNREALISED_GAIN` and `_LOSS`, `RETAINED_EARNINGS`; IC roles per counterpart if intercompany is used; `VAT_SETTLEMENT` per VAT registration if VAT is used | 6.3 |
-| Account rules of role accounts satisfied, including the required open-item mode of the role table | 6.3 |
+| Roles: `ROUNDING` and the two `FX_UNREALISED` roles: a default row, or a row for each of the local, group and reporting currency of the company ("each currency in use" means these three, because the core cannot know which transaction currencies will be used, F-IMPL-16g). `TAX_ROUNDING`, `FX_REALISED`, `FX_UNREALISED_GAIN` and `_LOSS`, `RETAINED_EARNINGS`; IC roles per counterpart if intercompany is used; `VAT_SETTLEMENT` per VAT registration if VAT is used | 6.3 |
+| Account rules of role accounts satisfied, including the required open-item mode of the role table, and every role account usable (active, not posting-blocked, valid today, 6.3 item 5) | 6.3 |
 | Account determination: every role needed by the enabled features (inventory, orders, dropship) has at least a catch-all rule (all keys null) | 10, 3.9 |
 | At least one active `company_vat_registration` if VAT codes are used | 08, 4.1 |
 | Migration roles `MIGRATION_CLEARING` and `HISTORY_RESULT` assigned when a migration batch is open or about to be opened | 13, 4.1 |
@@ -782,6 +804,10 @@ For the resources `gl-accounts`, `business-partners` (with PII, company relation
 | 05 | Gain/loss, retained earnings and FX roles are rows of `account_role_assignment`. 05 Q7 (one account per company with currency overrides) is exactly the `currency_code` column of the role table |
 
 These deltas are applied in 02 and 06 with this spec.
+
+### 13.2h Implementation findings (ADR-228 to ADR-230, 2026-10-26)
+
+Applied in this spec: the table `ledger` (3.1, 5.4a, F-IMPL-1), the rounding and role-row rules of 6.3 (F-IMPL-16: currency of the `ROUNDING` row, resolution time, the writing command, `VAT_SETTLEMENT`, usable role accounts) and four changes in 11.3 (the meaning of "in use" for number series with `REVERSAL`, the ledger and group membership rows, the three currencies of the rounding and unrealised FX roles, usable role accounts: F-IMPL-12, F-IMPL-15, F-IMPL-16). Carried by other specs: 06 (error areas `LEDGER`, `DOCUMENT`, `COMPANY`, `FISCAL_YEAR`, new codes, 5.2, 5.3, 7.3), 02 (5.2: reporting amounts, rate rule of ROUNDING), 03 (5.2: ROUND), 04 (3.5, 7.3, 8). Not changed: the `master_change_log` row for role versions stays specified in 10.1 and is not built in the first slice.
 
 ### 13.2g Package deltas (ADR-193 to ADR-198, ADR-217, 2026-10-19)
 
