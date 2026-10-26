@@ -27,7 +27,7 @@ public sealed partial class ClearingPoster
         Guid tenantId, CommandContext ctx, ResetClearingRequest req, CancellationToken ct = default)
     {
         if (!ctx.Permissions.Contains(ResetPermission))
-            return Reject(JournalDocumentPoster.Error("AUTH.PERMISSION_DENIED", "P0", "", ("permission", ResetPermission)));
+            return Reject(JournalDocumentPoster.Error("AUTH.PERMISSION_MISSING", "P0", "", ("permission", ResetPermission)));
 
         var shape = new List<CommandError>();
         void Invalid(string path, string reason) => shape.Add(JournalDocumentPoster.Error("SCHEMA.INVALID_VALUE", "P1", path, ("reason", reason)));

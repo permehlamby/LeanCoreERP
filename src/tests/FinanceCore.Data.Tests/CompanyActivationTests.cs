@@ -200,8 +200,8 @@ public class CompanyActivationTests
     {
         var t = await TestTenant.CreateAsync(bare: true);
         var activator = new CompanyActivator(t.App);
-        Assert.Equal(["AUTH.PERMISSION_DENIED"], (await activator.ActivateAsync(t.TenantId, t.Context("p", "read.config"), t.CompanyId)).Errors.Select(e => e.Code));
-        Assert.Equal(["AUTH.PERMISSION_DENIED"], (await activator.CheckReadinessAsync(t.TenantId, t.Context("q", "company.activate"), t.CompanyId)).Errors.Select(e => e.Code));
+        Assert.Equal(["AUTH.PERMISSION_MISSING"], (await activator.ActivateAsync(t.TenantId, t.Context("p", "read.config"), t.CompanyId)).Errors.Select(e => e.Code));
+        Assert.Equal(["AUTH.PERMISSION_MISSING"], (await activator.CheckReadinessAsync(t.TenantId, t.Context("q", "company.activate"), t.CompanyId)).Errors.Select(e => e.Code));
         Assert.Equal(["COMPANY.NOT_FOUND"], (await activator.ActivateAsync(t.TenantId, Activate(t, "u"), Guid.NewGuid())).Errors.Select(e => e.Code));
     }
 

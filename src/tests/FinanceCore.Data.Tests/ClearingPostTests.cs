@@ -258,7 +258,7 @@ public class ClearingPostTests
         Assert.Equal(1L, await s.Tenant.ScalarAsync<long>("select count(*) from core.clearing where tenant_id = @t"));
 
         Assert.Equal(["IDEMPOTENCY.KEY_REUSED_DIFFERENT_REQUEST"], Codes(await Clear(s, "same", [I(a), I(c)])));
-        Assert.Equal(["AUTH.PERMISSION_DENIED"], Codes(await new ClearingPoster(s.Tenant.App).PostAsync(s.Tenant.TenantId, s.Tenant.Context("p"),
+        Assert.Equal(["AUTH.PERMISSION_MISSING"], Codes(await new ClearingPoster(s.Tenant.App).PostAsync(s.Tenant.TenantId, s.Tenant.Context("p"),
             new PostClearingRequest(s.Tenant.CompanyId, s.GlOpen, null, new DateOnly(2026, 3, 31), "MANUAL", null, null, [I(a), I(b)]))));
     }
 

@@ -115,7 +115,7 @@ public class ReversalTests
             Assert.Equal(["REVERSAL.REASON_NOT_ALLOWED"], Codes(r));
             Assert.Equal(["CORRECTION", "ERROR"], (string[])r.Errors[0].Params!["allowed_values"]!);
         }
-        Assert.Equal(["AUTH.PERMISSION_DENIED"], Codes(await reverser.ReverseAsync(t.TenantId, t.Context("c", "journal.post"), new(original.DocumentId, null, "ERROR", null))));
+        Assert.Equal(["AUTH.PERMISSION_MISSING"], Codes(await reverser.ReverseAsync(t.TenantId, t.Context("c", "journal.post"), new(original.DocumentId, null, "ERROR", null))));
         Assert.Equal(["REVERSAL.NOT_FOUND"], Codes(await reverser.ReverseAsync(t.TenantId, Rev(t, "d"), new(Guid.NewGuid(), null, "ERROR", null))));
         Assert.Equal("posted", await t.ScalarAsync<string>("select status from core.journal_document where tenant_id = @t and document_id = @d", ("d", original.DocumentId)));
     }

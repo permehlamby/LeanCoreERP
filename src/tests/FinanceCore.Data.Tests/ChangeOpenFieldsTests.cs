@@ -170,7 +170,7 @@ public class ChangeOpenFieldsTests
         var t = await TestTenant.CreateReadyAsync();
         var doc = await Post(t);
 
-        Assert.Equal(["AUTH.PERMISSION_DENIED"], Codes(await Run(t, t.Context("c0"), doc.DocumentId, "CORRECTION", Header("header_text", Initial, "A"))));
+        Assert.Equal(["AUTH.PERMISSION_MISSING"], Codes(await Run(t, t.Context("c0"), doc.DocumentId, "CORRECTION", Header("header_text", Initial, "A"))));
         Assert.Equal(["SCHEMA.REQUIRED_FIELD_MISSING"], Codes(await Run(t, Change(t, "c1"), doc.DocumentId, "", Header("header_text", Initial, "A"))));
         Assert.Equal(["SCHEMA.INVALID_VALUE"], Codes(await Run(t, Change(t, "c2"), doc.DocumentId, "SYSTEM", Header("header_text", Initial, "A"))));
         Assert.Equal(["SCHEMA.REQUIRED_FIELD_MISSING"], Codes(await Run(t, Change(t, "c3"), doc.DocumentId, "CORRECTION")));

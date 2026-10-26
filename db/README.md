@@ -97,7 +97,7 @@ The deltas are PROPOSED, not accepted: they write down what the slice does, so t
 | F-IMPL-4 | 02, 5.2 (`amount_rc` row) | Nothing |
 | F-IMPL-5 | Not changed. `change_log` exists since 0012 and `journal_line_open_item` since 0014. The deduction and tax tables are still missing | |
 | F-IMPL-6 | 02, 5.2 "Rounding of derived amounts", 03, 5.2, ADR-229 | Nothing |
-| F-IMPL-7 | 06, 2.4 (new rows) and 13.9, ADR-230 | Rename `AUTH.PERMISSION_DENIED` to `AUTH.PERMISSION_MISSING`, `DOCUMENT.NOT_BALANCED` to `BALANCE.UNBALANCED_TC` in the posting command. The chain verification names two breaks like command errors, see 06, 13.9 |
+| F-IMPL-7 | 06, 2.4 (new rows) and 13.9, ADR-230 | Done 2026-10-26: `AUTH.PERMISSION_MISSING` in every command, `BALANCE.UNBALANCED_TC` in the posting command. The chain verification still names two breaks like command errors (`DOCUMENT.NOT_BALANCED`, `PERIOD.STATUS_MISMATCH`), see 06, 13.9 |
 | F-IMPL-8 | 04, 5.2 ("Precedence"). The spec already had the rule, now stated for the case of a row that does not yet apply | Nothing |
 | F-IMPL-9 | 04, 8 ("Row locks of the posting role") | Nothing |
 | F-IMPL-10 | 04, 3.5 ("Who creates a chain head"). (a) was already in 04, 3.5a | Nothing |

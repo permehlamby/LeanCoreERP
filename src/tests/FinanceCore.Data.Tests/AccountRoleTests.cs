@@ -59,7 +59,7 @@ public class AccountRoleTests
         var assigner = new AccountRoleAssigner(t.App);
 
         var denied = await assigner.AssignAsync(t.TenantId, t.Context("p", "journal.post"), new(t.CompanyId, "ROUNDING", account));
-        Assert.Equal(["AUTH.PERMISSION_DENIED"], denied.Errors.Select(e => e.Code));
+        Assert.Equal(["AUTH.PERMISSION_MISSING"], denied.Errors.Select(e => e.Code));
 
         var noCompany = await assigner.AssignAsync(t.TenantId, Config(t, "q"), new(Guid.NewGuid(), "ROUNDING", account));
         Assert.Equal(["COMPANY.NOT_FOUND"], noCompany.Errors.Select(e => e.Code));

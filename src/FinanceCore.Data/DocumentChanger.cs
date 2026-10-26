@@ -27,7 +27,7 @@ public sealed class DocumentChanger(NpgsqlDataSource source)
         Guid tenantId, CommandContext ctx, ChangeOpenFieldsRequest req, CancellationToken ct = default)
     {
         if (!ctx.Permissions.Contains(Permission))
-            return Reject(JournalDocumentPoster.Error("AUTH.PERMISSION_DENIED", "P0", "", ("permission", Permission)));
+            return Reject(JournalDocumentPoster.Error("AUTH.PERMISSION_MISSING", "P0", "", ("permission", Permission)));
 
         List<CommandError> shape = Validate(ctx, req);
         if (shape.Count > 0) return CommandResult<ChangedDocument>.Rejected(shape);

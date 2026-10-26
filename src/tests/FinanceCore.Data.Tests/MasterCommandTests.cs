@@ -133,7 +133,7 @@ public class MasterCommandTests
         var commands = new PartnerCommands(t.App);
         async Task<string[]> Try(string key, CreatePartnerRequest req) => Codes(await commands.CreateAsync(t.TenantId, Master(t, key), req));
 
-        Assert.Equal(["AUTH.PERMISSION_DENIED"], Codes(await commands.CreateAsync(t.TenantId, t.Context("p"), Acme(t))));
+        Assert.Equal(["AUTH.PERMISSION_MISSING"], Codes(await commands.CreateAsync(t.TenantId, t.Context("p"), Acme(t))));
         Assert.Equal(["SCHEMA.REQUIRED_FIELD_MISSING", "SCHEMA.REQUIRED_FIELD_MISSING", "SCHEMA.REQUIRED_FIELD_MISSING", "SCHEMA.REQUIRED_FIELD_MISSING"],
             await Try("e1", new CreatePartnerRequest(D(), D(), [])));
         Assert.Equal(["SCHEMA.UNKNOWN_FIELD"], await Try("e2", Acme(t) with { Partner = D(("partner_code", "X"), ("partner_kind", "ORGANISATION"), ("status", "ANONYMISED")) }));
@@ -242,7 +242,7 @@ public class MasterCommandTests
         Assert.Equal(["CONFIG.DUPLICATE_CODE"], Codes(await commands.CreateAsync(t.TenantId, Config(t, "c2"), new(D(("code", "N30D2"), ("description", "x"), ("baseline_rule", "POSTING_DATE"), ("net_days", 1))))));
         Assert.Equal(["SCHEMA.INVALID_VALUE"], Codes(await commands.CreateAsync(t.TenantId, Config(t, "c3"), new(D(("code", "Z"), ("description", "x"), ("baseline_rule", "TOMORROW"), ("net_days", 1))))));
         Assert.Equal(["SCHEMA.INVALID_VALUE"], Codes(await commands.CreateAsync(t.TenantId, Config(t, "c4"), new(D(("code", "Z"), ("description", "x"), ("baseline_rule", "POSTING_DATE"), ("net_days", -1))))));
-        Assert.Equal(["AUTH.PERMISSION_DENIED"], Codes(await commands.CreateAsync(t.TenantId, Master(t, "c5"), new(D()))));   // write.master does not write terms
+        Assert.Equal(["AUTH.PERMISSION_MISSING"], Codes(await commands.CreateAsync(t.TenantId, Master(t, "c5"), new(D()))));   // write.master does not write terms
 
         var d = await commands.DeactivateAsync(t.TenantId, Config(t, "d1"), new(id, 3, "OBSOLETE"));
         Assert.True(d.Status == CommandStatus.Ok, Describe(d));

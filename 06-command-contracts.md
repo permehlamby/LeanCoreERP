@@ -78,7 +78,7 @@ The core returns codes and parameters only, no localised text. Rendering is an a
 | Area | Examples (non-exhaustive) |
 |---|---|
 | `SCHEMA` | `REQUIRED_FIELD_MISSING`, `INVALID_TYPE`, `INVALID_VALUE`, `UNKNOWN_FIELD`, `DUPLICATE_LINE_REF`, `DUPLICATE_ITEM_REF`, `BATCH_TOO_LARGE`, `NO_EFFECTIVE_CHANGE`, `TOO_MANY_ERRORS` |
-| `AUTH` | `PERMISSION_MISSING`, `COMPANY_NOT_ALLOWED`. The first slice used the placeholder `AUTH.PERMISSION_DENIED` for the first of these: `PERMISSION_MISSING` is the name in force and the code is renamed (13.9, F-IMPL-7) |
+| `AUTH` | `PERMISSION_MISSING`, `COMPANY_NOT_ALLOWED`. The first slice used the placeholder `AUTH.PERMISSION_DENIED` for the first of these: `PERMISSION_MISSING` is the name in force and the code was renamed on 2026-10-26 (13.9, F-IMPL-7) |
 | `IDEMPOTENCY` | `KEY_REUSED_DIFFERENT_REQUEST`, `KEY_EXPIRED_REUSE` |
 | `POSTING` | `OUTSIDE_WINDOW` (a posting date outside the posting window, 04, 4.1). Replaces `PERIOD.OUTSIDE_POSTING_WINDOW` |
 | `SERIES` | `NO_ASSIGNMENT` (no number series assignment for the document type, ledger and fiscal year of the posting date, 04, 5.2. Replaces `MASTER.NUMBER_SERIES_NOT_ASSIGNED`), `LEGAL_REQUIRES_YEAR` (`is_legal` series without `include_fiscal_year`, 04, 5.1), `EFFECTIVE_FROM_INVALID` (`number-series-assignments:create` with an `effective_from` that is not a fiscal year start or breaks the continuity rule, 04, 5.2, A3) |
@@ -674,6 +674,6 @@ Applied here and in 07, 09, 12: the error area `PACKAGE` with nine codes (2.4), 
 
 Applied here: the default ledger and `LEDGER.NOT_FOUND` (5.2, 2.4, ADR-228), the points settled for `journal-documents:reverse` (5.3, F-IMPL-15), `PERIOD.STATUS_INVALID` and the reopen reason vocabulary (7.3, F-IMPL-14), and the index rows of 2.4 for the codes that the first slice returns and the specs did not name (F-IMPL-7). `BALANCE.ROUNDING_ACCOUNT_MISSING` stays and now has its contract in ADR-230, `LIMIT.ROUNDING_DIFFERENCE` is gone.
 
-**Renames that the code of the slice owes to this index** (the slice used placeholders): `AUTH.PERMISSION_DENIED` becomes `AUTH.PERMISSION_MISSING`, `DOCUMENT.NOT_BALANCED` becomes `BALANCE.UNBALANCED_TC` in the posting command. The codes of 2.4 that the slice already uses under their right name are not listed here.
+**Renames of the slice to this index (done 2026-10-26).** The placeholders of the first commands are gone: `AUTH.PERMISSION_DENIED` is `AUTH.PERMISSION_MISSING` in every command, and the posting command answers `BALANCE.UNBALANCED_TC` where it said `DOCUMENT.NOT_BALANCED`. The codes of 2.4 that the slice already used under their right name are not listed here.
 
 **`journal-documents:change-open-fields`** is built for the fields named in 5.4 (a), see there. **Break kinds of `chains:verify`.** The verification of the slice names two breaks `DOCUMENT.NOT_BALANCED` (a stored document that does not balance) and `PERIOD.STATUS_MISMATCH` (a period or year status that its events do not give). They are not command errors. They are the kinds "balance" and "S column mismatch" of the `chains:verify` row in 7.4, and are renamed to those kinds when the verification is built to the contract.

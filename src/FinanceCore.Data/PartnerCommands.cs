@@ -26,7 +26,7 @@ public sealed class PartnerCommands(NpgsqlDataSource source)
     // ---------------------------------------------------------------------------------------------------------
     public Task<CommandResult<MasterResult>> CreateAsync(Guid tenantId, CommandContext ctx, CreatePartnerRequest req, CancellationToken ct = default)
     {
-        if (!ctx.Permissions.Contains(Permission)) return Task.FromResult(Reject(Error("AUTH.PERMISSION_DENIED", "P0", "", ("permission", Permission))));
+        if (!ctx.Permissions.Contains(Permission)) return Task.FromResult(Reject(Error("AUTH.PERMISSION_MISSING", "P0", "", ("permission", Permission))));
         var errors = ValidateContext(ctx);
         Require(req.Partner, "/partner", errors, "partner_code", "partner_kind");
         Require(req.Pii, "/pii", errors, "legal_name", "country_code");
@@ -154,7 +154,7 @@ public sealed class PartnerCommands(NpgsqlDataSource source)
     // ---------------------------------------------------------------------------------------------------------
     public Task<CommandResult<MasterResult>> UpdateAsync(Guid tenantId, CommandContext ctx, UpdatePartnerRequest req, CancellationToken ct = default)
     {
-        if (!ctx.Permissions.Contains(Permission)) return Task.FromResult(Reject(Error("AUTH.PERMISSION_DENIED", "P0", "", ("permission", Permission))));
+        if (!ctx.Permissions.Contains(Permission)) return Task.FromResult(Reject(Error("AUTH.PERMISSION_MISSING", "P0", "", ("permission", Permission))));
         var errors = ValidateContext(ctx);
         if (req.PartnerId == Guid.Empty) errors.Add(Error("SCHEMA.INVALID_VALUE", "P1", "/partner_id", ("reason", "required")));
         if (req.ExpectedVersion < 1) errors.Add(Error("SCHEMA.INVALID_VALUE", "P1", "/expected_version", ("reason", "required")));
@@ -278,7 +278,7 @@ public sealed class PartnerCommands(NpgsqlDataSource source)
     private Task<CommandResult<MasterResult>> StatusAsync(
         Guid tenantId, CommandContext ctx, MasterStatusRequest req, string command, string from, string to, string action, string eventType, string change, CancellationToken ct)
     {
-        if (!ctx.Permissions.Contains(Permission)) return Task.FromResult(Reject(Error("AUTH.PERMISSION_DENIED", "P0", "", ("permission", Permission))));
+        if (!ctx.Permissions.Contains(Permission)) return Task.FromResult(Reject(Error("AUTH.PERMISSION_MISSING", "P0", "", ("permission", Permission))));
         var errors = ValidateContext(ctx);
         if (req.Id == Guid.Empty) errors.Add(Error("SCHEMA.INVALID_VALUE", "P1", "/partner_id", ("reason", "required")));
         if (req.ExpectedVersion < 1) errors.Add(Error("SCHEMA.INVALID_VALUE", "P1", "/expected_version", ("reason", "required")));

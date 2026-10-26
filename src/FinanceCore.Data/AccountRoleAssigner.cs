@@ -22,7 +22,7 @@ public sealed class AccountRoleAssigner(NpgsqlDataSource source)
         Guid tenantId, CommandContext ctx, AssignAccountRoleRequest req, CancellationToken ct = default)
     {
         if (!ctx.Permissions.Contains(Permission))
-            return Reject(new CommandError("AUTH.PERMISSION_DENIED", "P0", "", new Dictionary<string, object?> { ["permission"] = Permission }));
+            return Reject(new CommandError("AUTH.PERMISSION_MISSING", "P0", "", new Dictionary<string, object?> { ["permission"] = Permission }));
 
         var shape = new List<CommandError>();
         void Invalid(string path, string reason) =>

@@ -146,7 +146,7 @@ public class FiscalYearTests
         var t = await TestTenant.CreateAsync(bare: true);
         var opener = new FiscalYearOpener(t.App);
         var denied = await opener.OpenAsync(t.TenantId, t.Context("p", "journal.post"), new(t.CompanyId, 2026));
-        Assert.Equal(["AUTH.PERMISSION_DENIED"], denied.Errors.Select(e => e.Code));
+        Assert.Equal(["AUTH.PERMISSION_MISSING"], denied.Errors.Select(e => e.Code));
 
         var unknown = await opener.OpenAsync(t.TenantId, Admin(t, "u"), new(Guid.NewGuid(), 2026));
         Assert.Equal(["COMPANY.NOT_FOUND"], unknown.Errors.Select(e => e.Code));

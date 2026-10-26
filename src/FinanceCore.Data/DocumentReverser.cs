@@ -26,7 +26,7 @@ public sealed class DocumentReverser(NpgsqlDataSource source)
         Guid tenantId, CommandContext ctx, ReverseDocumentRequest req, CancellationToken ct = default)
     {
         if (!ctx.Permissions.Contains(Permission))
-            return Reject(JournalDocumentPoster.Error("AUTH.PERMISSION_DENIED", "P0", "", ("permission", Permission)));
+            return Reject(JournalDocumentPoster.Error("AUTH.PERMISSION_MISSING", "P0", "", ("permission", Permission)));
 
         var shape = new List<CommandError>();
         void Invalid(string path, string reason) => shape.Add(JournalDocumentPoster.Error("SCHEMA.INVALID_VALUE", "P1", path, ("reason", reason)));

@@ -199,7 +199,7 @@ public class ClearingResetTests
         Assert.Equal(["SCHEMA.INVALID_VALUE"], Codes(await Reset(s, "e2", c.ClearingId, date: "2026-03-30")));   // before the clearing
         Assert.Equal(["REVERSAL.REASON_NOT_ALLOWED"], Codes(await Reset(s, "e3", c.ClearingId, reason: "RERUN")));
         Assert.Equal(["REVERSAL.REASON_REQUIRED"], Codes(await Reset(s, "e4", c.ClearingId, reason: "")));
-        Assert.Equal(["AUTH.PERMISSION_DENIED"], Codes(await new ClearingPoster(s.Tenant.App).ResetAsync(s.Tenant.TenantId, s.Tenant.Context("e5"),
+        Assert.Equal(["AUTH.PERMISSION_MISSING"], Codes(await new ClearingPoster(s.Tenant.App).ResetAsync(s.Tenant.TenantId, s.Tenant.Context("e5"),
             new ResetClearingRequest(s.Tenant.CompanyId, c.ClearingId, new DateOnly(2026, 4, 5), "ERROR", null))));
         Assert.Equal(["PERIOD.NOT_FOUND"], Codes(await Reset(s, "e6", c.ClearingId, date: "2027-02-01")));
         Assert.Equal(1L, await s.Tenant.ScalarAsync<long>("select count(*) from core.clearing where tenant_id = @t"));

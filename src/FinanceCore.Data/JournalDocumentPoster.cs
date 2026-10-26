@@ -31,7 +31,7 @@ public sealed class JournalDocumentPoster(NpgsqlDataSource source)
     {
         // P0
         if (!ctx.Permissions.Contains(PostPermission))
-            return Reject(Error("AUTH.PERMISSION_DENIED", "P0", "", ("permission", PostPermission)));
+            return Reject(Error("AUTH.PERMISSION_MISSING", "P0", "", ("permission", PostPermission)));
 
         // P1, schema part
         List<CommandError> shape = ValidateShape(ctx, req);
@@ -192,7 +192,7 @@ public sealed class JournalDocumentPoster(NpgsqlDataSource source)
 
         // P6 (TC balance) is cheap and independent, so it is reported with the other errors.
         decimal sumTc = req.Lines.Sum(l => l.AmountTc);
-        if (sumTc != 0m) errors.Add(Error("DOCUMENT.NOT_BALANCED", "P6", "lines", ("currency", "TC"), ("difference", sumTc)));
+        if (sumTc != 0m) errors.Add(Error("BALANCE.UNBALANCED_TC", "P6", "lines", ("currency", "TC"), ("difference", sumTc)));
 
         if (errors.Count > 0) return CommandResult<PostedDocument>.Rejected(errors.Take(100).ToList());
 

@@ -92,7 +92,7 @@ public class PostingTests
         var r = await new JournalDocumentPoster(t.App).PostAsync(t.TenantId, t.Context("unbal"), req);
 
         Assert.Equal(CommandStatus.Rejected, r.Status);
-        Assert.Contains("DOCUMENT.NOT_BALANCED", Codes(r));
+        Assert.Contains("BALANCE.UNBALANCED_TC", Codes(r));
         Assert.Equal(0L, await t.ScalarAsync<long>("select last_number from core.number_range_counter where tenant_id = @t and series_id = @s", ("s", t.SeriesId)));
         Assert.Equal(0L, await t.ScalarAsync<long>("select count(*) from core.command_log where tenant_id = @t"));
     }
@@ -112,7 +112,7 @@ public class PostingTests
         Assert.Contains("ACCOUNT.POSTING_BLOCKED", codes);
         Assert.Contains("ACCOUNT.NOT_FOUND", codes);
         Assert.Contains("PERIOD.NOT_FOUND", codes);
-        Assert.Contains("DOCUMENT.NOT_BALANCED", codes);
+        Assert.Contains("BALANCE.UNBALANCED_TC", codes);
         Assert.Contains("lines[1].account_id", r.Errors.Select(e => e.Path));
     }
 
@@ -123,7 +123,7 @@ public class PostingTests
         var poster = new JournalDocumentPoster(t.App);
 
         var denied = await poster.PostAsync(t.TenantId, t.Context("p", "read.ledger"), t.Journal());
-        Assert.Equal(["AUTH.PERMISSION_DENIED"], Codes(denied));
+        Assert.Equal(["AUTH.PERMISSION_MISSING"], Codes(denied));
 
         var payment = await poster.PostAsync(t.TenantId, t.Context("s"), t.Journal() with { DocumentType = "PAYMENT" });
         Assert.Contains("SERIES.NO_ASSIGNMENT", Codes(payment));

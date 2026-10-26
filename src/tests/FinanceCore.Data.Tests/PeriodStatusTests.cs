@@ -148,9 +148,9 @@ public class PeriodStatusTests
         Assert.Equal(["PERIOD.NOT_FOUND"], Codes(await cmds.HardCloseAsync(t.TenantId, Hard(t, "b"), P(t, 1, 2030))));
 
         // each command needs its own permission: period.admin does not hard-close
-        Assert.Equal(["AUTH.PERMISSION_DENIED"], Codes(await cmds.HardCloseAsync(t.TenantId, Soft(t, "c"), P(t, 1))));
-        Assert.Equal(["AUTH.PERMISSION_DENIED"], Codes(await cmds.SoftCloseAsync(t.TenantId, Hard(t, "d"), P(t, 1))));
-        Assert.Equal(["AUTH.PERMISSION_DENIED"],
+        Assert.Equal(["AUTH.PERMISSION_MISSING"], Codes(await cmds.HardCloseAsync(t.TenantId, Soft(t, "c"), P(t, 1))));
+        Assert.Equal(["AUTH.PERMISSION_MISSING"], Codes(await cmds.SoftCloseAsync(t.TenantId, Hard(t, "d"), P(t, 1))));
+        Assert.Equal(["AUTH.PERMISSION_MISSING"],
             Codes(await cmds.ReopenAsync(t.TenantId, Hard(t, "e"), new(P(t, 1), "OPEN", "CORRECTION", "x"))));
         Assert.Equal("OPEN", await Status(t, 1));
     }

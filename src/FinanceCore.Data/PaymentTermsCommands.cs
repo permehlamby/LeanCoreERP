@@ -19,7 +19,7 @@ public sealed class PaymentTermsCommands(NpgsqlDataSource source)
 
     public Task<CommandResult<MasterResult>> CreateAsync(Guid tenantId, CommandContext ctx, CreatePaymentTermsRequest req, CancellationToken ct = default)
     {
-        if (!ctx.Permissions.Contains(Permission)) return Task.FromResult(Reject(Error("AUTH.PERMISSION_DENIED", "P0", "", ("permission", Permission))));
+        if (!ctx.Permissions.Contains(Permission)) return Task.FromResult(Reject(Error("AUTH.PERMISSION_MISSING", "P0", "", ("permission", Permission))));
         var errors = ValidateContext(ctx);
         Require(req.Fields, "/fields", errors, "code", "description", "baseline_rule", "net_days");
         var patches = Validate(req.Fields, MasterFields.PaymentTerms, "/fields", errors);
@@ -57,7 +57,7 @@ public sealed class PaymentTermsCommands(NpgsqlDataSource source)
 
     public Task<CommandResult<MasterResult>> UpdateAsync(Guid tenantId, CommandContext ctx, UpdatePaymentTermsRequest req, CancellationToken ct = default)
     {
-        if (!ctx.Permissions.Contains(Permission)) return Task.FromResult(Reject(Error("AUTH.PERMISSION_DENIED", "P0", "", ("permission", Permission))));
+        if (!ctx.Permissions.Contains(Permission)) return Task.FromResult(Reject(Error("AUTH.PERMISSION_MISSING", "P0", "", ("permission", Permission))));
         var errors = ValidateContext(ctx);
         if (req.PaymentTermsId == Guid.Empty) errors.Add(Error("SCHEMA.INVALID_VALUE", "P1", "/payment_terms_id", ("reason", "required")));
         if (req.ExpectedVersion < 1) errors.Add(Error("SCHEMA.INVALID_VALUE", "P1", "/expected_version", ("reason", "required")));
@@ -107,7 +107,7 @@ public sealed class PaymentTermsCommands(NpgsqlDataSource source)
     private Task<CommandResult<MasterResult>> StatusAsync(
         Guid tenantId, CommandContext ctx, MasterStatusRequest req, string command, bool deactivate, string action, string eventType, string change, CancellationToken ct)
     {
-        if (!ctx.Permissions.Contains(Permission)) return Task.FromResult(Reject(Error("AUTH.PERMISSION_DENIED", "P0", "", ("permission", Permission))));
+        if (!ctx.Permissions.Contains(Permission)) return Task.FromResult(Reject(Error("AUTH.PERMISSION_MISSING", "P0", "", ("permission", Permission))));
         var errors = ValidateContext(ctx);
         if (req.Id == Guid.Empty) errors.Add(Error("SCHEMA.INVALID_VALUE", "P1", "/payment_terms_id", ("reason", "required")));
         if (req.ExpectedVersion < 1) errors.Add(Error("SCHEMA.INVALID_VALUE", "P1", "/expected_version", ("reason", "required")));

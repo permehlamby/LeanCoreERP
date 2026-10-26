@@ -60,7 +60,7 @@ public sealed class PeriodStatusCommands(NpgsqlDataSource source)
     {
         string permission = Permission(kind);
         if (!ctx.Permissions.Contains(permission))
-            return Reject(new CommandError("AUTH.PERMISSION_DENIED", "P0", "", new Dictionary<string, object?> { ["permission"] = permission }));
+            return Reject(new CommandError("AUTH.PERMISSION_MISSING", "P0", "", new Dictionary<string, object?> { ["permission"] = permission }));
 
         var shape = new List<CommandError>();
         void Invalid(string path, string reason) =>

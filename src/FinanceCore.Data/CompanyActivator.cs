@@ -262,5 +262,5 @@ public sealed class CompanyActivator(NpgsqlDataSource source)
             : CommandResult<ReadinessReport>.Rejected(FailedChecks(report)) with { Value = report };
 
     private static CommandError Permission(string permission) =>
-        new("AUTH.PERMISSION_DENIED", "P0", "", new Dictionary<string, object?> { ["permission"] = permission });
+        new("AUTH.PERMISSION_MISSING", "P0", "", new Dictionary<string, object?> { ["permission"] = permission });
 }
