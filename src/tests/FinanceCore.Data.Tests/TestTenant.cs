@@ -49,7 +49,7 @@ public sealed class TestTenant
     /// <param name="withRoles">The six roles that activation needs, as default rows on accounts 7900 to 7940 and 8100.</param>
     public static async Task<TestTenant> CreateAsync(
         bool dkkToEurRate = true, bool bare = false, int specialPeriods = 0, int firstMonth = 1, string labelRule = "START",
-        bool withRoles = true)
+        bool withRoles = true, bool withRetention = true)
     {
         var t = new TestTenant();
 
@@ -71,6 +71,9 @@ public sealed class TestTenant
               values (@t, @c, 'C1', 'Test A/S', 'DK', 'DKK', 'EUR', @cal, case when @bare then 'DRAFT' else 'ACTIVE' end);
             insert into core.company_setting_version (tenant_id, company_id, effective_from)
               values (@t, @c, timestamptz '2026-01-01 00:00:00+00');
+            insert into core.retention_rule (tenant_id, company_id, rule_id, effective_from, record_class, country_code, retention_years, start_event, created_by)
+              select @t, @c, gen_random_uuid(), timestamptz '2000-01-01 00:00:00+00', v.cls, 'DK', v.years, v.start, 'test' from (values
+                ('LEDGER', 10, 'FISCAL_YEAR_END'), ('LEGAL_SNAPSHOT', 5, 'RECORD_DATE')) v(cls, years, start) where @retention;
             insert into core.ledger (tenant_id, company_id, ledger_id, ledger_code) values (@t, @c, @l, 'L1');
             insert into core.group_membership (tenant_id, company_id, valid_from, group_id) values (@t, @c, date '2026-01-01', @grp);
             insert into core.gl_account (tenant_id, company_id, account_id, account_no, name, account_type, tax_code_rule, posting_blocked) values
@@ -118,6 +121,7 @@ public sealed class TestTenant
         cmd.Parameters.AddWithValue("dkkEur", dkkToEurRate);
         cmd.Parameters.AddWithValue("bare", bare);
         cmd.Parameters.AddWithValue("roles", withRoles);
+        cmd.Parameters.AddWithValue("retention", withRetention);
         cmd.Parameters.AddWithValue("rounding", t.Rounding);
         cmd.Parameters.AddWithValue("special", (short)specialPeriods);
         cmd.Parameters.AddWithValue("firstMonth", (short)firstMonth);

@@ -456,6 +456,8 @@ public sealed partial class ClearingPoster(NpgsqlDataSource source)
 
         await InsertDocumentAsync(tx, tenantId, req, ctx, documentId, ledgerId, series, fiscalYear, period.PeriodNo!.Value, sequenceNo, number,
             period.SoftCloseOverride, postedAt, chainSeq, ledgerHash, rowHash, transactionCurrency, DifferenceType, null, null, ClearingRules.PostCommand, ct);
+        if (await LegalSnapshots.WriteAsync(tx, tenantId, req.CompanyId, documentId, fiscalYear, req.ClearingDate, postedAt, ct) is { } noSnapshot)
+            return new Built([noSnapshot], Guid.Empty, "", [], null);
         foreach (PostedLine l in new[] { fx, diff })
             await InsertLineAsync(tx, tenantId, req.CompanyId, documentId, ledgerId, fiscalYear, period.PeriodNo!.Value, req.ClearingDate, l, null, ct);
         // The row starts as OPEN with nothing cleared. The clearing is inserted next and then updates it to CLEARED.

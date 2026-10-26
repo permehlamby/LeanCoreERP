@@ -354,6 +354,8 @@ public sealed partial class ClearingPoster
 
         await InsertDocumentAsync(tx, tenantId, synthetic, ctx, mirrorId, ledgerId, series, fiscalYear, periodNo, sequenceNo, number,
             period.SoftCloseOverride, postedAt, chainSeq, ledgerHash, rowHash, currency, ResetDifferenceType, originalId, req.ReasonCode, ClearingRules.ResetCommand, ct);
+        if (await LegalSnapshots.WriteAsync(tx, tenantId, req.CompanyId, mirrorId, fiscalYear, synthetic.ClearingDate, postedAt, ct) is { } noSnapshot)
+            return new MirrorBuilt([noSnapshot], Guid.Empty, "", [], null);
         (int, string, decimal, decimal, decimal?)? offset = null;
         foreach (var (m, originalLine, open) in lines)
         {

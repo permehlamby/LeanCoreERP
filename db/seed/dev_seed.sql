@@ -111,3 +111,13 @@ on conflict do nothing;
 insert into platform.schema_migration (version, description)
 values ('seed-dev', 'development seed')
 on conflict (version) do nothing;
+
+-- Retention rules a company needs before it can be activated (12, 4.1, 07, 11.3): the ledger and the legal snapshot of a document
+insert into core.retention_rule (tenant_id, company_id, rule_id, effective_from, record_class, country_code, retention_years, start_event, legal_basis, created_by)
+select '11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222201', r.id::uuid, timestamptz '2026-01-01 00:00:00+00',
+       r.cls, 'DK', r.years, r.start, 'Dev seed', 'seed'
+from (values
+    ('99999999-9999-4999-8999-999999999901', 'LEDGER', 10, 'FISCAL_YEAR_END'),
+    ('99999999-9999-4999-8999-999999999902', 'LEGAL_SNAPSHOT', 5, 'RECORD_DATE')
+) as r(id, cls, years, start)
+on conflict do nothing;

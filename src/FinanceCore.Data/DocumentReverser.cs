@@ -270,6 +270,8 @@ public sealed class DocumentReverser(NpgsqlDataSource source)
 
         await InsertDocumentAsync(tx, tenantId, companyId, ctx, req, mirrorId, ledgerId, series.SeriesId, fiscalYear, periodNo, sequenceNo,
             number, recheck.SoftCloseOverride, postedAt, currency, reversalDate, chainSeq, headHash, rowHash, ct);
+        if (await LegalSnapshots.WriteAsync(tx, tenantId, companyId, mirrorId, fiscalYear, reversalDate, postedAt, ct) is { } noSnapshot)
+            return Reject(noSnapshot);
         foreach (var m in mirrorLines) await InsertLineAsync(tx, m, ct);
         // The mirror's open items start OPEN with nothing cleared. The automatic clearing below clears them (03, 5.7, B3).
         foreach (var m in mirrorLines.Where(m => original.OpenItems.ContainsKey((int)m["line_no"]!)))

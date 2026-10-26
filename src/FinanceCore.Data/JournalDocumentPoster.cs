@@ -348,6 +348,8 @@ public sealed class JournalDocumentPoster(NpgsqlDataSource source)
         // Insert document and lines
         await InsertDocumentAsync(tx, tenantId, req, ctx, documentId, ledgerId.Value, series, fiscalYear, recheck.PeriodNo!.Value,
             sequenceNo, number, softOverride, postedAt, chainSeq, headHash, rowHash, ct);
+        if (await LegalSnapshots.WriteAsync(tx, tenantId, req.CompanyId, documentId, fiscalYear, req.PostingDate, postedAt, ct) is { } noSnapshot)
+            return Reject(noSnapshot);
         foreach (PostedLine l in lines)
             await InsertLineAsync(tx, tenantId, req, documentId, ledgerId.Value, fiscalYear, recheck.PeriodNo!.Value,
                 l.LineType == "BASE" ? req.Lines[l.LineNo - 1].LineText : null, l, ct);

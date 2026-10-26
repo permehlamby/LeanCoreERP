@@ -726,7 +726,7 @@ Added by ADR-224 and ADR-227 (spec 23): `NOT_A_GROUP_MEMBER`, `OWNERSHIP_INVALID
 | At least one active `company_vat_registration` if VAT codes are used | 08, 4.1 |
 | Migration roles `MIGRATION_CLEARING` and `HISTORY_RESULT` assigned when a migration batch is open or about to be opened | 13, 4.1 |
 | Role `GR_IR_WRITE_OFF` resolvable in account determination (at least a catch-all rule) when `gr-ir:write-off` is used (warning, not error: the command is rejected with `CONFIG.ROLE_NOT_ASSIGNED` if the role is missing when it runs) | 6.3, 11, 7.5 |
-| Retention rule for each record class of the company (warning, not error) | 12, 4.1 |
+| A retention rule in force for the classes `LEDGER` and `LEGAL_SNAPSHOT`, because every document dates its legal snapshot from them (check `RETENTION_RULES`, error, F-IMPL-27). A rule for each other record class of the company stays a warning | 12, 4.1 |
 | Tax determination covers every active tax code (warning, not error) | 8.4 |
 | A rate valid at the first tax date for every deduction key that an active tax code version names (warning, not error) | 8.6 |
 | `einvoice_rule_set` set in the current `company_setting_version` when the company has a seller `electronic_address` (warning, not error) | 5.5, 12, 10 |

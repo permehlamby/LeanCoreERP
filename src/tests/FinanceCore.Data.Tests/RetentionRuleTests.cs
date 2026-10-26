@@ -17,7 +17,7 @@ public class RetentionRuleTests
     [Fact]
     public async Task ARuleIsCreatedVersionedLoggedAndReplayed()
     {
-        var t = await TestTenant.CreateAsync();
+        var t = await TestTenant.CreateAsync(withRetention: false);
         var commands = new RetentionRuleCommands(t.App);
 
         var first = await commands.CreateVersionAsync(t.TenantId, Manage(t, "r1"), Rule(t));
@@ -50,7 +50,7 @@ public class RetentionRuleTests
     [Fact]
     public async Task PermissionCompanyCountryAndShapeAreChecked()
     {
-        var t = await TestTenant.CreateAsync();
+        var t = await TestTenant.CreateAsync(withRetention: false);
         var commands = new RetentionRuleCommands(t.App);
 
         var denied = await commands.CreateVersionAsync(t.TenantId, t.Context("p", "write.config"), Rule(t));
@@ -77,7 +77,7 @@ public class RetentionRuleTests
     [Fact]
     public async Task ANewVersionMustStartAfterTheNewestOne()
     {
-        var t = await TestTenant.CreateAsync();
+        var t = await TestTenant.CreateAsync(withRetention: false);
         var commands = new RetentionRuleCommands(t.App);
         var first = await commands.CreateVersionAsync(t.TenantId, Manage(t, "a"), Rule(t));
         DateTime start = first.Value!.EffectiveFrom;
@@ -96,7 +96,7 @@ public class RetentionRuleTests
     [Fact]
     public async Task TheVersionsReadBackGiveTheRightDateForARecord()
     {
-        var t = await TestTenant.CreateAsync();
+        var t = await TestTenant.CreateAsync(withRetention: false);
         var commands = new RetentionRuleCommands(t.App);
         var v1 = await commands.CreateVersionAsync(t.TenantId, Manage(t, "a"), Rule(t, years: 5));
         var v2 = await commands.CreateVersionAsync(t.TenantId, Manage(t, "b"), Rule(t, years: 10, from: v1.Value!.EffectiveFrom.AddDays(30)));
@@ -115,7 +115,7 @@ public class RetentionRuleTests
     [Fact]
     public async Task TheTableIsInsertOnlyAndAVersionKeepsItsClassAndCountry()
     {
-        var t = await TestTenant.CreateAsync();
+        var t = await TestTenant.CreateAsync(withRetention: false);
         var commands = new RetentionRuleCommands(t.App);
         var made = await commands.CreateVersionAsync(t.TenantId, Manage(t, "a"), Rule(t));
         Guid ruleId = made.Value!.RuleId;
@@ -138,8 +138,8 @@ public class RetentionRuleTests
     [Fact]
     public async Task OnlyTheTenantsOwnRulesAreVisible()
     {
-        var a = await TestTenant.CreateAsync();
-        var b = await TestTenant.CreateAsync();
+        var a = await TestTenant.CreateAsync(withRetention: false);
+        var b = await TestTenant.CreateAsync(withRetention: false);
         var commands = new RetentionRuleCommands(a.App);
         await commands.CreateVersionAsync(a.TenantId, Manage(a, "x"), Rule(a));
 

@@ -24,7 +24,7 @@ public sealed class CompanyActivator(NpgsqlDataSource source)
     public static readonly string[] NotChecked =
     [
         "ORDER_SETTING_VERSION", "ACCOUNT_DETERMINATION", "VAT_REGISTRATION", "MIGRATION_ROLES",
-        "GR_IR_WRITE_OFF", "RETENTION_RULES", "TAX_DETERMINATION", "DEDUCTION_KEY_RATES", "EINVOICE_RULE_SET", "CONSOLIDATION"
+        "GR_IR_WRITE_OFF", "TAX_DETERMINATION", "DEDUCTION_KEY_RATES", "EINVOICE_RULE_SET", "CONSOLIDATION"
     ];
 
     public async Task<CommandResult<ReadinessReport>> CheckReadinessAsync(
@@ -187,6 +187,14 @@ public sealed class CompanyActivator(NpgsqlDataSource source)
         // the general journal (finding F-IMPL-12).
         checks.Add(new("SERIES_ASSIGNED_JOURNAL", await Scalar<int?>(
             "select 1 from core.number_series_assignment where tenant_id = @t and company_id = @c and document_type = 'JOURNAL' limit 1") is not null, null));
+
+        // 12, 4.1: every document has a legal snapshot with a retention date, so the ledger and the snapshot need a rule that is in force now.
+        // The other record classes stay a warning for the commands that need them (F-IMPL-27).
+        var noRule = new List<string>();
+        foreach (string cls in new[] { "LEDGER", "LEGAL_SNAPSHOT" })
+            if (await Scalar<int?>("select 1 from core.retention_rule where tenant_id = @t and company_id = @c and record_class = @k and effective_from <= now() limit 1", ("k", cls)) is null)
+                noRule.Add(cls);
+        checks.Add(new("RETENTION_RULES", noRule.Count == 0, noRule.Count == 0 ? null : "no retention rule in force for: " + string.Join(", ", noRule)));
 
         checks.AddRange(await RoleChecksAsync(tx, tenantId, companyId, needed.Select(c => c!).ToArray(), ct));
 

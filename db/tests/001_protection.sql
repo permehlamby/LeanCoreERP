@@ -40,10 +40,17 @@ begin
     insert into test_result (name, ok, detail) values (p_name, n = p_expected, 'got ' || coalesce(n::text, 'null') || ', expected ' || p_expected);
 end $$;
 
+-- The legal snapshot every document needs (0020)
+create function pg_temp.insert_snapshot(p_doc uuid) returns void language plpgsql as $$
+begin
+    insert into core.document_legal_snapshot (tenant_id, company_id, document_id, retention_until)
+    values ('11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222201', p_doc, date '2036-12-31');
+end $$;
+
 -- A document of two lines with the genesis or a given predecessor hash (the row_hash is a fixed test value: the SQL
 -- layer checks links and balance, the hash itself is checked by the application and chains:verify).
 create function pg_temp.insert_doc(p_seq bigint, p_prev bytea, p_hash bytea, p_doc uuid, p_number text,
-                                   p_amount numeric, p_key text) returns void language plpgsql as $$
+                                   p_amount numeric, p_key text, p_snapshot boolean default true) returns void language plpgsql as $$
 begin
     insert into core.journal_document (tenant_id, company_id, document_id, ledger_id, document_type, is_system_generated,
         number_series_id, fiscal_year, sequence_no, document_number, fiscal_period, document_date, posting_date, posted_at,
@@ -62,6 +69,7 @@ begin
       ('11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222201', p_doc, 2,
        '44444444-4444-4444-8444-444444444401', 'BASE', '55555555-5555-4555-8555-555555555502', date '2026-10-21', 2026, 10,
        -p_amount, -p_amount, 'DKK', 1, -round(p_amount * 0.134, 4), 'EUR', 0.134, 'SPOT', date '2026-10-21');
+    if p_snapshot then perform pg_temp.insert_snapshot(p_doc); end if;
 end $$;
 
 -- ---------------------------------------------------------------------------------------------------------
@@ -194,10 +202,24 @@ begin
         '44444444-4444-4444-8444-444444444401', 'JOURNAL', false, '66666666-6666-4666-8666-666666666601', 2026, 3, 'GL-2026-000003', 10,
         date '2026-10-21', date '2026-10-21', now(), 'DKK', 'EXTERNAL', 'TEST', 'k3', 'journal-documents:post', 'tester', 'c', 2,
         sha256('doc1'), sha256('doc3'), 2);
+    perform pg_temp.insert_snapshot('bbbbbbbb-0000-4000-8000-000000000003');
     update core.chain_head set last_seq = 2, last_hash = sha256('doc3'), updated_at = now() where chain_type = 'LEDGER';
     set constraints all immediate;
 end $$;
 select pg_temp.expect_error('document: a document without lines is rejected', $t$select pg_temp.post_no_lines()$t$, '%has no lines%');
+
+create function pg_temp.post_no_snapshot() returns void language plpgsql as $$
+begin
+    perform pg_temp.insert_doc(2, sha256('doc1'), sha256('doc2'), 'bbbbbbbb-0000-4000-8000-000000000006', 'GL-2026-000002', 50, 'k6', false);
+    update core.number_range_counter set last_number = 2, updated_at = now();
+    update core.chain_head set last_seq = 2, last_hash = sha256('doc2'), updated_at = now() where chain_type = 'LEDGER';
+    set constraints all immediate;
+end $$;
+select pg_temp.expect_error('snapshot: a document without a legal snapshot is rejected at commit', $t$select pg_temp.post_no_snapshot()$t$, '%has no legal snapshot%');
+select pg_temp.expect_error('snapshot: a snapshot cannot be updated', $t$update core.document_legal_snapshot set retention_until = date '2099-01-01'$t$, '%append-only%');
+select pg_temp.expect_error('snapshot: a snapshot cannot be deleted', $t$delete from core.document_legal_snapshot$t$, '%append-only%');
+select pg_temp.expect_error('retention rule: a version cannot be updated', $t$update core.retention_rule set retention_years = 99$t$, '%append-only%');
+select pg_temp.expect_error('retention rule: a version cannot be deleted', $t$delete from core.retention_rule$t$, '%append-only%');
 
 create function pg_temp.post_wrong_prev() returns void language plpgsql as $$
 begin
