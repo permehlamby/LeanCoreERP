@@ -346,6 +346,116 @@ select pg_temp.expect_error('outbox: the posting role cannot purge',
 select pg_temp.expect_ok('outbox: the retention role can purge', $t$set local role cmd_retention; delete from core.outbox_event$t$);
 
 -- ---------------------------------------------------------------------------------------------------------
+-- change_log (02, 8) and master_change_log (07, 10.1): append-only evidence, shape checks, grants, isolation.
+-- Uses the document bbbbbbbb-...0001 that the posting tests above left in this transaction.
+-- ---------------------------------------------------------------------------------------------------------
+create function pg_temp.cl(p_sql_values text) returns text language sql as $$
+    select 'insert into core.change_log (tenant_id, change_set_id, company_id, entity_type, document_id, clearing_id, line_no, '
+        || 'field_name, value_type, old_value, new_value, lock_class, period_status, reason_code, changed_by, changed_at, '
+        || 'correlation_id, idempotency_key) values (' || p_sql_values || ')'
+$$;
+create function pg_temp.cl_row(p_entity text, p_doc text, p_clearing text, p_line text, p_old text, p_new text,
+                               p_class text, p_status text, p_reason text) returns text language sql as $$
+    select pg_temp.cl(format('%L, %L, %L, %L, %s, %s, %s, %L, %L, %s, %s, %L, %L, %L, %L, now(), %L, %L',
+        '11111111-1111-4111-8111-111111111111', 'cccccccc-0000-4000-8000-000000000001', '22222222-2222-4222-8222-222222222201',
+        p_entity, coalesce(quote_literal(p_doc) || '::uuid', 'null'), coalesce(quote_literal(p_clearing) || '::uuid', 'null'),
+        coalesce(p_line, 'null'), 'header_text', 'TEXT', coalesce(quote_literal(p_old), 'null'), coalesce(quote_literal(p_new), 'null'),
+        p_class, p_status, p_reason, 'tester', 'corr-cl', 'idem-cl'))
+$$;
+select pg_temp.expect_ok('change_log: the posting role can log an L2 change of a header',
+    format($t$set local role cmd_post; %s$t$, pg_temp.cl_row('DOCUMENT', 'bbbbbbbb-0000-4000-8000-000000000001', null, null, null, 'Text', 'L2', 'OPEN', 'CORRECTION')));
+select pg_temp.expect_ok('change_log: a line change names its line',
+    format($t$set local role cmd_post; %s$t$, pg_temp.cl_row('LINE', 'bbbbbbbb-0000-4000-8000-000000000001', null, '1', 'a', 'b', 'L2', 'SOFT_CLOSED', 'CORRECTION')));
+select pg_temp.expect_ok('change_log: the retention role can log the L1* overwrite of a legal snapshot',
+    format($t$set local role cmd_retention; %s$t$, pg_temp.cl_row('LEGAL_SNAPSHOT', 'bbbbbbbb-0000-4000-8000-000000000001', null, null, 'x', 'y', 'L1*', 'NONE', 'SYSTEM')));
+select pg_temp.expect_error('change_log: the configuration role cannot write it',
+    format($t$set local role cmd_config; %s$t$, pg_temp.cl_row('DOCUMENT', 'bbbbbbbb-0000-4000-8000-000000000001', null, null, null, 'Text', 'L2', 'OPEN', 'CORRECTION')),
+    '%permission denied%');
+select pg_temp.expect_error('change_log: a line entity without a line number is rejected',
+    format($t$set local role cmd_post; %s$t$, pg_temp.cl_row('LINE', 'bbbbbbbb-0000-4000-8000-000000000001', null, null, 'a', 'b', 'L2', 'OPEN', 'CORRECTION')),
+    '%violates check constraint%');
+select pg_temp.expect_error('change_log: a header entity with a line number is rejected',
+    format($t$set local role cmd_post; %s$t$, pg_temp.cl_row('DOCUMENT', 'bbbbbbbb-0000-4000-8000-000000000001', null, '1', 'a', 'b', 'L2', 'OPEN', 'CORRECTION')),
+    '%violates check constraint%');
+select pg_temp.expect_error('change_log: a document and a clearing at once is rejected',
+    format($t$set local role cmd_post; %s$t$, pg_temp.cl_row('DOCUMENT', 'bbbbbbbb-0000-4000-8000-000000000001', 'dddddddd-0000-4000-8000-000000000001', null, 'a', 'b', 'L2', 'OPEN', 'CORRECTION')),
+    '%violates check constraint%');
+select pg_temp.expect_error('change_log: neither a document nor a clearing is rejected',
+    format($t$set local role cmd_post; %s$t$, pg_temp.cl_row('DOCUMENT', null, null, null, 'a', 'b', 'L2', 'OPEN', 'CORRECTION')),
+    '%violates check constraint%');
+select pg_temp.expect_error('change_log: an L2 change in a hard-closed period cannot be logged (L3)',
+    format($t$set local role cmd_post; %s$t$, pg_temp.cl_row('DOCUMENT', 'bbbbbbbb-0000-4000-8000-000000000001', null, null, 'a', 'b', 'L2', 'HARD_CLOSED', 'CORRECTION')),
+    '%violates check constraint%');
+select pg_temp.expect_error('change_log: reason SYSTEM belongs to the L1* overwrite only',
+    format($t$set local role cmd_post; %s$t$, pg_temp.cl_row('DOCUMENT', 'bbbbbbbb-0000-4000-8000-000000000001', null, null, 'a', 'b', 'L2', 'OPEN', 'SYSTEM')),
+    '%violates check constraint%');
+select pg_temp.expect_error('change_log: L1* is for the legal snapshot only',
+    format($t$set local role cmd_retention; %s$t$, pg_temp.cl_row('DOCUMENT', 'bbbbbbbb-0000-4000-8000-000000000001', null, null, 'a', 'b', 'L1*', 'NONE', 'SYSTEM')),
+    '%violates check constraint%');
+select pg_temp.expect_error('change_log: a change that changes nothing is rejected',
+    format($t$set local role cmd_post; %s$t$, pg_temp.cl_row('DOCUMENT', 'bbbbbbbb-0000-4000-8000-000000000001', null, null, 'a', 'a', 'L2', 'OPEN', 'CORRECTION')),
+    '%violates check constraint%');
+select pg_temp.expect_error('change_log: an unknown document is rejected',
+    format($t$set local role cmd_post; %s$t$, pg_temp.cl_row('DOCUMENT', 'bbbbbbbb-0000-4000-8000-0000000000ff', null, null, 'a', 'b', 'L2', 'OPEN', 'CORRECTION')),
+    '%foreign key%');
+select pg_temp.expect_error('change_log: rows cannot be updated', $t$update core.change_log set reason_text = 'x'$t$, '%append-only%');
+select pg_temp.expect_error('change_log: rows cannot be deleted', $t$delete from core.change_log$t$, '%append-only%');
+select pg_temp.expect_error('change_log: the posting role has no delete', $t$set local role cmd_post; delete from core.change_log$t$, '%permission denied%');
+select pg_temp.expect_error('change_log: truncate is rejected', $t$truncate core.change_log$t$, '%append-only%');
+select pg_temp.expect_count('change_log: a command role reads the rows of its tenant',
+    $t$select pg_temp.count_as('cmd_read', 'select count(*) from core.change_log')$t$, 3);
+select set_config('app.tenant_id', '99999999-9999-4999-8999-999999999999', false);
+select pg_temp.expect_count('change_log: tenant B sees none of A''s rows',
+    $t$select pg_temp.count_as('cmd_read', 'select count(*) from core.change_log')$t$, 0);
+select set_config('app.tenant_id', '11111111-1111-4111-8111-111111111111', false);
+
+insert into core.command_log (tenant_id, command_log_id, company_id, idempotency_key, command_name, request_fingerprint, actor, correlation_id)
+values ('11111111-1111-4111-8111-111111111111', 'eeeeeeee-0000-4000-8000-000000000001', '22222222-2222-4222-8222-222222222201',
+        'mcl-1', 'gl-accounts:update', sha256('x'), 'tester', 'corr-mcl');
+create function pg_temp.mcl(p_action text, p_field text, p_pii boolean, p_old text, p_new text, p_log text default 'eeeeeeee-0000-4000-8000-000000000001')
+returns text language sql as $$
+    select format($f$insert into core.master_change_log (tenant_id, change_set_id, entity_type, entity_id, action, field_name, is_pii,
+        old_value, new_value, reason_code, changed_by, changed_at, correlation_id, command_log_id)
+        values ('11111111-1111-4111-8111-111111111111', 'ffffffff-0000-4000-8000-000000000001', 'GL_ACCOUNT', 'x', %L, %L, %L, %L, %L,
+        null, 'tester', now(), 'corr-mcl', %L); set constraints all immediate; set constraints all deferred$f$,
+        p_action, p_field, p_pii, p_old, p_new, p_log)
+$$;
+select pg_temp.expect_ok('master_change_log: the configuration role can log a field change',
+    format($t$set local role cmd_config; %s$t$, pg_temp.mcl('UPDATE', 'name', false, 'Old', 'New')));
+select pg_temp.expect_ok('master_change_log: a create has no field and no values',
+    format($t$set local role cmd_config; %s$t$, pg_temp.mcl('CREATE', null, false, null, null)));
+select pg_temp.expect_ok('master_change_log: a personal field is logged without values',
+    format($t$set local role cmd_config; %s$t$, pg_temp.mcl('UPDATE', 'email', true, null, null)));
+select pg_temp.expect_ok('master_change_log: the retention role can log an anonymisation',
+    format($t$set local role cmd_retention; %s$t$, pg_temp.mcl('ANONYMISE', 'email', true, null, null)));
+select pg_temp.expect_error('master_change_log: the posting role cannot write it',
+    format($t$set local role cmd_post; %s$t$, pg_temp.mcl('UPDATE', 'name', false, 'Old', 'New')), '%permission denied%');
+select pg_temp.expect_error('master_change_log: a personal value is rejected',
+    format($t$set local role cmd_config; %s$t$, pg_temp.mcl('UPDATE', 'email', true, 'a@b.dk', null)), '%violates check constraint%');
+select pg_temp.expect_error('master_change_log: an update names its field',
+    format($t$set local role cmd_config; %s$t$, pg_temp.mcl('UPDATE', null, false, 'Old', 'New')), '%violates check constraint%');
+select pg_temp.expect_error('master_change_log: a create names no field',
+    format($t$set local role cmd_config; %s$t$, pg_temp.mcl('CREATE', 'name', false, null, null)), '%violates check constraint%');
+select pg_temp.expect_error('master_change_log: a deactivation carries no values',
+    format($t$set local role cmd_config; %s$t$, pg_temp.mcl('DEACTIVATE', null, false, 'a', 'b')), '%violates check constraint%');
+select pg_temp.expect_error('master_change_log: an update that changes nothing is rejected',
+    format($t$set local role cmd_config; %s$t$, pg_temp.mcl('UPDATE', 'name', false, 'Same', 'Same')), '%violates check constraint%');
+select pg_temp.expect_error('master_change_log: an unknown action is rejected',
+    format($t$set local role cmd_config; %s$t$, pg_temp.mcl('RENAME', 'name', false, 'a', 'b')), '%violates check constraint%');
+select pg_temp.expect_error('master_change_log: a row needs the command log row of its command at commit',
+    format($t$set local role cmd_config; %s$t$, pg_temp.mcl('UPDATE', 'name', false, 'Old', 'New', 'eeeeeeee-0000-4000-8000-0000000000ff')),
+    '%foreign key%');
+select pg_temp.expect_error('master_change_log: rows cannot be updated', $t$update core.master_change_log set reason_code = 'X'$t$, '%append-only%');
+select pg_temp.expect_error('master_change_log: rows cannot be deleted', $t$delete from core.master_change_log$t$, '%append-only%');
+select pg_temp.expect_error('master_change_log: truncate is rejected', $t$truncate core.master_change_log$t$, '%append-only%');
+select pg_temp.expect_count('master_change_log: a command role reads the rows of its tenant',
+    $t$select pg_temp.count_as('cmd_read', 'select count(*) from core.master_change_log')$t$, 4);
+select set_config('app.tenant_id', '99999999-9999-4999-8999-999999999999', false);
+select pg_temp.expect_count('master_change_log: tenant B sees none of A''s rows',
+    $t$select pg_temp.count_as('cmd_read', 'select count(*) from core.master_change_log')$t$, 0);
+select set_config('app.tenant_id', '11111111-1111-4111-8111-111111111111', false);
+
+-- ---------------------------------------------------------------------------------------------------------
 -- Result
 -- ---------------------------------------------------------------------------------------------------------
 select name, case when ok then 'PASS' else 'FAIL' end as result, detail from test_result order by seq;

@@ -11,7 +11,7 @@ namespace FinanceCore.Data;
 /// account-role-assignments:create (07, 6.3, 11.1): writes one version row of the role table. The account must satisfy the rules
 /// of the role (CONFIG.ROLE_ACCOUNT_RULE_VIOLATED with the rule in the parameters). A change of a role is a new row with a later
 /// effective_from, never an update. Not in this slice: VAT_SETTLEMENT (it needs company_vat_registration, 08, 4.1), the system
-/// setting of tax_account, CONFIG.VALID_FROM_IN_CLOSED_PERIOD, master_change_log.
+/// setting of tax_account, CONFIG.VALID_FROM_IN_CLOSED_PERIOD, which 07, 6.3 item 3 says does not apply. No master_change_log row: it is a V table (07, 10.1).
 /// </summary>
 public sealed class AccountRoleAssigner(NpgsqlDataSource source)
 {
