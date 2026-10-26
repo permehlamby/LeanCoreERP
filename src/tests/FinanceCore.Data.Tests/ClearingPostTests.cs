@@ -187,7 +187,7 @@ public class ClearingPostTests
         var empty = await Clear(s, "e11", [I(a), I(b)], s.Tenant.Bank);   // an account that is not open-item managed
         Assert.Contains("CLEARING.NOT_AN_OPEN_ITEM", Codes(empty));
         Assert.Equal(["ACCOUNT_RULE.PARTNER_FORBIDDEN"], Codes(await Clear(s, "e12", [I(a), I(b)], partner: Guid.NewGuid())));
-        Assert.Equal(["LIMIT.CONTROL_ACCOUNT_NEEDS_PARTNER"], Codes(await Clear(s, "e13", [I(a), I(b)], s.Control)));
+        Assert.Equal(["ACCOUNT_RULE.PARTNER_REQUIRED"], Codes(await Clear(s, "e13", [I(a), I(b)], s.Control)));
         Assert.Equal(["SCHEMA.INVALID_VALUE"], Codes(await Clear(s, "e14", [I(a), I(b)], method: "REVERSAL")));
 
         Assert.Equal(0L, await s.Tenant.ScalarAsync<long>("select count(*) from core.clearing where tenant_id = @t"));

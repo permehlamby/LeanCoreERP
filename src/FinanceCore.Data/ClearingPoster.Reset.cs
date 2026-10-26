@@ -156,7 +156,7 @@ public sealed partial class ClearingPoster
         Guid clearingId = Guid.NewGuid();
         DateTime now = DateTime.UtcNow;
         DateTime clearedAt = new(now.Ticks - now.Ticks % 10, DateTimeKind.Utc);
-        var synthetic = new PostClearingRequest(req.CompanyId, c.AccountId, null, req.ClearingDate, "MANUAL", null, req.ReasonText, []);
+        var synthetic = new PostClearingRequest(req.CompanyId, c.AccountId, c.PartnerId, req.ClearingDate, "MANUAL", null, req.ReasonText, []);
 
         // D', the mirror of the difference document, posted before the clearing that points at it
         Guid? mirrorId = null; string? mirrorNumber = null; byte[]? mirrorHash = null;
@@ -366,7 +366,9 @@ public sealed partial class ClearingPoster
             {
                 // starts OPEN with nothing cleared: the reset is inserted next and then updates it to CLEARED
                 await using var cmd = tx.Command(
-                    "insert into core.journal_line_open_item (tenant_id, company_id, document_id, line_no, partner_id, cleared_amount_rc) values (@t, @c, @d, @n, @p, @rc)");
+                    "insert into core.journal_line_open_item (tenant_id, company_id, document_id, line_no, partner_id, due_date, cleared_amount_rc) values (@t, @c, @d, @n, @p, @due, @rc)");
+                // the mirror of the offset line carries the partner and the due date of D's offset line (mandatory on a control account)
+                cmd.Parameters.Add(new NpgsqlParameter("due", NpgsqlDbType.Date) { Value = (object?)d.OpenItemDueDates[originalLine] ?? DBNull.Value });
                 cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("c", req.CompanyId);
                 cmd.Parameters.AddWithValue("d", mirrorId); cmd.Parameters.AddWithValue("n", pl.LineNo);
                 cmd.Parameters.Add(new NpgsqlParameter("p", NpgsqlDbType.Uuid) { Value = (object?)d.OpenItems[originalLine]["partner_id"] ?? DBNull.Value });

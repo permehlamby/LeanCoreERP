@@ -201,16 +201,4 @@ public class ControlAccountTests
         Assert.Equal(["CONFIG.INVALID_REFERENCE"], Codes(await Change("c3", OI("payment_terms_id", s.Terms.ToString("D"), Guid.NewGuid().ToString()))));
         Assert.True((await Change("c4", OI("payment_terms_id", s.Terms.ToString("D"), other.Value!.EntityId.ToString("D")))).Status == CommandStatus.Ok);
     }
-
-    [Fact]
-    public async Task AClearingOfAControlAccountWaitsForTheNextStep()
-    {
-        var s = await CreateAsync();
-        Guid a = (await Post(s, "a", Journal(s, Item(s.Partner)))).Value!.DocumentId, b = (await Post(s, "b", Journal(s, Item(s.Partner), -1000m))).Value!.DocumentId;
-        var r = await new ClearingPoster(s.Tenant.App).PostAsync(s.Tenant.TenantId, s.Tenant.Context("c1", "clearing.post"),
-            new PostClearingRequest(s.Tenant.CompanyId, s.Control, s.Partner, new DateOnly(2026, 3, 31), "MANUAL", null, null,
-                [new ClearingItemRequest(a, 1), new ClearingItemRequest(b, 1)]));
-        Assert.Equal(CommandStatus.Rejected, r.Status);
-        Assert.Contains("LIMIT.CONTROL_ACCOUNT_NEEDS_PARTNER", Codes(r));
-    }
 }

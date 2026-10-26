@@ -135,9 +135,14 @@ public sealed partial class ClearingPoster(NpgsqlDataSource source)
         string? mode = await ReadOpenItemModeAsync(tx, tenantId, req.CompanyId, req.AccountId, ct);
         if (mode is null) errors.Add(JournalDocumentPoster.Error("ACCOUNT.NOT_FOUND", "P2", "account_id", ("account_id", req.AccountId)));
         else if (mode == "NONE") errors.Add(JournalDocumentPoster.Error("CLEARING.NOT_AN_OPEN_ITEM", "P2", "account_id", ("reason", "the account is not open-item managed")));
-        else if (mode == "CONTROL") errors.Add(JournalDocumentPoster.Error("LIMIT.CONTROL_ACCOUNT_NEEDS_PARTNER", "P2", "account_id"));
-        if (req.PartnerId is not null)
-            errors.Add(JournalDocumentPoster.Error("ACCOUNT_RULE.PARTNER_FORBIDDEN", "P2", "partner_id", ("reason", "a GL_OPEN_ITEM account takes no partner")));
+        else if (mode == "CONTROL" && req.PartnerId is null)
+            errors.Add(JournalDocumentPoster.Error("ACCOUNT_RULE.PARTNER_REQUIRED", "P2", "partner_id", ("reason", "a control account clears per partner")));
+        if (req.PartnerId is not null && mode != "CONTROL")
+            errors.Add(JournalDocumentPoster.Error("ACCOUNT_RULE.PARTNER_FORBIDDEN", "P2", "partner_id", ("reason", "only a control account takes a partner")));
+        // The partner must exist. Its status does not matter: a clearing closes existing obligations and is allowed for a blocked or restricted
+        // partner (12, 5.3), which is why the checks of a posting (status, relation) are not made here.
+        if (req.PartnerId is { } partnerId && mode == "CONTROL" && !await PartnerExistsAsync(tx, tenantId, partnerId, ct))
+            errors.Add(JournalDocumentPoster.Error("MASTER.PARTNER_NOT_FOUND", "P2", "partner_id", ("partner_id", partnerId)));
         if (errors.Count > 0) return CommandResult<PostedClearing>.Rejected(errors);
 
         // The pre-lock (03, 5.6): a difference document can be needed when the items do not net to zero at their full booked amounts,
@@ -213,9 +218,9 @@ public sealed partial class ClearingPoster(NpgsqlDataSource source)
                 errors.Add(JournalDocumentPoster.Error("CLEARING.ITEMS_NOT_SAME_ACCOUNT", "P4", path, ("account_id", row.AccountId)));
                 continue;
             }
-            if (row.PartnerId is not null)
+            if (row.PartnerId != req.PartnerId)
             {
-                errors.Add(JournalDocumentPoster.Error("CLEARING.ITEMS_NOT_SAME_PARTNER", "P4", path));
+                errors.Add(JournalDocumentPoster.Error("CLEARING.ITEMS_NOT_SAME_PARTNER", "P4", path, ("partner_id", row.PartnerId)));
                 continue;
             }
             if (row.Status == "CLEARED")
@@ -262,7 +267,7 @@ public sealed partial class ClearingPoster(NpgsqlDataSource source)
         {
             ["clearing_id"] = clearingId, ["clearing_type"] = "CLEAR", ["clearing_date"] = req.ClearingDate,
             ["fiscal_year"] = period.FiscalYear!.Value, ["fiscal_period"] = period.PeriodNo!.Value, ["cleared_at"] = clearedAt,
-            ["account_id"] = req.AccountId, ["partner_id"] = null, ["document_id"] = documentId, ["reset_of_clearing_id"] = null,
+            ["account_id"] = req.AccountId, ["partner_id"] = req.PartnerId, ["document_id"] = documentId, ["reset_of_clearing_id"] = null,
             ["clearing_method"] = req.ClearingMethod, ["matching_ref"] = req.MatchingRef, ["source_system"] = ctx.SourceSystem,
             ["idempotency_key"] = ctx.IdempotencyKey, ["command_name"] = ClearingRules.PostCommand, ["cleared_by"] = ctx.Actor,
             ["correlation_id"] = ctx.CorrelationId
@@ -332,14 +337,14 @@ public sealed partial class ClearingPoster(NpgsqlDataSource source)
         await CommandSupport.WriteOutboxAsync(tx, tenantId, req.CompanyId, ctx, "clearing.posted", "CLEARING", $"{req.CompanyId:D}/{clearingId:D}", "POSTED",
             at, isAudit: true, chainRef, JsonSerializer.Serialize(new Dictionary<string, object?>
             {
-                ["clearing_id"] = clearingId, ["partner_id"] = null, ["account_id"] = req.AccountId, ["items"] = cleared.Count
+                ["clearing_id"] = clearingId, ["partner_id"] = req.PartnerId, ["account_id"] = req.AccountId, ["items"] = cleared.Count
             }), ct);
         foreach (ClearedItem c in cleared)
             await CommandSupport.WriteOutboxAsync(tx, tenantId, req.CompanyId, ctx, "open_item.cleared", "OPEN_ITEM",
                 $"{req.CompanyId:D}/{c.DocumentId:D}/{c.LineNo}", "CLEARED", at, isAudit: false, null,
                 JsonSerializer.Serialize(new Dictionary<string, object?>
                 {
-                    ["account_id"] = req.AccountId, ["partner_id"] = null, ["due_date"] = null,
+                    ["account_id"] = req.AccountId, ["partner_id"] = req.PartnerId, ["due_date"] = null,
                     ["amount_tc"] = c.AmountTc.ToString("F4", CultureInfo.InvariantCulture), ["currency"] = c.CurrencyTc,
                     ["clearing_id"] = clearingId, ["status"] = c.StatusAfter
                 }), ct);
@@ -440,7 +445,7 @@ public sealed partial class ClearingPoster(NpgsqlDataSource source)
         var offsetOpenItem = new Dictionary<string, object?>
         {
             ["tenant_id"] = tenantId, ["company_id"] = req.CompanyId, ["document_id"] = documentId, ["line_no"] = 2,
-            ["partner_id"] = null, ["legacy_document_date"] = null, ["legacy_posting_date"] = null, ["legacy_document_ref"] = null
+            ["partner_id"] = req.PartnerId, ["legacy_document_date"] = null, ["legacy_posting_date"] = null, ["legacy_document_ref"] = null
         };
         var lineHashes = new List<byte[]>
         {
@@ -455,8 +460,11 @@ public sealed partial class ClearingPoster(NpgsqlDataSource source)
             await InsertLineAsync(tx, tenantId, req.CompanyId, documentId, ledgerId, fiscalYear, period.PeriodNo!.Value, req.ClearingDate, l, null, ct);
         // The row starts as OPEN with nothing cleared. The clearing is inserted next and then updates it to CLEARED.
         await using (var cmd = tx.Command(
-            "insert into core.journal_line_open_item (tenant_id, company_id, document_id, line_no, cleared_amount_rc) values (@t, @c, @d, 2, @rc)"))
+            "insert into core.journal_line_open_item (tenant_id, company_id, document_id, line_no, partner_id, due_date, cleared_amount_rc) values (@t, @c, @d, 2, @p, @due, @rc)"))
         {
+            // on a control account the offset line has the partner of the clearing and, as every item there, a due date: the date of the clearing
+            cmd.Parameters.Add(new NpgsqlParameter("p", NpgsqlDbType.Uuid) { Value = (object?)req.PartnerId ?? DBNull.Value });
+            cmd.Parameters.Add(new NpgsqlParameter("due", NpgsqlDbType.Date) { Value = req.PartnerId is null ? DBNull.Value : req.ClearingDate });
             cmd.Parameters.AddWithValue("t", tenantId);
             cmd.Parameters.AddWithValue("c", req.CompanyId);
             cmd.Parameters.AddWithValue("d", documentId);
@@ -475,6 +483,13 @@ public sealed partial class ClearingPoster(NpgsqlDataSource source)
         cmd.Parameters.AddWithValue("c", companyId);
         cmd.Parameters.AddWithValue("a", accountId);
         return await cmd.ExecuteScalarAsync(ct) as string;
+    }
+
+    private static async Task<bool> PartnerExistsAsync(TenantTransaction tx, Guid tenantId, Guid partnerId, CancellationToken ct)
+    {
+        await using var cmd = tx.Command("select 1 from core.business_partner where tenant_id = @t and partner_id = @p");
+        cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("p", partnerId);
+        return await cmd.ExecuteScalarAsync(ct) is not null;
     }
 
     private static async Task<int> ReadMinorUnitsAsync(TenantTransaction tx, string currency, CancellationToken ct)

@@ -150,6 +150,7 @@ The S columns are a denormalised cache of `clearing_item` (ADR-037). `chains:ver
 - Items from hard-closed periods can be cleared. Only `clearing_date` must be in a period allowing posting (ADR-022, ADR-025).
 - Intercompany items clear within each company only. No cross-company clearing.
 - A payment block on an item does not stop the core from clearing it. Blocks are an app-level control.
+- **Control accounts (F-IMPL-25, 2026-10-26).** A clearing of a CONTROL account names the partner, and every item has that partner (R1 scope, 1). The partner must exist. A blocked, restricted or anonymised-status check is **not** made: a clearing closes existing obligations (12, 5.3). The offset line of a difference document is an open item of that partner and takes the date of the clearing as its due date, so that the rule of 02, 5A (a control item has a due date) holds. The mirror of the offset line in a reset (5.4) carries the partner and the due date of the offset line of D.
 
 ### 5.2 Amount allocation
 
@@ -308,6 +309,7 @@ Events (K3, ADR-159): `clearings:post` and `clearings:reset` write `clearing.pos
 | Fix pass 4 (17, section 4, v0.5) | **B2:** reset item list with amounts, no item on D's offset line, one item on the reset's own offset line (5.4, 4.2). **Reset lock order:** pre-lock of counter and LEDGER head whenever C has a difference document (5.6). **A1:** period re-check in share mode after the CLEARING head lock (5.6). **B3:** automatic clearing of mirror open items at reversal, `clearing_method` REVERSAL (4.1, 5.7). **`change_log` shape:** clearing notes use `clearing_id`, entity type CLEARING, governing period is the clearing's own (4.1, 02, 8). **A5:** the revaluation run locks the CLEARING head (5.5). **Stale text:** "or reversed" in Q2 removed (8). New code: `CLEARING.NOT_RESETTABLE` (reset of a REVERSAL clearing, for 06) |
 | Propagation pass (17, section 5, v0.6) | The reset item list of 5.4 (no item on D's offset line, one item on the reset's own offset line, all other items mirrored, worked example with amounts) is final. Open point 5 added as resolved. The B1 rerun form (four documents) and the D9 rate rule are final in 05 and 02. Clearing differences use rate 1 and `DERIVED` (02, 5.2, D9). Open point 4 stays open (not covered by a decision of 17) |
 | ADR-229 (2026-10-26) | 5.2: ROUND is half away from zero, defined once in 02, 5.2. The same word in 05, 08 and 19 has the same meaning |
+| F-IMPL-25 (2026-10-26) | 5.1: clearing of control accounts (partner, status of the partner, due date of the offset line) |
 | F-IMPL-22 (2026-10-26) | 5.7: the automatic clearing at reversal as built. `chains:verify` for the clearing chain: 06, 13.9 |
 | F-IMPL-21 (2026-10-26) | 5.4: the points settled while building `clearings:reset` |
 | F-IMPL-20 (2026-10-26) | 3.1: the difference document as built (lines, signs, number, role, transaction currency of items in more than one currency). 4.3: `clearing_status` looks at every currency. 5.6: the pre-lock and its restart path are built |
