@@ -19,7 +19,10 @@ public sealed record ClearedItem(
 
 public sealed record PostedClearing(
     Guid ClearingId, Guid CompanyId, long ChainSeq, string RowHash, string PrevHash, DateOnly ClearingDate, int FiscalYear, int FiscalPeriod,
-    string ClearingMethod, IReadOnlyList<ClearedItem> Items, Guid? DocumentId = null, string? DocumentNumber = null);
+    string ClearingMethod, IReadOnlyList<ClearedItem> Items, Guid? DocumentId = null, string? DocumentNumber = null, Guid? ResetOfClearingId = null);
+
+/// <summary>Payload of clearings:reset (06, 7.1). ReasonCode is CORRECTION or ERROR from an external caller. The text is kept in the note of the reset.</summary>
+public sealed record ResetClearingRequest(Guid CompanyId, Guid ClearingId, DateOnly ClearingDate, string ReasonCode, string? ReasonText);
 
 /// <summary>An open item as the allocation sees it: the line amounts and what is cleared so far (03, 4.3).</summary>
 public sealed record OpenLine(
@@ -30,6 +33,10 @@ public sealed record Allocation(decimal Tc, decimal Lc, decimal Gc, decimal? Rc)
 public static class ClearingRules
 {
     public const string PostCommand = "clearings:post";
+    public const string ResetCommand = "clearings:reset";
+
+    /// <summary>The reason codes of an external caller of clearings:reset (06, 7.1, 02, 3). The other codes belong to system commands.</summary>
+    public static readonly string[] ExternalResetReasons = ["CORRECTION", "ERROR"];
 
     /// <summary>The methods a caller of clearings:post may name. REVERSAL belongs to the clearings that the reversal commands create (03, 5.7).</summary>
     public static readonly string[] ExternalMethods = ["MANUAL", "AUTO_MATCH", "PAYMENT_ALLOCATION"];
@@ -91,6 +98,19 @@ public static class ClearingRules
     [
         new("document_id", FieldType.Id), new("line_no", FieldType.Int), new("cleared_amount_tc", FieldType.Amount, true)
     ];
+
+    private static readonly FieldSpec[] ResetHeader =
+    [
+        new("company_id", FieldType.Id), new("clearing_id", FieldType.Id), new("clearing_date", FieldType.Date),
+        new("reason_code", FieldType.Text), new("reason_text", FieldType.Text, true)
+    ];
+
+    public static byte[] Fingerprint(ResetClearingRequest r) =>
+        CommandFingerprint.Compute(ResetCommand, ResetHeader, new Dictionary<string, object?>
+        {
+            ["company_id"] = r.CompanyId, ["clearing_id"] = r.ClearingId, ["clearing_date"] = r.ClearingDate,
+            ["reason_code"] = r.ReasonCode, ["reason_text"] = r.ReasonText
+        });
 
     /// <summary>The fingerprint covers the items in the order given: the order assigns the item numbers.</summary>
     public static byte[] Fingerprint(PostClearingRequest r)

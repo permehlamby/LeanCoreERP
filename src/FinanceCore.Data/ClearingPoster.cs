@@ -19,7 +19,7 @@ namespace FinanceCore.Data;
 /// open items sorted by key, outbox_head last. The amounts are derived after the locks, from the locked rows. If they show that a
 /// difference document is needed although nothing was pre-locked, the transaction is rolled back and starts again with the pre-lock.
 /// </summary>
-public sealed class ClearingPoster(NpgsqlDataSource source)
+public sealed partial class ClearingPoster(NpgsqlDataSource source)
 {
     public const string Permission = "clearing.post";
     public const string DifferenceType = "CLEARING";
@@ -285,7 +285,7 @@ public sealed class ClearingPoster(NpgsqlDataSource source)
             });
         byte[] rowHash = ClearingHash2.RowHash(tenantId, req.CompanyId, seq, headHash, body, ClearingHash2.ItemsDigest(itemRows), documentRowHash);
 
-        await InsertClearingAsync(tx, tenantId, req, ctx, clearingId, documentId, seq, period.FiscalYear!.Value, period.PeriodNo!.Value, clearedAt, headHash, rowHash, ct);
+        await InsertClearingAsync(tx, tenantId, req, ctx, clearingId, documentId, seq, period.FiscalYear!.Value, period.PeriodNo!.Value, clearedAt, headHash, rowHash, "CLEAR", null, ClearingRules.PostCommand, ct);
         var cleared = new List<ClearedItem>();
         for (int n = 0; n < allocations.Count; n++)
         {
@@ -450,9 +450,9 @@ public sealed class ClearingPoster(NpgsqlDataSource source)
         byte[] rowHash = LedgerHash2.RowHash(header, chainSeq, ledgerHash, LedgerHash2.LineDigest(lineHashes));
 
         await InsertDocumentAsync(tx, tenantId, req, ctx, documentId, ledgerId, series, fiscalYear, period.PeriodNo!.Value, sequenceNo, number,
-            period.SoftCloseOverride, postedAt, chainSeq, ledgerHash, rowHash, transactionCurrency, ct);
+            period.SoftCloseOverride, postedAt, chainSeq, ledgerHash, rowHash, transactionCurrency, DifferenceType, null, null, ClearingRules.PostCommand, ct);
         foreach (PostedLine l in new[] { fx, diff })
-            await InsertLineAsync(tx, tenantId, req.CompanyId, documentId, ledgerId, fiscalYear, period.PeriodNo!.Value, req.ClearingDate, l, ct);
+            await InsertLineAsync(tx, tenantId, req.CompanyId, documentId, ledgerId, fiscalYear, period.PeriodNo!.Value, req.ClearingDate, l, null, ct);
         // The row starts as OPEN with nothing cleared. The clearing is inserted next and then updates it to CLEARED.
         await using (var cmd = tx.Command(
             "insert into core.journal_line_open_item (tenant_id, company_id, document_id, line_no, cleared_amount_rc) values (@t, @c, @d, 2, @rc)"))
@@ -577,13 +577,15 @@ public sealed class ClearingPoster(NpgsqlDataSource source)
 
     private static async Task InsertClearingAsync(
         TenantTransaction tx, Guid tenantId, PostClearingRequest req, CommandContext ctx, Guid clearingId, Guid? documentId, long seq, int fiscalYear, int period,
-        DateTime clearedAt, byte[] prevHash, byte[] rowHash, CancellationToken ct)
+        DateTime clearedAt, byte[] prevHash, byte[] rowHash, string type, Guid? resetOf, string command, CancellationToken ct)
     {
         await using var cmd = tx.Command(
             "insert into core.clearing (tenant_id, company_id, clearing_id, chain_seq, clearing_type, clearing_date, fiscal_year, fiscal_period, " +
-            "cleared_at, account_id, document_id, clearing_method, matching_ref, source_system, idempotency_key, command_name, cleared_by, correlation_id, note, " +
+            "cleared_at, account_id, document_id, reset_of_clearing_id, clearing_method, matching_ref, source_system, idempotency_key, command_name, cleared_by, correlation_id, note, " +
             "prev_hash, row_hash, hash_version) " +
-            "values (@t, @c, @id, @seq, 'CLEAR', @date, @fy, @fp, @at, @acc, @doc, @method, @ref, @src, @key, @cmd, @by, @corr, @note, @prev, @hash, @v)");
+            "values (@t, @c, @id, @seq, @type, @date, @fy, @fp, @at, @acc, @doc, @reset, @method, @ref, @src, @key, @cmd, @by, @corr, @note, @prev, @hash, @v)");
+        cmd.Parameters.AddWithValue("type", type);
+        cmd.Parameters.Add(new NpgsqlParameter("reset", NpgsqlDbType.Uuid) { Value = (object?)resetOf ?? DBNull.Value });
         cmd.Parameters.AddWithValue("t", tenantId);
         cmd.Parameters.AddWithValue("c", req.CompanyId);
         cmd.Parameters.AddWithValue("id", clearingId);
@@ -598,7 +600,7 @@ public sealed class ClearingPoster(NpgsqlDataSource source)
         cmd.Parameters.Add(new NpgsqlParameter("ref", NpgsqlDbType.Text) { Value = (object?)req.MatchingRef ?? DBNull.Value });
         cmd.Parameters.AddWithValue("src", ctx.SourceSystem);
         cmd.Parameters.AddWithValue("key", ctx.IdempotencyKey);
-        cmd.Parameters.AddWithValue("cmd", ClearingRules.PostCommand);
+        cmd.Parameters.AddWithValue("cmd", command);
         cmd.Parameters.AddWithValue("by", ctx.Actor);
         cmd.Parameters.AddWithValue("corr", ctx.CorrelationId);
         cmd.Parameters.Add(new NpgsqlParameter("note", NpgsqlDbType.Text) { Value = (object?)req.Note ?? DBNull.Value });
@@ -654,15 +656,19 @@ public sealed class ClearingPoster(NpgsqlDataSource source)
     private static async Task InsertDocumentAsync(
         TenantTransaction tx, Guid tenantId, PostClearingRequest req, CommandContext ctx, Guid documentId, Guid ledgerId,
         JournalDocumentPoster.SeriesRow series, int fiscalYear, int period, long sequenceNo, string number, bool softOverride, DateTime postedAt,
-        long chainSeq, byte[] prevHash, byte[] rowHash, string transactionCurrency, CancellationToken ct)
+        long chainSeq, byte[] prevHash, byte[] rowHash, string transactionCurrency, string documentType, Guid? reversalOf, string? reasonCode, string command,
+        CancellationToken ct)
     {
         await using var cmd = tx.Command(
             "insert into core.journal_document (tenant_id, company_id, document_id, ledger_id, document_type, is_system_generated, " +
             "number_series_id, fiscal_year, sequence_no, document_number, fiscal_period, soft_close_override, document_date, posting_date, " +
-            "posted_at, transaction_currency, origin, source_system, idempotency_key, command_name, posted_by, " +
+            "posted_at, transaction_currency, reversal_of_document_id, reversal_reason_code, origin, source_system, idempotency_key, command_name, posted_by, " +
             "correlation_id, chain_seq, prev_hash, row_hash, hash_version) " +
-            "values (@t, @c, @id, @l, 'CLEARING', true, @s, @fy, @seq, @num, @fp, @soft, @d, @d, @at, @tc, 'SYSTEM', @src, @key, @cmd, " +
+            "values (@t, @c, @id, @l, @dt, true, @s, @fy, @seq, @num, @fp, @soft, @d, @d, @at, @tc, @rev, @reason, 'SYSTEM', @src, @key, @cmd, " +
             "@by, @corr, @cs, @prev, @row, @hv)");
+        cmd.Parameters.AddWithValue("dt", documentType);
+        cmd.Parameters.Add(new NpgsqlParameter("rev", NpgsqlDbType.Uuid) { Value = (object?)reversalOf ?? DBNull.Value });
+        cmd.Parameters.Add(new NpgsqlParameter("reason", NpgsqlDbType.Text) { Value = (object?)reasonCode ?? DBNull.Value });
         cmd.Parameters.AddWithValue("t", tenantId);
         cmd.Parameters.AddWithValue("c", req.CompanyId);
         cmd.Parameters.AddWithValue("id", documentId);
@@ -678,7 +684,7 @@ public sealed class ClearingPoster(NpgsqlDataSource source)
         cmd.Parameters.AddWithValue("tc", transactionCurrency);
         cmd.Parameters.AddWithValue("src", ctx.SourceSystem);
         cmd.Parameters.AddWithValue("key", ctx.IdempotencyKey);
-        cmd.Parameters.AddWithValue("cmd", ClearingRules.PostCommand);
+        cmd.Parameters.AddWithValue("cmd", command);
         cmd.Parameters.AddWithValue("by", ctx.Actor);
         cmd.Parameters.AddWithValue("corr", ctx.CorrelationId);
         cmd.Parameters.AddWithValue("cs", chainSeq);
@@ -690,13 +696,14 @@ public sealed class ClearingPoster(NpgsqlDataSource source)
 
     private static async Task InsertLineAsync(
         TenantTransaction tx, Guid tenantId, Guid companyId, Guid documentId, Guid ledgerId, int fiscalYear, int period, DateOnly postingDate,
-        PostedLine l, CancellationToken ct)
+        PostedLine l, int? reversedLineNo, CancellationToken ct)
     {
         await using var cmd = tx.Command(
             "insert into core.journal_line (tenant_id, company_id, document_id, line_no, ledger_id, line_type, account_id, posting_date, " +
-            "fiscal_year, fiscal_period, amount_tc, amount_lc, currency_lc, rate_lc, amount_gc, currency_gc, rate_gc, " +
+            "fiscal_year, fiscal_period, reversed_line_no, amount_tc, amount_lc, currency_lc, rate_lc, amount_gc, currency_gc, rate_gc, " +
             "amount_rc, currency_rc, rate_rc, rate_type, rate_date) " +
-            "values (@t, @c, @d, @n, @l, @lt, @a, @pd, @fy, @fp, @tc, @lc, @clc, @rlc, @gc, @cgc, @rgc, @rc, @crc, @rrc, @rt, @rd)");
+            "values (@t, @c, @d, @n, @l, @lt, @a, @pd, @fy, @fp, @rev, @tc, @lc, @clc, @rlc, @gc, @cgc, @rgc, @rc, @crc, @rrc, @rt, @rd)");
+        cmd.Parameters.Add(new NpgsqlParameter("rev", NpgsqlDbType.Integer) { Value = (object?)reversedLineNo ?? DBNull.Value });
         cmd.Parameters.AddWithValue("t", tenantId);
         cmd.Parameters.AddWithValue("c", companyId);
         cmd.Parameters.AddWithValue("d", documentId);
@@ -727,7 +734,7 @@ public sealed class ClearingPoster(NpgsqlDataSource source)
     {
         PostedClearing? head = null;
         await using (var cmd = tx.Command(
-            "select c.chain_seq, c.row_hash, c.prev_hash, c.clearing_date, c.fiscal_year, c.fiscal_period, c.clearing_method, c.document_id, d.document_number " +
+            "select c.chain_seq, c.row_hash, c.prev_hash, c.clearing_date, c.fiscal_year, c.fiscal_period, c.clearing_method, c.document_id, d.document_number, c.reset_of_clearing_id " +
             "from core.clearing c left join core.journal_document d on d.tenant_id = c.tenant_id and d.company_id = c.company_id and d.document_id = c.document_id " +
             "where c.tenant_id = @t and c.company_id = @c and c.clearing_id = @id"))
         {
@@ -738,7 +745,7 @@ public sealed class ClearingPoster(NpgsqlDataSource source)
             if (await r.ReadAsync(ct))
                 head = new PostedClearing(clearingId, companyId, r.GetInt64(0), Canonical.FormatHex32((byte[])r[1]), Canonical.FormatHex32((byte[])r[2]),
                     r.GetFieldValue<DateOnly>(3), r.GetInt32(4), r.GetInt32(5), r.GetString(6), [],
-                    r.IsDBNull(7) ? null : r.GetGuid(7), r.IsDBNull(8) ? null : r.GetString(8));
+                    r.IsDBNull(7) ? null : r.GetGuid(7), r.IsDBNull(8) ? null : r.GetString(8), r.IsDBNull(9) ? null : r.GetGuid(9));
         }
         if (head is null) return null;
         var items = new List<ClearedItem>();

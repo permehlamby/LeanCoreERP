@@ -131,7 +131,7 @@ public class ClearingDifferenceTests
         Assert.Equal(3L, await t.ScalarAsync<long>("select count(*) from core.outbox_event where tenant_id = @t and event_type = 'open_item.cleared'"));
     }
 
-    private static async Task<string> RecomputeAsync(TestTenant t, Guid clearingId, byte[]? documentRowHash)
+    internal static async Task<string> RecomputeAsync(TestTenant t, Guid clearingId, byte[]? documentRowHash)
     {
         await using var admin = await t.OpenAdminAsync();
         Dictionary<string, object?> body; long seq; byte[] prev;
