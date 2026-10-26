@@ -166,8 +166,8 @@ public class CompanyActivationTests
 
         Assert.True(r.Status == CommandStatus.Ok, Describe(r));
         Assert.Equal("ACTIVE", r.Value!.Status);
-        // the PERIOD_EVENT head exists from the year opening, the LEDGER head is new
-        Assert.Equal([$"LEDGER/{t.LedgerId:D}"], r.Value.CreatedChainHeads);
+        // the PERIOD_EVENT head exists from the year opening, the LEDGER and CLEARING heads are new
+        Assert.Equal([$"LEDGER/{t.LedgerId:D}", "CLEARING"], r.Value.CreatedChainHeads);
         Assert.Contains(r.Warnings, w => w.Code == "LIMIT.READINESS_CHECKS_NOT_IMPLEMENTED");
         Assert.Equal("ACTIVE", await t.ScalarAsync<string>("select status from core.company where tenant_id = @t"));
         Assert.Equal(2L, await t.ScalarAsync<long>("select row_version from core.company where tenant_id = @t"));

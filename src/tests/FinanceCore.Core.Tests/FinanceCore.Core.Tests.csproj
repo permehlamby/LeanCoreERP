@@ -19,6 +19,7 @@
     <ProjectReference Include="..\..\FinanceCore.Core\FinanceCore.Core.csproj" />
     <Content Include="..\..\..\test-vectors\hash-v2.json" Link="test-vectors\hash-v2.json" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="..\..\..\test-vectors\period-event-hash-v2.json" Link="test-vectors\period-event-hash-v2.json" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\..\test-vectors\clearing-hash-v2.json" Link="test-vectors\clearing-hash-v2.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

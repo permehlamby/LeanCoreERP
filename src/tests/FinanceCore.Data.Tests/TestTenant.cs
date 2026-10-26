@@ -106,6 +106,8 @@ public sealed class TestTenant
               select @t, @c, s, 2026, 0 from (values (@s), (@s2)) v(s) where not @bare;
             insert into core.chain_head (tenant_id, company_id, chain_type, scope_key, last_seq, last_hash, hash_version)
               select @t, @c, 'LEDGER', @l::text, 0, @genesis, 2 where not @bare;
+            insert into core.chain_head (tenant_id, company_id, chain_type, scope_key, last_seq, last_hash, hash_version)
+              select @t, @c, 'CLEARING', '', 0, @clearingGenesis, 2 where not @bare;
             insert into core.exchange_rate (tenant_id, rate_type, from_currency, to_currency, valid_from, rate) values
               (@t, 'SPOT', 'USD', 'DKK', date '2026-01-01', 7.0000000000),
               (@t, 'SPOT', 'USD', 'EUR', date '2026-01-01', 0.9000000000);
@@ -132,6 +134,7 @@ public sealed class TestTenant
         cmd.Parameters.AddWithValue("a3", t.Expense);
         cmd.Parameters.AddWithValue("a4", t.Blocked);
         cmd.Parameters.AddWithValue("genesis", genesis);
+        cmd.Parameters.AddWithValue("clearingGenesis", LedgerHash2.Genesis(t.TenantId, t.CompanyId, "CLEARING", ""));
         await cmd.ExecuteNonQueryAsync();
         return t;
     }

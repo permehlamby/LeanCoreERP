@@ -26,7 +26,7 @@ declare
     tbl text;
     -- children before parents
     tables text[] := array[
-        'outbox_event', 'change_log', 'master_change_log', 'command_log_result', 'command_log', 'journal_line_open_item', 'journal_line', 'journal_document', 'number_range_counter',
+        'outbox_event', 'change_log', 'master_change_log', 'command_log_result', 'command_log', 'clearing_item', 'journal_line_open_item', 'clearing', 'journal_line', 'journal_document', 'number_range_counter',
         'fiscal_period', 'fiscal_year', 'chain_head', 'period_event', 'posting_window', 'number_series_assignment',
         'number_series', 'account_role_assignment', 'gl_account', 'exchange_rate', 'company_setting_version', 'group_membership', 'ledger', 'company',
         'company_group', 'fiscal_calendar', 'tenant_currency', 'tenant_setting', 'outbox_head'];

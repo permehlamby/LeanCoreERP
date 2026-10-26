@@ -114,6 +114,9 @@ public sealed class CompanyActivator(NpgsqlDataSource source)
         if (await CommandSupport.EnsureHeadAsync(tx, tenantId, companyId, PeriodEventHash2.ChainType, "",
                 LedgerHash2.Genesis(tenantId, companyId, PeriodEventHash2.ChainType, ""), ct))
             created.Add(PeriodEventHash2.ChainType);
+        if (await CommandSupport.EnsureHeadAsync(tx, tenantId, companyId, ClearingHash2.ChainType, "",
+                LedgerHash2.Genesis(tenantId, companyId, ClearingHash2.ChainType, ""), ct))
+            created.Add(ClearingHash2.ChainType);
 
         await using (var cmd = tx.Command(
             "update core.company set status = 'ACTIVE', row_version = row_version + 1 where tenant_id = @t and company_id = @c"))
