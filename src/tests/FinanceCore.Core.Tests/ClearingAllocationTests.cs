@@ -82,15 +82,30 @@ public class ClearingAllocationTests
     }
 
     [Theory]
-    [InlineData(0, 0, "OPEN")]
-    [InlineData(400, 400, "PARTIAL")]
-    [InlineData(1000, 1000, "CLEARED")]
-    public void TheStatusFollowsTheClearedAmounts(double tc, double lc, string expected) =>
-        Assert.Equal(expected, ClearingRules.StatusOf(1000m, 1000m, (decimal)tc, (decimal)lc));
+    [InlineData(0, 0, 0, 0, "OPEN")]
+    [InlineData(400, 400, 53.6, 53.6, "PARTIAL")]
+    [InlineData(1000, 1000, 134, 134, "CLEARED")]
+    [InlineData(1000, 1000, 133.99, 134, "PARTIAL")]   // every currency of the line must be cleared
+    public void TheStatusFollowsTheClearedAmounts(double tc, double lc, double gc, double rc, string expected) =>
+        Assert.Equal(expected, ClearingRules.StatusOf(Line(), (decimal)tc, (decimal)lc, (decimal)gc, (decimal)rc));
 
     [Fact]
-    public void AZeroTcOffsetLineIsClearedWhenItsLocalAmountIs() =>
-        Assert.Equal("CLEARED", ClearingRules.StatusOf(0m, 2m, 0m, 2m));
+    public void AZeroTcOffsetLineIsClearedWhenAllItsAmountsAre()
+    {
+        var offset = new OpenLine(0m, 2m, 0.27m, 0.27m, 0, 0, 0, 0);
+        Assert.Equal("CLEARED", ClearingRules.StatusOf(offset, 0m, 2m, 0.27m, 0.27m));
+        Assert.Equal("OPEN", ClearingRules.StatusOf(offset, 0m, 0m, 0m, 0m));
+    }
+
+    [Fact]
+    public void AnOffsetLineThatIsOnlyInGroupCurrencyCanBeCleared()
+    {
+        // TC 0 and LC 0: the difference of the set is in GC and RC only (F-IMPL-20)
+        var offset = new OpenLine(0m, 0m, -3.8m, -3.8m, 0, 0, 0, 0);
+        Assert.Equal("CLEARED", ClearingRules.StatusOf(offset, 0m, 0m, -3.8m, -3.8m));
+        Assert.Equal("OPEN", ClearingRules.StatusOf(offset, 0m, 0m, 0m, 0m));
+        Assert.Equal(new Allocation(0m, 0m, -3.8m, -3.8m), ClearingRules.Allocate(offset, null, 2, 2, 2, out _));
+    }
 
     [Fact]
     public void TheFingerprintCoversTheItemsAndTheirOrder()

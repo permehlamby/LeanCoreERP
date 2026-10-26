@@ -518,7 +518,7 @@ public sealed class JournalDocumentPoster(NpgsqlDataSource source)
         TenantTransaction tx, Guid tenantId, PostJournalDocumentRequest req, CancellationToken ct) =>
         ReadAccountRowsAsync(tx, tenantId, req.CompanyId, req.Lines.Select(l => l.AccountId).Distinct().ToArray(), ct);
 
-    private static async Task<Dictionary<Guid, AccountRow>> ReadAccountRowsAsync(
+    internal static async Task<Dictionary<Guid, AccountRow>> ReadAccountRowsAsync(
         TenantTransaction tx, Guid tenantId, Guid companyId, Guid[] accountIds, CancellationToken ct)
     {
         await using var cmd = tx.Command(

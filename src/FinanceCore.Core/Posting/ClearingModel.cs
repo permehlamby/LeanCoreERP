@@ -19,7 +19,7 @@ public sealed record ClearedItem(
 
 public sealed record PostedClearing(
     Guid ClearingId, Guid CompanyId, long ChainSeq, string RowHash, string PrevHash, DateOnly ClearingDate, int FiscalYear, int FiscalPeriod,
-    string ClearingMethod, IReadOnlyList<ClearedItem> Items);
+    string ClearingMethod, IReadOnlyList<ClearedItem> Items, Guid? DocumentId = null, string? DocumentNumber = null);
 
 /// <summary>An open item as the allocation sees it: the line amounts and what is cleared so far (03, 4.3).</summary>
 public sealed record OpenLine(
@@ -72,10 +72,12 @@ public static class ClearingRules
             l.Rc is null ? null : Part(l.Rc.Value, scaleRc ?? 4, remRc!.Value));
     }
 
-    /// <summary>The status of an open item from its cleared amounts (03, 4.3).</summary>
-    public static string StatusOf(decimal lineTc, decimal lineLc, decimal clearedTc, decimal clearedLc) =>
-        clearedTc == 0m && clearedLc == 0m ? "OPEN"
-        : clearedTc == lineTc && clearedLc == lineLc ? "CLEARED"
+    /// <summary>The status of an open item from its cleared amounts (03, 4.3): OPEN when nothing is cleared in any currency, CLEARED when every
+    /// currency of the line is cleared, else PARTIAL. TC and LC alone would not do (F-IMPL-20): the offset line of a difference document that
+    /// arises only in group or reporting currency has TC 0 and LC 0.</summary>
+    public static string StatusOf(OpenLine line, decimal tc, decimal lc, decimal gc, decimal? rc) =>
+        tc == 0m && lc == 0m && gc == 0m && (rc ?? 0m) == 0m ? "OPEN"
+        : tc == line.Tc && lc == line.Lc && gc == line.Gc && (rc ?? 0m) == (line.Rc ?? 0m) ? "CLEARED"
         : "PARTIAL";
 
     private static readonly FieldSpec[] Header =

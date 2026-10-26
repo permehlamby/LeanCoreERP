@@ -201,7 +201,7 @@ public class ClearingPostTests
     }
 
     [Fact]
-    public async Task ASetThatNeedsADifferenceDocumentWaitsForTheNextStep()
+    public async Task ASetThatNeedsADifferenceDocumentNeedsTheNumberSeriesOfIt()
     {
         var s = await CreateAsync();
         await s.Tenant.ExecuteAsync(
@@ -210,10 +210,12 @@ public class ClearingPostTests
         Guid invoice = await PostOpen(s, "inv", 100m, currency: "USD", date: "2026-01-05");     // LC 700
         Guid payment = await PostOpen(s, "pay", -100m, currency: "USD", date: "2026-03-25");    // LC -720
 
-        var r = await Clear(s, "c1", [I(invoice), I(payment)]);   // TC nets to zero, LC does not: realised FX (03, 3.1)
-        Assert.Equal(["LIMIT.CLEARING_DIFFERENCE_NOT_BUILT"], Codes(r));
-        Assert.Equal(-20m, (decimal)r.Errors[0].Params!["difference_lc"]!);
+        // TC nets to zero, LC does not: realised FX (03, 3.1). This tenant has no number series for the document type CLEARING,
+        // so the difference document cannot be posted and nothing is written. ClearingDifferenceTests has the case with a series.
+        var r = await Clear(s, "c1", [I(invoice), I(payment)]);
+        Assert.Equal(["SERIES.NO_ASSIGNMENT"], Codes(r));
         Assert.Equal("OPEN", await Status(s, invoice));
+        Assert.Equal(0L, await s.Tenant.ScalarAsync<long>("select count(*) from core.clearing where tenant_id = @t"));
     }
 
     [Fact]
