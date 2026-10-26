@@ -335,6 +335,8 @@ Index: (`tenant_id`, `company_id`, `document_id`, `line_no`), (`tenant_id`, `com
 No UPDATE or DELETE grants for any role. L1 changes never appear here, because they are impossible.
 Dimension changes (L2) carry the validation result in the command response, not in this table.
 
+**The database guard of an L2 column (F-IMPL-3, F-IMPL-2, 2026-10-26).** The trigger accepts an UPDATE of an L2 column (`header_text`, `external_reference`, `line_text`) only if a `change_log` row of the same transaction matches by content: same document, line and field, `old_value` and `new_value` equal to the old and the new column value, `lock_class` L2, `period_status` equal to the real status of the governing period, and `changed_at` equal to the transaction timestamp. A comparison with the transaction id would break under savepoints, so time and content stand in for it, and the command writes `changed_at` with the database's `now()`. A hard-closed period rejects the change in the trigger as well (L3). The grants give the posting role UPDATE on these columns only.
+
 ## 9. Hash chain (document-level, proposed resolution of ADR-006)
 
 ### 9.1 Scope and chaining

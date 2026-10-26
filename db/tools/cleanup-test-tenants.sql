@@ -51,6 +51,10 @@ begin
         removed := removed + 1;
     end loop;
 
+    -- The deferred foreign key of master_change_log queues a check for each deleted command_log row. A table with pending
+    -- trigger events cannot be altered, so the checks run now (every referencing row is gone by then).
+    set constraints all immediate;
+
     foreach tbl in array tables loop
         execute format('alter table core.%I enable trigger user', tbl);
     end loop;

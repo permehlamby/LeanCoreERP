@@ -237,14 +237,14 @@ select pg_temp.expect_error('document: the idempotency key is unique per tenant'
 -- ---------------------------------------------------------------------------------------------------------
 select pg_temp.expect_error('lock class: an L1 column of a document cannot change',
     $t$update core.journal_document set document_type = 'AR_INVOICE' where document_id = 'bbbbbbbb-0000-4000-8000-000000000001'$t$, '%cannot change%');
-select pg_temp.expect_error('lock class: an L2 column is locked until the change command exists',
-    $t$update core.journal_document set header_text = 'x' where document_id = 'bbbbbbbb-0000-4000-8000-000000000001'$t$, '%cannot change%');
+select pg_temp.expect_error('lock class: an L2 column needs a change_log row of the same transaction',
+    $t$update core.journal_document set header_text = 'x' where document_id = 'bbbbbbbb-0000-4000-8000-000000000001'$t$, '%without a matching change_log row%');
 select pg_temp.expect_ok('lock class: status posted to reversed is allowed',
     $t$update core.journal_document set status = 'reversed' where document_id = 'bbbbbbbb-0000-4000-8000-000000000001'$t$);
 select pg_temp.expect_error('lock class: status cannot go back',
     $t$update core.journal_document set status = 'posted' where document_id = 'bbbbbbbb-0000-4000-8000-000000000001'$t$, '%only change from posted to reversed%');
 select pg_temp.expect_error('lock class: lines are never updated',
-    $t$update core.journal_line set amount_tc = 1$t$, '%never updated%');
+    $t$update core.journal_line set amount_tc = 1$t$, '%only line_text can change%');
 select pg_temp.expect_error('no delete: documents', $t$delete from core.journal_document$t$, '%no hard delete%');
 select pg_temp.expect_error('no delete: lines', $t$delete from core.journal_line$t$, '%no hard delete%');
 select pg_temp.expect_error('no delete: accounts', $t$delete from core.gl_account$t$, '%no hard delete%');
@@ -355,11 +355,11 @@ create function pg_temp.cl(p_sql_values text) returns text language sql as $$
         || 'correlation_id, idempotency_key) values (' || p_sql_values || ')'
 $$;
 create function pg_temp.cl_row(p_entity text, p_doc text, p_clearing text, p_line text, p_old text, p_new text,
-                               p_class text, p_status text, p_reason text) returns text language sql as $$
+                               p_class text, p_status text, p_reason text, p_field text default 'header_text') returns text language sql as $$
     select pg_temp.cl(format('%L, %L, %L, %L, %s, %s, %s, %L, %L, %s, %s, %L, %L, %L, %L, now(), %L, %L',
         '11111111-1111-4111-8111-111111111111', 'cccccccc-0000-4000-8000-000000000001', '22222222-2222-4222-8222-222222222201',
         p_entity, coalesce(quote_literal(p_doc) || '::uuid', 'null'), coalesce(quote_literal(p_clearing) || '::uuid', 'null'),
-        coalesce(p_line, 'null'), 'header_text', 'TEXT', coalesce(quote_literal(p_old), 'null'), coalesce(quote_literal(p_new), 'null'),
+        coalesce(p_line, 'null'), p_field, 'TEXT', coalesce(quote_literal(p_old), 'null'), coalesce(quote_literal(p_new), 'null'),
         p_class, p_status, p_reason, 'tester', 'corr-cl', 'idem-cl'))
 $$;
 select pg_temp.expect_ok('change_log: the posting role can log an L2 change of a header',
@@ -408,6 +408,50 @@ select set_config('app.tenant_id', '99999999-9999-4999-8999-999999999999', false
 select pg_temp.expect_count('change_log: tenant B sees none of A''s rows',
     $t$select pg_temp.count_as('cmd_read', 'select count(*) from core.change_log')$t$, 0);
 select set_config('app.tenant_id', '11111111-1111-4111-8111-111111111111', false);
+
+-- The L2 guard (0013, F-IMPL-3): header_text, external_reference and line_text change only with a matching log row.
+-- The status of period 10 of 2026, where the document lies, is whatever the tests above left it as.
+create function pg_temp.real_status() returns text language sql as $$
+    select status from core.fiscal_period where tenant_id = '11111111-1111-4111-8111-111111111111'
+       and company_id = '22222222-2222-4222-8222-222222222201' and fiscal_year = 2026 and period_no = 10
+$$;
+create function pg_temp.l2log(p_entity text, p_line text, p_field text, p_old text, p_new text, p_status text default null) returns text language sql as $$
+    select pg_temp.cl_row(p_entity, 'bbbbbbbb-0000-4000-8000-000000000001', null, p_line, p_old, p_new, 'L2',
+                          coalesce(p_status, pg_temp.real_status()), 'CORRECTION', p_field)
+$$;
+select pg_temp.expect_ok('l2 guard: header_text changes with its log row',
+    format($t$set local role cmd_post; %s; update core.journal_document set header_text = 'New' where document_id = 'bbbbbbbb-0000-4000-8000-000000000001'$t$,
+        pg_temp.l2log('DOCUMENT', null, 'header_text', null, 'New')));
+select pg_temp.expect_ok('l2 guard: external_reference changes with its log row',
+    format($t$set local role cmd_post; %s; update core.journal_document set external_reference = 'PO-1' where document_id = 'bbbbbbbb-0000-4000-8000-000000000001'$t$,
+        pg_temp.l2log('DOCUMENT', null, 'external_reference', null, 'PO-1')));
+select pg_temp.expect_ok('l2 guard: line_text changes with its log row',
+    format($t$set local role cmd_post; %s; update core.journal_line set line_text = 'Line' where document_id = 'bbbbbbbb-0000-4000-8000-000000000001' and line_no = 1$t$,
+        pg_temp.l2log('LINE', '1', 'line_text', null, 'Line')));
+select pg_temp.expect_error('l2 guard: the log row must carry the new value',
+    format($t$set local role cmd_post; %s; update core.journal_document set header_text = 'Other' where document_id = 'bbbbbbbb-0000-4000-8000-000000000001'$t$,
+        pg_temp.l2log('DOCUMENT', null, 'header_text', 'New', 'Wrong')), '%without a matching change_log row%');
+select pg_temp.expect_error('l2 guard: the log row must carry the old value',
+    format($t$set local role cmd_post; %s; update core.journal_document set header_text = 'Third' where document_id = 'bbbbbbbb-0000-4000-8000-000000000001'$t$,
+        pg_temp.l2log('DOCUMENT', null, 'header_text', 'Not the old one', 'Third')), '%without a matching change_log row%');
+select pg_temp.expect_error('l2 guard: a log row of an earlier transaction does not count',
+    format($t$set local role cmd_post; %s; update core.journal_document set header_text = 'Third' where document_id = 'bbbbbbbb-0000-4000-8000-000000000001'$t$,
+        replace(pg_temp.l2log('DOCUMENT', null, 'header_text', 'New', 'Third'), 'now()', $q$now() - interval '1 day'$q$)), '%without a matching change_log row%');
+select pg_temp.expect_error('l2 guard: the period status of the log row must be the real one',
+    format($t$set local role cmd_post; %s; update core.journal_document set header_text = 'Third' where document_id = 'bbbbbbbb-0000-4000-8000-000000000001'$t$,
+        pg_temp.l2log('DOCUMENT', null, 'header_text', 'New', 'Third', case pg_temp.real_status() when 'OPEN' then 'SOFT_CLOSED' else 'OPEN' end)), '%without a matching change_log row%');
+select pg_temp.expect_error('l2 guard: a log row of another field does not count',
+    format($t$set local role cmd_post; %s; update core.journal_document set header_text = 'Third' where document_id = 'bbbbbbbb-0000-4000-8000-000000000001'$t$,
+        pg_temp.l2log('DOCUMENT', null, 'external_reference', 'PO-1', 'Third')), '%without a matching change_log row%');
+select pg_temp.expect_error('l2 guard: the posting role has no grant on a typed dimension of a line',
+    $t$set local role cmd_post; update core.journal_line set cost_center_id = gen_random_uuid() where document_id = 'bbbbbbbb-0000-4000-8000-000000000001' and line_no = 1$t$,
+    '%permission denied%');
+select pg_temp.expect_error('l2 guard: the posting role has no grant on an L1 column of a document',
+    format($t$set local role cmd_post; %s; update core.journal_document set header_text = 'Third', document_type = 'AR_INVOICE' where document_id = 'bbbbbbbb-0000-4000-8000-000000000001'$t$,
+        pg_temp.l2log('DOCUMENT', null, 'header_text', 'New', 'Third')), '%permission denied%');
+select pg_temp.expect_error('l2 guard: the configuration role cannot change an L2 column',
+    $t$set local role cmd_config; update core.journal_document set header_text = 'x' where document_id = 'bbbbbbbb-0000-4000-8000-000000000001'$t$,
+    '%permission denied%');
 
 insert into core.command_log (tenant_id, command_log_id, company_id, idempotency_key, command_name, request_fingerprint, actor, correlation_id)
 values ('11111111-1111-4111-8111-111111111111', 'eeeeeeee-0000-4000-8000-000000000001', '22222222-2222-4222-8222-222222222201',
