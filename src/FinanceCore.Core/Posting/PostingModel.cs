@@ -13,7 +13,8 @@ public sealed record PostJournalDocumentRequest(
     string? HeaderText,
     string? ExternalReference,
     string? SourceDocumentRef,
-    IReadOnlyList<RequestLine> Lines);
+    IReadOnlyList<RequestLine> Lines,
+    Guid? PartnerId = null);
 
 /// <summary>
 /// The open_item object of a line (06, 5.2). Required on a line of a GL_OPEN_ITEM account (it may be empty: every attribute is optional),
@@ -91,6 +92,9 @@ public static class RequestFingerprint
                 ["discount_due_date"] = o.DiscountDueDate, ["discount_amount_tc"] = o.DiscountAmountTc, ["payment_block"] = o.PaymentBlock,
                 ["dunning_block"] = o.DunningBlock, ["payment_reference"] = o.PaymentReference, ["bank_account_id"] = o.BankAccountId
             })));
+        // The header partner follows only when there is one, so the fingerprint of a request without it is what it was before the invoice types
+        if (r.PartnerId is { } partner)
+            all.Write(Canonical.Block(Canonical.EncodeFields([new FieldSpec("header_partner_id", FieldType.Id)], new Dictionary<string, object?> { ["header_partner_id"] = partner })));
         return System.Security.Cryptography.SHA256.HashData(all.ToArray());
     }
 }

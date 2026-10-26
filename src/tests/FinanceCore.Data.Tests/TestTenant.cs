@@ -96,6 +96,8 @@ public sealed class TestTenant
               values (@t, @c, @s, 'GL-JRN', 'GL', true, '-', 6, true);
             insert into core.number_series_assignment (tenant_id, company_id, document_type, series_id, effective_from, created_by)
               values (@t, @c, 'JOURNAL', @s, date '2026-01-01', 'test');
+            insert into core.number_series_assignment (tenant_id, company_id, document_type, series_id, effective_from, created_by)
+              select @t, @c, ty, @s, date '2026-01-01', 'test' from unnest(array['AR_INVOICE', 'AR_CREDIT', 'AP_INVOICE', 'AP_CREDIT']) ty;
             insert into core.number_series (tenant_id, company_id, series_id, series_code, prefix, include_fiscal_year, separator, number_length, is_legal)
               values (@t, @c, @s2, 'GL-REV', 'RV', true, '-', 6, true);
             insert into core.number_series_assignment (tenant_id, company_id, document_type, series_id, effective_from, created_by)

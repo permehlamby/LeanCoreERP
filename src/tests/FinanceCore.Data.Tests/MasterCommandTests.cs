@@ -208,7 +208,7 @@ public class MasterCommandTests
         Assert.Contains("no hard delete", await Error("delete from core.business_partner where tenant_id = @t and partner_id = @p"));
         Assert.Contains("no hard delete", await Error("delete from core.business_partner_pii where tenant_id = @t and partner_id = @p"));
         Assert.Contains("permission denied", await Error("select set_config('app.tenant_id', @t::text, true); set local role cmd_post; insert into core.business_partner (tenant_id, partner_code, partner_kind, created_by, updated_by) values (@t, 'X', 'ORGANISATION', 'a', 'a')"));
-        Assert.Contains("permission denied", await Error("select set_config('app.tenant_id', @t::text, true); set local role cmd_post; select legal_name from core.business_partner_pii"));
+        Assert.Contains("permission denied", await Error("select set_config('app.tenant_id', @t::text, true); set local role cmd_post; select email from core.business_partner_pii"));   // the posting role reads the snapshot columns only (0021)
 
         // an anonymised partner and its data change no more, not even by the commands
         await t.ExecuteAsync("update core.business_partner set status = 'ANONYMISED', anonymised_at = now() where tenant_id = @t and partner_id = @p", ("p", created.EntityId));

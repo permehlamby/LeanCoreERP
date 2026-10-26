@@ -24,7 +24,8 @@ public sealed class JournalDocumentPoster(NpgsqlDataSource source)
     public const string SoftClosedPermission = "post.soft_closed";
 
     private static readonly HashSet<string> ExternalTypes = ["JOURNAL", "AP_INVOICE", "AP_CREDIT", "AR_INVOICE", "AR_CREDIT", "PAYMENT"];
-    private static readonly HashSet<string> SliceTypes = ["JOURNAL", "PAYMENT"];
+    private static readonly HashSet<string> SalesTypes = ["AR_INVOICE", "AR_CREDIT"];
+    private static readonly HashSet<string> PurchaseTypes = ["AP_INVOICE", "AP_CREDIT"];
 
     public async Task<CommandResult<PostedDocument>> PostAsync(
         Guid tenantId, CommandContext ctx, PostJournalDocumentRequest req, CancellationToken ct = default)
@@ -132,8 +133,10 @@ public sealed class JournalDocumentPoster(NpgsqlDataSource source)
         // P2: company, ledger, type, currency, accounts, series
         if (!ExternalTypes.Contains(req.DocumentType))
             errors.Add(Error("DOCUMENT.TYPE_NOT_ALLOWED", "P2", "document_type", ("allowed_values", ExternalTypes.Order().ToArray())));
-        else if (!SliceTypes.Contains(req.DocumentType))
-            errors.Add(Error("LIMIT.DOCUMENT_TYPE_NEEDS_PARTNER", "P2", "document_type", ("allowed_values", SliceTypes.Order().ToArray())));
+        else if ((SalesTypes.Contains(req.DocumentType) || PurchaseTypes.Contains(req.DocumentType)) && req.PartnerId is null)
+            errors.Add(Error("SCHEMA.REQUIRED_FIELD_MISSING", "P1", "partner_id", ("document_type", req.DocumentType)));
+        if (req.PartnerId is { } headerPartner)
+            await CheckHeaderPartnerAsync(tx, tenantId, req, headerPartner, errors, ct);
 
         CompanyRow? company = await ReadCompanyAsync(tx, tenantId, req.CompanyId, ct);
         if (company is null)
@@ -348,7 +351,7 @@ public sealed class JournalDocumentPoster(NpgsqlDataSource source)
         // Insert document and lines
         await InsertDocumentAsync(tx, tenantId, req, ctx, documentId, ledgerId.Value, series, fiscalYear, recheck.PeriodNo!.Value,
             sequenceNo, number, softOverride, postedAt, chainSeq, headHash, rowHash, ct);
-        if (await LegalSnapshots.WriteAsync(tx, tenantId, req.CompanyId, documentId, fiscalYear, req.PostingDate, postedAt, ct) is { } noSnapshot)
+        if (await LegalSnapshots.WriteAsync(tx, tenantId, req.CompanyId, documentId, fiscalYear, req.PostingDate, postedAt, ct, partnerId: req.PartnerId) is { } noSnapshot)
             return Reject(noSnapshot);
         foreach (PostedLine l in lines)
             await InsertLineAsync(tx, tenantId, req, documentId, ledgerId.Value, fiscalYear, recheck.PeriodNo!.Value,
@@ -786,6 +789,35 @@ public sealed class JournalDocumentPoster(NpgsqlDataSource source)
                 ["partner_id"] = req.Lines[line.LineNo - 1].OpenItem!.PartnerId, ["legacy_document_date"] = null, ["legacy_posting_date"] = null, ["legacy_document_ref"] = null
             }
             : null;
+
+    /// <summary>
+    /// The header partner of a document (06, 5.2): it exists, is not anonymised, blocked or restricted, and has an active relation to the company. A sales
+    /// type needs a customer, a purchase type a supplier, the other types either role.
+    /// </summary>
+    private static async Task CheckHeaderPartnerAsync(
+        TenantTransaction tx, Guid tenantId, PostJournalDocumentRequest req, Guid partner, List<CommandError> errors, CancellationToken ct)
+    {
+        string? status, restriction, relStatus; bool customer, supplier;
+        await using (var cmd = tx.Command(
+            "select p.status, p.restriction_status, r.status, coalesce(r.is_customer, false), coalesce(r.is_supplier, false) " +
+            "from core.business_partner p left join core.partner_company_relation r on r.tenant_id = p.tenant_id and r.partner_id = p.partner_id and r.company_id = @c " +
+            "where p.tenant_id = @t and p.partner_id = @p"))
+        {
+            cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("c", req.CompanyId); cmd.Parameters.AddWithValue("p", partner);
+            await using var r = await cmd.ExecuteReaderAsync(ct);
+            if (!await r.ReadAsync(ct)) { errors.Add(Error("MASTER.PARTNER_NOT_FOUND", "P2", "partner_id", ("partner_id", partner))); return; }
+            status = r.GetString(0); restriction = r.GetString(1); relStatus = r.IsDBNull(2) ? null : r.GetString(2); customer = r.GetBoolean(3); supplier = r.GetBoolean(4);
+        }
+        bool sales = SalesTypes.Contains(req.DocumentType), purchase = PurchaseTypes.Contains(req.DocumentType);
+        if (status == "ANONYMISED") errors.Add(Error("MASTER.PARTNER_ANONYMISED", "P2", "partner_id", ("partner_id", partner)));
+        else if (status == "BLOCKED") errors.Add(Error("MASTER.PARTNER_INACTIVE", "P2", "partner_id", ("partner_id", partner), ("reason", "the partner is blocked")));
+        else if (restriction == "RESTRICTED") errors.Add(Error("MASTER.PARTNER_RESTRICTED", "P2", "partner_id", ("partner_id", partner)));
+        else if (relStatus is null) errors.Add(Error("MASTER.PARTNER_NOT_FOUND", "P2", "partner_id", ("partner_id", partner), ("reason", "the partner has no relation to the company")));
+        else if (relStatus == "BLOCKED") errors.Add(Error("MASTER.PARTNER_INACTIVE", "P2", "partner_id", ("partner_id", partner), ("reason", "the relation to the company is blocked")));
+        else if (sales ? !customer : purchase ? !supplier : !(customer || supplier))
+            errors.Add(Error("MASTER.PARTNER_INACTIVE", "P2", "partner_id", ("partner_id", partner),
+                ("reason", sales ? "the relation is not a customer" : purchase ? "the relation is not a supplier" : "the relation is neither customer nor supplier")));
+    }
 
     /// <summary>What a partner's relation to the company hands to a new open item: the payment block and the dunning block (07, 9.3).</summary>
     internal sealed record RelationDefaults(string? PaymentBlock, string? DunningBlock);

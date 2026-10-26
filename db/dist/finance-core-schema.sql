@@ -1,4 +1,4 @@
--- Finance core schema, generated from db/migrations (0001_foundation.sql, 0002_platform_reference.sql, 0003_organisation.sql, 0004_calendar_and_numbers.sql, 0005_ledger.sql, 0006_security_and_integrity.sql, 0007_posting_period_lock.sql, 0008_migration_role_membership.sql, 0009_config_outbox_head.sql, 0010_document_lookup.sql, 0011_account_roles.sql, 0012_change_logs.sql, 0013_l2_guard.sql, 0014_open_items.sql, 0015_clearing.sql, 0016_open_item_status.sql, 0017_business_partner.sql, 0018_open_item_partner.sql, 0019_retention_rule.sql, 0020_document_legal_snapshot.sql).
+-- Finance core schema, generated from db/migrations (0001_foundation.sql, 0002_platform_reference.sql, 0003_organisation.sql, 0004_calendar_and_numbers.sql, 0005_ledger.sql, 0006_security_and_integrity.sql, 0007_posting_period_lock.sql, 0008_migration_role_membership.sql, 0009_config_outbox_head.sql, 0010_document_lookup.sql, 0011_account_roles.sql, 0012_change_logs.sql, 0013_l2_guard.sql, 0014_open_items.sql, 0015_clearing.sql, 0016_open_item_status.sql, 0017_business_partner.sql, 0018_open_item_partner.sql, 0019_retention_rule.sql, 0020_document_legal_snapshot.sql, 0021_posting_reads_partner.sql).
 -- Do not edit: change the numbered files and run db/tools/build-all.mjs. Safe to run again.
 
 -- ==================== 0001_foundation.sql ====================
@@ -2352,4 +2352,16 @@ create constraint trigger journal_document_has_snapshot after insert on core.jou
 
 insert into platform.schema_migration (version, description)
 values ('0020', 'document_legal_snapshot, one per document')
+on conflict (version) do nothing;
+
+-- ==================== 0021_posting_reads_partner.sql ====================
+-- 0021 The posting role reads the partner for the legal snapshot of a document (02, 4, 06, 5.2): the name, address, country, electronic address and
+-- registration id of business_partner_pii. Column grants: the contact data (email, phone, contact person) stays out of reach of the posting role.
+
+grant select (tenant_id, partner_id, legal_name, address_line_1, address_line_2, postal_code, city, country_code,
+              electronic_address, electronic_address_scheme, legal_registration_id)
+    on core.business_partner_pii to cmd_post;
+
+insert into platform.schema_migration (version, description)
+values ('0021', 'the posting role reads the partner for the legal snapshot')
 on conflict (version) do nothing;
