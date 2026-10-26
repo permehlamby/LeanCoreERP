@@ -167,4 +167,31 @@ public class InvoiceTypeTests
         Assert.Equal(["IDEMPOTENCY.KEY_REUSED_DIFFERENT_REQUEST"], Codes(await Post(t, "same-key", Invoice(t, "AR_INVOICE", b))));
         Assert.NotEqual(RequestFingerprint.Compute(t.Journal()), RequestFingerprint.Compute(t.Journal() with { PartnerId = a }));
     }
+
+    [Fact]
+    public async Task TheControlLinesPartnerMustBeTheHeaderPartnerWhenThereIsOne()
+    {
+        var t = await TestTenant.CreateReadyAsync();
+        Guid a = await NewPartner(t, "a", "AAA", true, false);
+        Guid b = await NewPartner(t, "b", "BBB", true, false);
+        Guid control = Guid.NewGuid();
+        await t.ExecuteAsync(
+            "insert into core.gl_account (tenant_id, company_id, account_id, account_no, name, account_type, tax_code_rule, open_item_mode) " +
+            "values (@t, @c, @a, '1300', 'Receivables', 'ASSET', 'FORBIDDEN', 'CONTROL')", ("a", control));
+        PostJournalDocumentRequest Doc(string type, Guid? header, Guid linePartner) => t.Journal() with
+        {
+            DocumentType = type, PartnerId = header,
+            Lines = [new RequestLine("1", control, 1000m, null, new OpenItemRequest(PartnerId: linePartner, DueDate: new DateOnly(2026, 4, 14))),
+                     new RequestLine("2", t.Revenue, -1000m)]
+        };
+
+        var mismatch = await Post(t, "m", Doc("AR_INVOICE", a, b));
+        Assert.Equal(["ACCOUNT_RULE.PARTNER_MISMATCH"], Codes(mismatch));
+        Assert.Equal("lines[0].open_item/partner_id", mismatch.Errors[0].Path);
+        Assert.Equal(0L, await t.ScalarAsync<long>("select count(*) from core.journal_document where tenant_id = @t"));
+
+        Assert.Equal(CommandStatus.Ok, (await Post(t, "ok", Doc("AR_INVOICE", a, a))).Status);
+        // a journal without a header partner is not checked: the open item carries its own partner
+        Assert.Equal(CommandStatus.Ok, (await Post(t, "free", Doc("JOURNAL", null, b))).Status);
+    }
 }

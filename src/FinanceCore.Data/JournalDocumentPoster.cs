@@ -177,6 +177,9 @@ public sealed class JournalDocumentPoster(NpgsqlDataSource source)
                 errors.Add(Error("ACCOUNT.NOT_VALID_AT_DATE", "P2", path, ("account_no", a.AccountNo), ("posting_date", req.PostingDate)));
             if (a.PostingBlocked) errors.Add(Error("ACCOUNT.POSTING_BLOCKED", "P2", path, ("account_no", a.AccountNo)));
             ValidateOpenItem(errors, i, a, req.Lines[i].OpenItem, scales.GetValueOrDefault(req.TransactionCurrency, 4));
+            // the open item of a control account belongs to the partner of the document (F-IMPL-28)
+            if (a.OpenItemMode == "CONTROL" && req.PartnerId is { } headerPartnerId && req.Lines[i].OpenItem?.PartnerId is { } linePartner && linePartner != headerPartnerId)
+                errors.Add(Error("ACCOUNT_RULE.PARTNER_MISMATCH", "P4", $"lines[{i}].open_item/partner_id", ("account_no", a.AccountNo), ("partner_id", linePartner), ("header_partner_id", headerPartnerId)));
             if (a.TaxCodeRule == "MANDATORY") errors.Add(Error("LIMIT.TAX_CODE_MANDATORY", "P2", path, ("account_no", a.AccountNo)));
             if (a.CurrencyCode is not null) errors.Add(Error("LIMIT.ACCOUNT_CURRENCY", "P2", path, ("account_no", a.AccountNo)));
         }

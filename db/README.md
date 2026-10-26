@@ -116,7 +116,7 @@ The deltas are PROPOSED, not accepted: they write down what the slice does, so t
 | F-IMPL-16 | 02, 5.2 (D9 row of ROUNDING), 07, 6.3 items 1 to 5 and 11.3, ADR-230. A limit for the size of a rounding line is open (ADR-230) | Nothing: the readiness check already covers the three currencies and usable role accounts |
 | F-IMPL-17 | 03, 6.1 (the canonical form of the clearing row hash and `items_digest`), `test-vectors/clearing-hash-v2.json`, `verify-clearing-hash-v2.mjs`, `ClearingHash2` | Nothing |
 | F-IMPL-29 | 06, 13.9 (break kinds `SNAPSHOT.*`) | Nothing. The names of the breaks follow 06, 7.4 when that command is built |
-| F-IMPL-28 | 02, 4 (built choices), 06, 13.9 | **Needs a decision:** whether the partner of a CONTROL line must equal the header partner (not checked), and whether a back-dated invoice takes the master as of its date (needs versions of the master) |
+| F-IMPL-28 | 02, 4 (built choices), 06, 5.2 and 13.9 | Decided 2026-10-26: a CONTROL line's partner equals the header partner (`ACCOUNT_RULE.PARTNER_MISMATCH`), and the snapshot takes the master as of today. 06, 5.2 should say it in its own table when the next delta pass is made |
 | F-IMPL-27 | 02, 4 (built choices), 06, 13.9, 07, 11.3 (check `RETENTION_RULES`), 12, 4.1 | Nothing |
 | F-IMPL-26 | 12, 4.1 (built choices), 06, 13.9 | Nothing |
 | F-IMPL-25 | 03, 5.1, 06, 7.1 (control accounts) | Nothing |
