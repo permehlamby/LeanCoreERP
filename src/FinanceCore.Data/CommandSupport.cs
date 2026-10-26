@@ -26,11 +26,17 @@ internal static class CommandSupport
             : null;
     }
 
+    public static Task<Guid> WriteLogAsync(
+        TenantTransaction tx, Guid tenantId, Guid? companyId, CommandContext ctx, string commandName, byte[] fingerprint,
+        string entityType, Guid entityId, CancellationToken ct) =>
+        WriteLogAsync(tx, tenantId, companyId, ctx, commandName, fingerprint, entityType, entityId, Guid.NewGuid(), ct);
+
+    /// <summary>The same with an id that the caller chose, for a command whose master_change_log rows name the command log row before it is written
+    /// (the foreign key is checked at commit).</summary>
     public static async Task<Guid> WriteLogAsync(
         TenantTransaction tx, Guid tenantId, Guid? companyId, CommandContext ctx, string commandName, byte[] fingerprint,
-        string entityType, Guid entityId, CancellationToken ct)
+        string entityType, Guid entityId, Guid logId, CancellationToken ct)
     {
-        Guid logId = Guid.NewGuid();
         await using (var cmd = tx.Command(
             "insert into core.command_log (tenant_id, command_log_id, company_id, idempotency_key, command_name, request_fingerprint, actor, correlation_id) " +
             "values (@t, @id, @c, @k, @n, @f, @a, @corr)"))
