@@ -92,9 +92,9 @@ public class OpenItemTests
         Assert.Equal(["ACCOUNT_RULE.OPEN_ITEM_REQUIRED"], await Try("a", Journal(s, null)));
         Assert.Equal(["ACCOUNT_RULE.OPEN_ITEM_FORBIDDEN"], await Try("b", Journal(s, new OpenItemRequest(), account: s.Tenant.Bank)));
         Assert.Equal(["ACCOUNT_RULE.PARTNER_FORBIDDEN"], await Try("c", Journal(s, new OpenItemRequest(PartnerId: Guid.NewGuid()))));
-        Assert.Equal(["LIMIT.OPEN_ITEM_FIELD_NOT_BUILT", "LIMIT.OPEN_ITEM_FIELD_NOT_BUILT"],
+        Assert.Equal(["LIMIT.OPEN_ITEM_FIELD_NOT_BUILT", "CONFIG.INVALID_REFERENCE"],   // the bank account has no table, the terms do not exist
             await Try("d", Journal(s, new OpenItemRequest(PaymentTermsId: Guid.NewGuid(), BankAccountId: Guid.NewGuid()))));
-        Assert.Equal(["LIMIT.CONTROL_ACCOUNT_NEEDS_PARTNER"], await Try("e", Journal(s, new OpenItemRequest(DueDate: new DateOnly(2026, 4, 1)), account: s.Control)));
+        Assert.Equal(["ACCOUNT_RULE.PARTNER_REQUIRED"], await Try("e", Journal(s, new OpenItemRequest(DueDate: new DateOnly(2026, 4, 1)), account: s.Control)));
         Assert.Equal(["SCHEMA.INVALID_VALUE"], await Try("f", Journal(s, new OpenItemRequest(DiscountAmountTc: -1m))));
         Assert.Equal(["SCHEMA.INVALID_VALUE"], await Try("g", Journal(s, new OpenItemRequest(DiscountAmountTc: 0.001m))));
         Assert.Equal(["SCHEMA.INVALID_VALUE"], await Try("h", Journal(s, new OpenItemRequest(PaymentBlock: ""))));
@@ -201,7 +201,8 @@ public class OpenItemTests
         Assert.Equal(["SCHEMA.INVALID_VALUE"], Codes(await Change(s, "b", doc.DocumentId, OI("discount_amount_tc", "10.0000", "-1"))));
         Assert.Equal(["SCHEMA.INVALID_VALUE"], Codes(await Change(s, "c", doc.DocumentId, OI("discount_amount_tc", "10.0000", "1.00001"))));
         Assert.Equal(["SCHEMA.INVALID_VALUE"], Codes(await Change(s, "d", doc.DocumentId, OI("payment_reference", "REF-1", ""))));
-        Assert.Equal(["LIMIT.FIELD_NOT_BUILT"], Codes(await Change(s, "e", doc.DocumentId, OI("payment_terms_id", null, Guid.NewGuid().ToString()))));
+        Assert.Equal(["CONFIG.INVALID_REFERENCE"], Codes(await Change(s, "e", doc.DocumentId, OI("payment_terms_id", null, Guid.NewGuid().ToString()))));
+        Assert.Equal(["LIMIT.FIELD_NOT_BUILT"], Codes(await Change(s, "e2", doc.DocumentId, OI("bank_account_id", null, Guid.NewGuid().ToString()))));
         Assert.Equal(["LOCK.FIELD_LOCKED_L1"], Codes(await Change(s, "f", doc.DocumentId, OI("partner_id", null, Guid.NewGuid().ToString()))));
         Assert.Equal(["LOCK.FIELD_LOCKED_L1"], Codes(await Change(s, "g", doc.DocumentId, OI("clearing_status", "OPEN", "CLEARED"))));
         Assert.Equal(["LOCK.FIELD_UNKNOWN"], Codes(await Change(s, "h", doc.DocumentId, OI("nope", null, "x"))));

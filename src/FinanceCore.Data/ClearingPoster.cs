@@ -581,9 +581,10 @@ public sealed partial class ClearingPoster(NpgsqlDataSource source)
     {
         await using var cmd = tx.Command(
             "insert into core.clearing (tenant_id, company_id, clearing_id, chain_seq, clearing_type, clearing_date, fiscal_year, fiscal_period, " +
-            "cleared_at, account_id, document_id, reset_of_clearing_id, clearing_method, matching_ref, source_system, idempotency_key, command_name, cleared_by, correlation_id, note, " +
+            "cleared_at, account_id, partner_id, document_id, reset_of_clearing_id, clearing_method, matching_ref, source_system, idempotency_key, command_name, cleared_by, correlation_id, note, " +
             "prev_hash, row_hash, hash_version) " +
-            "values (@t, @c, @id, @seq, @type, @date, @fy, @fp, @at, @acc, @doc, @reset, @method, @ref, @src, @key, @cmd, @by, @corr, @note, @prev, @hash, @v)");
+            "values (@t, @c, @id, @seq, @type, @date, @fy, @fp, @at, @acc, @partner, @doc, @reset, @method, @ref, @src, @key, @cmd, @by, @corr, @note, @prev, @hash, @v)");
+        cmd.Parameters.Add(new NpgsqlParameter("partner", NpgsqlDbType.Uuid) { Value = (object?)req.PartnerId ?? DBNull.Value });
         cmd.Parameters.AddWithValue("type", type);
         cmd.Parameters.Add(new NpgsqlParameter("reset", NpgsqlDbType.Uuid) { Value = (object?)resetOf ?? DBNull.Value });
         cmd.Parameters.AddWithValue("t", tenantId);

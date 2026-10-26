@@ -275,7 +275,9 @@ public sealed class DocumentReverser(NpgsqlDataSource source)
         foreach (var m in mirrorLines.Where(m => original.OpenItems.ContainsKey((int)m["line_no"]!)))
         {
             await using var cmd = tx.Command(
-                "insert into core.journal_line_open_item (tenant_id, company_id, document_id, line_no, partner_id, cleared_amount_rc) values (@t, @c, @d, @n, @p, @rc)");
+                "insert into core.journal_line_open_item (tenant_id, company_id, document_id, line_no, partner_id, due_date, cleared_amount_rc) values (@t, @c, @d, @n, @p, @due, @rc)");
+            // the mirror carries the due date of the original: it is mandatory on a control account and has no other meaning for a mirror
+            cmd.Parameters.Add(new NpgsqlParameter("due", NpgsqlDbType.Date) { Value = (object?)original.OpenItemDueDates[(int)m["line_no"]!] ?? DBNull.Value });
             cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("c", companyId);
             cmd.Parameters.AddWithValue("d", mirrorId); cmd.Parameters.AddWithValue("n", (int)m["line_no"]!);
             cmd.Parameters.Add(new NpgsqlParameter("p", NpgsqlDbType.Uuid) { Value = (object?)original.OpenItems[(int)m["line_no"]!]["partner_id"] ?? DBNull.Value });

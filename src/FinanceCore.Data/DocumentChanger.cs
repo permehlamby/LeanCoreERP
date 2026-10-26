@@ -196,6 +196,17 @@ public sealed class DocumentChanger(NpgsqlDataSource source)
                         ("reason", $"the document currency has {tcScale} fraction digits")));
             }
         }
+        // The references and the mandatory fields of an open item (06, 5.4 P4): payment terms that exist and are active, and the due date of a
+        // control account stays
+        for (int i = 0; i < changes.Count; i++)
+        {
+            FieldChange c = changes[i];
+            if (c.EntityType != "LINE_OPEN_ITEM" || !openItems.ContainsKey(c.LineNo ?? 0)) continue;
+            if (c.FieldName == "payment_terms_id" && c.NewValue is not null && !await TermsActiveAsync(tx, tenantId, Guid.Parse(c.NewValue), ct))
+                errors.Add(JournalDocumentPoster.Error("CONFIG.INVALID_REFERENCE", "P2", $"/changes/{i}/new_value", ("payment_terms_id", c.NewValue)));
+            if (c.FieldName == "due_date" && c.NewValue is null && await IsControlLineAsync(tx, tenantId, header.CompanyId, req.DocumentId, c.LineNo!.Value, ct))
+                errors.Add(JournalDocumentPoster.Error("ACCOUNT_RULE.DUE_DATE_REQUIRED", "P4", $"/changes/{i}/new_value", ("line_no", c.LineNo)));
+        }
         if (errors.Count > 0) return CommandResult<ChangedDocument>.Rejected(errors);
 
         // P6 under the locks: compare and set. All mismatches are reported, none is applied.
@@ -339,6 +350,23 @@ public sealed class DocumentChanger(NpgsqlDataSource source)
         return Convert.ToInt32(await cmd.ExecuteScalarAsync(ct) ?? 4);
     }
 
+    private static async Task<bool> TermsActiveAsync(TenantTransaction tx, Guid tenantId, Guid terms, CancellationToken ct)
+    {
+        await using var cmd = tx.Command("select 1 from core.payment_terms where tenant_id = @t and payment_terms_id = @p and active");
+        cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("p", terms);
+        return await cmd.ExecuteScalarAsync(ct) is not null;
+    }
+
+    private static async Task<bool> IsControlLineAsync(TenantTransaction tx, Guid tenantId, Guid companyId, Guid documentId, int lineNo, CancellationToken ct)
+    {
+        await using var cmd = tx.Command(
+            "select a.open_item_mode from core.journal_line l join core.gl_account a on a.tenant_id = l.tenant_id and a.company_id = l.company_id and a.account_id = l.account_id " +
+            "where l.tenant_id = @t and l.company_id = @c and l.document_id = @d and l.line_no = @n");
+        cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("c", companyId);
+        cmd.Parameters.AddWithValue("d", documentId); cmd.Parameters.AddWithValue("n", lineNo);
+        return await cmd.ExecuteScalarAsync(ct) as string == "CONTROL";
+    }
+
     private static async Task<string?> LockPeriodAsync(TenantTransaction tx, Guid tenantId, Header header, CancellationToken ct)
     {
         await using var cmd = tx.Command(
@@ -378,7 +406,7 @@ public sealed class DocumentChanger(NpgsqlDataSource source)
         cmd.Parameters.AddWithValue("f", c.FieldName);
         cmd.Parameters.AddWithValue("vt", OpenFieldRules.KindOf(c.EntityType, c.FieldName)!.Kind switch
         {
-            OpenFieldRules.Kind.Date => "DATE", OpenFieldRules.Kind.Amount => "AMOUNT", OpenFieldRules.Kind.Code => "CODE", _ => "TEXT"
+            OpenFieldRules.Kind.Date => "DATE", OpenFieldRules.Kind.Amount => "AMOUNT", OpenFieldRules.Kind.Code => "CODE", OpenFieldRules.Kind.Id => "ID", _ => "TEXT"
         });
         cmd.Parameters.Add(new NpgsqlParameter("old", NpgsqlDbType.Text) { Value = (object?)c.ExpectedOldValue ?? DBNull.Value });
         cmd.Parameters.Add(new NpgsqlParameter("new", NpgsqlDbType.Text) { Value = (object?)c.NewValue ?? DBNull.Value });

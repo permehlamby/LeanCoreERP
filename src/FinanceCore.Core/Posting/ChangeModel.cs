@@ -28,7 +28,7 @@ public static class OpenFieldRules
 
     /// <summary>The kinds of value of an L2 field. The log row stores the kind (02, 8: value_type) and the text form is canonical: a date
     /// as yyyy-MM-dd, an amount with four fraction digits (the scale of core.amt), text as it is.</summary>
-    public enum Kind { Text, Code, Date, Amount }
+    public enum Kind { Text, Code, Date, Amount, Id }
 
     public sealed record FieldKind(Kind Kind, int MaxLength = 0, string DbType = "text");
 
@@ -37,7 +37,8 @@ public static class OpenFieldRules
     {
         ["baseline_date"] = new(Kind.Date, 0, "date"), ["due_date"] = new(Kind.Date, 0, "date"),
         ["discount_due_date"] = new(Kind.Date, 0, "date"), ["discount_amount_tc"] = new(Kind.Amount, 0, "numeric"),
-        ["payment_block"] = new(Kind.Code, 50), ["dunning_block"] = new(Kind.Code, 50), ["payment_reference"] = new(Kind.Text, 100)
+        ["payment_block"] = new(Kind.Code, 50), ["dunning_block"] = new(Kind.Code, 50), ["payment_reference"] = new(Kind.Text, 100),
+        ["payment_terms_id"] = new(Kind.Id, 0, "uuid")
     };
 
     /// <summary>L2 fields of the spec whose tables or validation do not exist yet: the typed dimensions of a line need the dimension
@@ -47,7 +48,7 @@ public static class OpenFieldRules
         "cost_center_id", "project_id", "profit_center_id", "business_unit_id"
     };
 
-    public static readonly IReadOnlySet<string> OpenItemFieldsNotBuilt = new HashSet<string> { "payment_terms_id", "bank_account_id" };
+    public static readonly IReadOnlySet<string> OpenItemFieldsNotBuilt = new HashSet<string> { "bank_account_id" };
 
     public static FieldKind? KindOf(string entityType, string field) => entityType switch
     {
@@ -68,6 +69,9 @@ public static class OpenFieldRules
                 if (!DateOnly.TryParseExact(value, "yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.None, out DateOnly d))
                 { reason = "a date as yyyy-MM-dd"; return null; }
                 return d.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
+            case Kind.Id:
+                if (!Guid.TryParseExact(value, "D", out Guid g) || g == Guid.Empty) { reason = "an id"; return null; }
+                return g.ToString("D").ToLowerInvariant();
             case Kind.Amount:
                 if (!decimal.TryParse(value, System.Globalization.NumberStyles.AllowLeadingSign | System.Globalization.NumberStyles.AllowDecimalPoint,
                         System.Globalization.CultureInfo.InvariantCulture, out decimal a) || a < 0 || Math.Round(a, Canonical.AmountScale) != a)
