@@ -29,6 +29,7 @@ public static class ApiJson
         o.Converters.Add(new DecimalConverter());
         o.Converters.Add(new NullableDecimalConverter());
         o.Converters.Add(new HexBytesConverter());
+        o.Converters.Add(new MasterFieldsConverter());
         return o;
     }
 

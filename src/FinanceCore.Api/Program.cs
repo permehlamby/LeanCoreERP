@@ -15,7 +15,15 @@ builder.Services.AddSingleton(sp => new JournalDocumentPoster(sp.GetRequiredServ
 builder.Services.AddSingleton(sp => new DocumentReverser(sp.GetRequiredService<NpgsqlDataSource>()));
 builder.Services.AddSingleton(sp => new DocumentChanger(sp.GetRequiredService<NpgsqlDataSource>()));
 builder.Services.AddSingleton(sp => new ClearingPoster(sp.GetRequiredService<NpgsqlDataSource>()));
+builder.Services.AddSingleton(sp => new PartnerCommands(sp.GetRequiredService<NpgsqlDataSource>()));
+builder.Services.AddSingleton(sp => new PaymentTermsCommands(sp.GetRequiredService<NpgsqlDataSource>()));
+builder.Services.AddSingleton(sp => new AccountRoleAssigner(sp.GetRequiredService<NpgsqlDataSource>()));
+builder.Services.AddSingleton(sp => new RetentionRuleCommands(sp.GetRequiredService<NpgsqlDataSource>()));
+builder.Services.AddSingleton(sp => new FiscalYearOpener(sp.GetRequiredService<NpgsqlDataSource>()));
+builder.Services.AddSingleton(sp => new PeriodStatusCommands(sp.GetRequiredService<NpgsqlDataSource>()));
+builder.Services.AddSingleton(sp => new CompanyActivator(sp.GetRequiredService<NpgsqlDataSource>()));
 builder.Services.AddSingleton<ICommandModule, PostingModule>();
+builder.Services.AddSingleton<ICommandModule, ConfigModule>();
 builder.Services.AddSingleton<CommandCatalog>(sp =>
 {
     var catalog = new CommandCatalog();
