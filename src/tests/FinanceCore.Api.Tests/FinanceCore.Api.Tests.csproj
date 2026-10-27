@@ -21,6 +21,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\FinanceCore.Api\FinanceCore.Api.csproj" />
+    <ProjectReference Include="..\FinanceCore.Data.Tests\FinanceCore.Data.Tests.csproj" />
   </ItemGroup>
 
 </Project>

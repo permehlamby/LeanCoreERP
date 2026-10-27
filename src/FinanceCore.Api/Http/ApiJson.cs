@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Text.Json.Serialization.Metadata;
 
 namespace FinanceCore.Api.Http;
 
@@ -22,12 +23,24 @@ public static class ApiJson
             RespectNullableAnnotations = true,
             RespectRequiredConstructorParameters = true,
             DefaultIgnoreCondition = JsonIgnoreCondition.Never,
-            NumberHandling = JsonNumberHandling.Strict
+            NumberHandling = JsonNumberHandling.Strict,
+            TypeInfoResolver = new DefaultJsonTypeInfoResolver { Modifiers = { OptionalWhenNullable } }
         };
         o.Converters.Add(new DecimalConverter());
         o.Converters.Add(new NullableDecimalConverter());
         o.Converters.Add(new HexBytesConverter());
         return o;
+    }
+
+    /// <summary>
+    /// A field that the contract marks optional is a nullable constructor parameter of the request record (`Guid? PartnerId`): it may be missing, and
+    /// then it is null. A parameter that is not nullable is required, and a null for it is refused.
+    /// </summary>
+    private static void OptionalWhenNullable(JsonTypeInfo type)
+    {
+        if (type.Kind != JsonTypeInfoKind.Object) return;
+        foreach (JsonPropertyInfo property in type.Properties)
+            if (property.AssociatedParameter is { IsNullable: true }) property.IsRequired = false;
     }
 
     private sealed class DecimalConverter : JsonConverter<decimal>
