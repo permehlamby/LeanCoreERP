@@ -44,6 +44,8 @@ public sealed class TestTenant
     public DbSettings Settings => SharedSettings;
     public NpgsqlDataSource App => SharedApp;
     public static NpgsqlDataSource Source => SharedApp;
+    /// <summary>The migration role's pool: platform administration (tenants, companies, packages) and direct reads of what it wrote.</summary>
+    public static NpgsqlDataSource AdminSource => SharedAdmin;
 
     /// <param name="bare">A DRAFT company without fiscal year, counters and chain heads: what the commands
     /// fiscal-years:open and companies:activate start from.</param>

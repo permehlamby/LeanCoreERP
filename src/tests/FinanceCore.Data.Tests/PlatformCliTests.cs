@@ -9,7 +9,7 @@ public class PlatformCliTests
     private static async Task<(int Code, string Output)> Run(params string[] args)
     {
         var output = new StringWriter();
-        int code = await new PlatformCli(new PlatformProvisioner(TestTenant.Source), output).RunAsync(args);
+        int code = await new PlatformCli(new PlatformProvisioner(TestTenant.AdminSource), output).RunAsync(args);
         return (code, output.ToString());
     }
 

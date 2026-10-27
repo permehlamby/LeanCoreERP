@@ -9,7 +9,7 @@ namespace FinanceCore.Data.Tests;
 [Collection("db")]
 public class PlatformProvisionerTests
 {
-    private static PlatformProvisioner Provisioner() => new(TestTenant.Source);
+    private static PlatformProvisioner Provisioner() => new(TestTenant.AdminSource);
 
     private static string NewCode() => "T" + Guid.NewGuid().ToString("N")[..8];   // a TEST tenant the cleanup script removes
 
@@ -29,7 +29,7 @@ public class PlatformProvisionerTests
 
     private static async Task<T> Scalar<T>(Guid tenantId, string sql, params (string, object)[] p)
     {
-        await using NpgsqlConnection c = await TestTenant.Source.OpenConnectionAsync();
+        await using NpgsqlConnection c = await TestTenant.AdminSource.OpenConnectionAsync();
         await using var set = new NpgsqlCommand("select set_config('app.tenant_id', @t, false)", c);
         set.Parameters.AddWithValue("t", tenantId.ToString("D"));
         await set.ExecuteNonQueryAsync();

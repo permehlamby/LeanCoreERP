@@ -321,6 +321,12 @@ select pg_temp.expect_error('rate: a used rate cannot change',
 select pg_temp.expect_error('role: cmd_post cannot create accounts',
     $t$set local role cmd_post; insert into core.gl_account (tenant_id, company_id, account_no, name, account_type) values ('11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222201', '9999', 'x', 'ASSET')$t$,
     '%permission denied%');
+select pg_temp.expect_error('role: cmd_post cannot read the contact data of a partner',
+    $t$set local role cmd_post; select email from core.business_partner_pii$t$, '%permission denied%');
+select pg_temp.expect_error('role: cmd_period cannot read the personal data of a partner',
+    $t$set local role cmd_period; select legal_name from core.business_partner_pii$t$, '%permission denied%');
+select pg_temp.expect_error('role: cmd_clearing cannot read the personal data of a partner',
+    $t$set local role cmd_clearing; select legal_name from core.business_partner_pii$t$, '%permission denied%');
 select pg_temp.expect_error('role: cmd_post cannot delete documents',
     $t$set local role cmd_post; delete from core.journal_document$t$, '%permission denied%');
 select pg_temp.expect_error('role: cmd_config cannot post documents',
