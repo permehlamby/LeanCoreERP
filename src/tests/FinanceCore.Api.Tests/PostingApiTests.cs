@@ -54,6 +54,35 @@ public class PostingApiTests(ApiFixture api) : IClassFixture<ApiFixture>
     }
 
     [Fact]
+    public async Task TheLedgerChainIsVerifiedOverHttpAndABrokenOneNamesItsBreaks()
+    {
+        var t = await TestTenant.CreateReadyAsync();
+        await Send(t, "journal-documents:post", Journal(t), "p1", "journal.post");
+        var verify = new Dictionary<string, object?> { ["company_id"] = t.CompanyId, ["chain_type"] = "LEDGER" };
+
+        Assert.Equal(HttpStatusCode.Forbidden, (await Send(t, "chains:verify", verify, "v0", "read.audit")).Response.StatusCode);
+        var ok = await Send(t, "chains:verify", verify, "v1", "chain.verify");
+        Assert.Equal(HttpStatusCode.OK, ok.Response.StatusCode);
+        Assert.True(ok.Body.GetProperty("result").GetProperty("ok").GetBoolean());
+        Assert.Equal(JsonValueKind.Null, ok.Body.GetProperty("command_log_id").ValueKind);
+
+        await t.ExecuteAsync("""
+            alter table core.journal_line disable trigger journal_line_guard;
+            update core.journal_line set amount_lc = amount_lc + 1 where tenant_id = @t and line_no = 1;
+            alter table core.journal_line enable trigger journal_line_guard;
+            """);
+        var broken = await Send(t, "chains:verify", verify, "v2", "chain.verify");
+        Assert.Equal(HttpStatusCode.OK, broken.Response.StatusCode);
+        var result = broken.Body.GetProperty("result");
+        Assert.False(result.GetProperty("ok").GetBoolean());
+        Assert.Equal(1, result.GetProperty("first_break_seq").GetInt32());
+        Assert.Contains(result.GetProperty("breaks").EnumerateArray(), b => b.GetProperty("kind").GetString() == "hash" && b.GetProperty("code").GetString() == "CHAIN.ROW_HASH_MISMATCH");
+
+        var notBuilt = await Send(t, "chains:verify", new Dictionary<string, object?> { ["company_id"] = t.CompanyId, ["chain_type"] = "STOCK" }, "v3", "chain.verify");
+        Assert.Equal("LIMIT.CHAIN_TYPE_NOT_BUILT", Code(notBuilt.Body));
+    }
+
+    [Fact]
     public async Task ARepeatedKeyReplaysAndAChangedRequestWithTheSameKeyIsRefused()
     {
         var t = await TestTenant.CreateReadyAsync();

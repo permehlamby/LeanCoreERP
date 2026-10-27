@@ -20,6 +20,7 @@ public static class CommandEndpoint
     public static void Map(WebApplication app)
     {
         app.MapPost("/v1/{command}", HandleAsync).RequireAuthorization().WithMetadata(new Microsoft.AspNetCore.Mvc.RequestSizeLimitAttribute(MaxBodyBytes));
+        app.MapGet("/v1/openapi.json", (CommandCatalog catalog) => Results.Text(OpenApiBuilder.ToText(OpenApiBuilder.Build(catalog)), "application/json")).AllowAnonymous();
         app.MapGet("/healthz", () => Results.Json(new { status = "ok" }, ApiJson.Options)).AllowAnonymous();
     }
 

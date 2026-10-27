@@ -1,4 +1,5 @@
 using FinanceCore.Api.Http;
+using FinanceCore.Core.Chains;
 using FinanceCore.Core.Masters;
 using FinanceCore.Core.Periods;
 using FinanceCore.Core.Retention;
@@ -37,6 +38,7 @@ public sealed class ConfigModule : ICommandModule
         catalog.Add<PeriodRef, PeriodStatusChange>("periods:hard-close", (sp, t, c, r, ct) => sp.GetRequiredService<PeriodStatusCommands>().HardCloseAsync(t, c, r, ct));
         catalog.Add<ReopenPeriodRequest, PeriodStatusChange>("periods:reopen", (sp, t, c, r, ct) => sp.GetRequiredService<PeriodStatusCommands>().ReopenAsync(t, c, r, ct));
 
+        catalog.Add<VerifyChainRequest, ChainVerificationResult>("chains:verify", (sp, t, c, r, ct) => sp.GetRequiredService<ChainVerification>().VerifyAsync(t, c, r, ct));
         catalog.Add<CompanyRequest, ReadinessReport>("companies:check-readiness", (sp, t, c, r, ct) => sp.GetRequiredService<CompanyActivator>().CheckReadinessAsync(t, c, r.CompanyId, ct));
         catalog.Add<CompanyRequest, ActivatedCompany>("companies:activate", (sp, t, c, r, ct) => sp.GetRequiredService<CompanyActivator>().ActivateAsync(t, c, r.CompanyId, ct));
     }

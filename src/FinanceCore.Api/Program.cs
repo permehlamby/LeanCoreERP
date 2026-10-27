@@ -22,6 +22,7 @@ builder.Services.AddSingleton(sp => new RetentionRuleCommands(sp.GetRequiredServ
 builder.Services.AddSingleton(sp => new FiscalYearOpener(sp.GetRequiredService<NpgsqlDataSource>()));
 builder.Services.AddSingleton(sp => new PeriodStatusCommands(sp.GetRequiredService<NpgsqlDataSource>()));
 builder.Services.AddSingleton(sp => new CompanyActivator(sp.GetRequiredService<NpgsqlDataSource>()));
+builder.Services.AddSingleton(sp => new ChainVerification(sp.GetRequiredService<NpgsqlDataSource>()));
 builder.Services.AddSingleton<ICommandModule, PostingModule>();
 builder.Services.AddSingleton<ICommandModule, ConfigModule>();
 builder.Services.AddSingleton<CommandCatalog>(sp =>
