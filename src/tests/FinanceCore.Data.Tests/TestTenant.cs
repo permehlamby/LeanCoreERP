@@ -43,6 +43,7 @@ public sealed class TestTenant
 
     public DbSettings Settings => SharedSettings;
     public NpgsqlDataSource App => SharedApp;
+    public static NpgsqlDataSource Source => SharedApp;
 
     /// <param name="bare">A DRAFT company without fiscal year, counters and chain heads: what the commands
     /// fiscal-years:open and companies:activate start from.</param>

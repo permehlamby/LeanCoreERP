@@ -23,4 +23,8 @@
     <Content Include="..\..\..\db\tools\cleanup-test-tenants.sql" Link="db-tools\cleanup-test-tenants.sql" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
+  <ItemGroup>
+    <ProjectReference Include="..\..\FinanceCore.Platform.Cli\FinanceCore.Platform.Cli.csproj" />
+  </ItemGroup>
+
 </Project>
