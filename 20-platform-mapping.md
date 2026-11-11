@@ -111,6 +111,8 @@ Collation: `C` or a deterministic ICU collation for all key and code columns. Te
 | Transport | TLS 1.2 or higher. Mutual TLS optional for service identities. The core is not exposed to the public internet without a gateway |
 | Time | All timestamps in UTC, ISO 8601 with `Z`. Dates are plain dates |
 
+**Built in the first slice (F-IMPL-31, 2026-10-27).** ASP.NET Core minimal API on .NET 9, a catalog of commands that the OpenAPI document and the contract tests are generated from, JWT bearer tokens validated against any OpenID Connect authority (`Auth:Authority`, `Auth:Audience`; a shared development key exists for tests and is refused in the Production environment), the tenant in the claim `tenant_id`, the permissions in the claims `permissions` and `scope`. The mapping of HTTP statuses, the new codes and the order of the payload check and P0 are in 06, 13.9. Not built: mutual TLS, rate limits, pagination, the gateway.
+
 The implementation language and framework are not decided here (section 14). Constraints on the choice: exact decimal arithmetic, a SHA-256 and RFC 3161 implementation, JSON handling with fixed-scale decimal strings, and the ability to hold the OpenAPI document as a build artefact.
 
 ## 8. Reads, replicas and search (ADR-214)

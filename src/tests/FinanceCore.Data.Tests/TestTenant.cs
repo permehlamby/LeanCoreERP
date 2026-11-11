@@ -26,6 +26,7 @@ public sealed class TestTenant
     public Guid Revenue { get; } = Guid.NewGuid();
     public Guid Expense { get; } = Guid.NewGuid();
     public Guid Blocked { get; } = Guid.NewGuid();
+    public Guid Rounding { get; } = Guid.NewGuid();
 
     // One small pool per connection string for the whole test run. A hosted session pooler allows few clients
     // (15 on the Supabase free tier, EMAXCONNSESSION), so a pool per test would use them all after a few tests.
@@ -42,11 +43,16 @@ public sealed class TestTenant
 
     public DbSettings Settings => SharedSettings;
     public NpgsqlDataSource App => SharedApp;
+    public static NpgsqlDataSource Source => SharedApp;
+    /// <summary>The migration role's pool: platform administration (tenants, companies, packages) and direct reads of what it wrote.</summary>
+    public static NpgsqlDataSource AdminSource => SharedAdmin;
 
     /// <param name="bare">A DRAFT company without fiscal year, counters and chain heads: what the commands
     /// fiscal-years:open and companies:activate start from.</param>
+    /// <param name="withRoles">The six roles that activation needs, as default rows on accounts 7900 to 7940 and 8100.</param>
     public static async Task<TestTenant> CreateAsync(
-        bool dkkToEurRate = true, bool bare = false, int specialPeriods = 0, int firstMonth = 1, string labelRule = "START")
+        bool dkkToEurRate = true, bool bare = false, int specialPeriods = 0, int firstMonth = 1, string labelRule = "START",
+        bool withRoles = true, bool withRetention = true)
     {
         var t = new TestTenant();
 
@@ -68,6 +74,9 @@ public sealed class TestTenant
               values (@t, @c, 'C1', 'Test A/S', 'DK', 'DKK', 'EUR', @cal, case when @bare then 'DRAFT' else 'ACTIVE' end);
             insert into core.company_setting_version (tenant_id, company_id, effective_from)
               values (@t, @c, timestamptz '2026-01-01 00:00:00+00');
+            insert into core.retention_rule (tenant_id, company_id, rule_id, effective_from, record_class, country_code, retention_years, start_event, created_by)
+              select @t, @c, gen_random_uuid(), timestamptz '2000-01-01 00:00:00+00', v.cls, 'DK', v.years, v.start, 'test' from (values
+                ('LEDGER', 10, 'FISCAL_YEAR_END'), ('LEGAL_SNAPSHOT', 5, 'RECORD_DATE')) v(cls, years, start) where @retention;
             insert into core.ledger (tenant_id, company_id, ledger_id, ledger_code) values (@t, @c, @l, 'L1');
             insert into core.group_membership (tenant_id, company_id, valid_from, group_id) values (@t, @c, date '2026-01-01', @grp);
             insert into core.gl_account (tenant_id, company_id, account_id, account_no, name, account_type, tax_code_rule, posting_blocked) values
@@ -75,10 +84,23 @@ public sealed class TestTenant
               (@t, @c, @a2, '3000', 'Revenue', 'REVENUE', 'FORBIDDEN', false),
               (@t, @c, @a3, '4000', 'Expenses', 'EXPENSE', 'FORBIDDEN', false),
               (@t, @c, @a4, '9999', 'Blocked', 'EXPENSE', 'FORBIDDEN', true);
+            insert into core.gl_account (tenant_id, company_id, account_id, account_no, name, account_type, tax_code_rule)
+              select @t, @c, v.id, v.no, v.name, v.type, 'FORBIDDEN' from (values
+                (@rounding, '7900', 'Rounding', 'EXPENSE'), (gen_random_uuid(), '7910', 'Tax rounding', 'EXPENSE'),
+                (gen_random_uuid(), '7920', 'FX realised', 'EXPENSE'), (gen_random_uuid(), '7930', 'FX unrealised gain', 'REVENUE'),
+                (gen_random_uuid(), '7940', 'FX unrealised loss', 'EXPENSE'), (gen_random_uuid(), '8100', 'Retained earnings', 'EQUITY')
+              ) v(id, no, name, type) where @roles;
+            insert into core.account_role_assignment (tenant_id, company_id, role_code, account_id, effective_from)
+              select @t, @c, v.role, g.account_id, timestamptz '2026-01-01 00:00:00+00' from (values
+                ('ROUNDING', '7900'), ('TAX_ROUNDING', '7910'), ('FX_REALISED', '7920'), ('FX_UNREALISED_GAIN', '7930'),
+                ('FX_UNREALISED_LOSS', '7940'), ('RETAINED_EARNINGS', '8100')
+              ) v(role, no) join core.gl_account g on g.tenant_id = @t and g.company_id = @c and g.account_no = v.no where @roles;
             insert into core.number_series (tenant_id, company_id, series_id, series_code, prefix, include_fiscal_year, separator, number_length, is_legal)
               values (@t, @c, @s, 'GL-JRN', 'GL', true, '-', 6, true);
             insert into core.number_series_assignment (tenant_id, company_id, document_type, series_id, effective_from, created_by)
               values (@t, @c, 'JOURNAL', @s, date '2026-01-01', 'test');
+            insert into core.number_series_assignment (tenant_id, company_id, document_type, series_id, effective_from, created_by)
+              select @t, @c, ty, @s, date '2026-01-01', 'test' from unnest(array['AR_INVOICE', 'AR_CREDIT', 'AP_INVOICE', 'AP_CREDIT']) ty;
             insert into core.number_series (tenant_id, company_id, series_id, series_code, prefix, include_fiscal_year, separator, number_length, is_legal)
               values (@t, @c, @s2, 'GL-REV', 'RV', true, '-', 6, true);
             insert into core.number_series_assignment (tenant_id, company_id, document_type, series_id, effective_from, created_by)
@@ -92,6 +114,8 @@ public sealed class TestTenant
               select @t, @c, s, 2026, 0 from (values (@s), (@s2)) v(s) where not @bare;
             insert into core.chain_head (tenant_id, company_id, chain_type, scope_key, last_seq, last_hash, hash_version)
               select @t, @c, 'LEDGER', @l::text, 0, @genesis, 2 where not @bare;
+            insert into core.chain_head (tenant_id, company_id, chain_type, scope_key, last_seq, last_hash, hash_version)
+              select @t, @c, 'CLEARING', '', 0, @clearingGenesis, 2 where not @bare;
             insert into core.exchange_rate (tenant_id, rate_type, from_currency, to_currency, valid_from, rate) values
               (@t, 'SPOT', 'USD', 'DKK', date '2026-01-01', 7.0000000000),
               (@t, 'SPOT', 'USD', 'EUR', date '2026-01-01', 0.9000000000);
@@ -101,6 +125,9 @@ public sealed class TestTenant
             """, admin);
         cmd.Parameters.AddWithValue("dkkEur", dkkToEurRate);
         cmd.Parameters.AddWithValue("bare", bare);
+        cmd.Parameters.AddWithValue("roles", withRoles);
+        cmd.Parameters.AddWithValue("retention", withRetention);
+        cmd.Parameters.AddWithValue("rounding", t.Rounding);
         cmd.Parameters.AddWithValue("special", (short)specialPeriods);
         cmd.Parameters.AddWithValue("firstMonth", (short)firstMonth);
         cmd.Parameters.AddWithValue("labelRule", labelRule);
@@ -116,6 +143,7 @@ public sealed class TestTenant
         cmd.Parameters.AddWithValue("a3", t.Expense);
         cmd.Parameters.AddWithValue("a4", t.Blocked);
         cmd.Parameters.AddWithValue("genesis", genesis);
+        cmd.Parameters.AddWithValue("clearingGenesis", LedgerHash2.Genesis(t.TenantId, t.CompanyId, "CLEARING", ""));
         await cmd.ExecuteNonQueryAsync();
         return t;
     }

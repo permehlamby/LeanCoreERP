@@ -1,6 +1,7 @@
 // Starts an in-process PostgreSQL (PGlite) with the migrations and the dev seed applied and serves it on the
 // PostgreSQL wire protocol, so the C# code and its tests can connect with Npgsql without any installation.
-//   node serve-pglite.mjs [port]      default port 5433, host 127.0.0.1 only
+//   node serve-pglite.mjs [port] [--empty]   default port 5433, host 127.0.0.1 only. --empty starts without migrations and seed,
+//                                            for trying `financecore-platform db migrate` on a new database.
 // There is no authentication: the process is a local test double and must never be exposed. Connect as any user.
 // PGlite is one session at a time, so connections are served in turn. State lives in memory and vanishes on exit.
 import { PGlite } from '@electric-sql/pglite';
@@ -11,12 +12,13 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
-const port = Number(process.argv[2] ?? 5433);
+const port = Number(process.argv[2]?.startsWith('--') ? 5433 : process.argv[2] ?? 5433);
+const empty = process.argv.includes('--empty');
 
 const db = new PGlite({ extensions: { btree_gist } });
 const files = readdirSync(join(root, 'migrations')).filter((f) => f.endsWith('.sql')).sort().map((f) => join(root, 'migrations', f));
 files.push(join(root, 'seed', 'dev_seed.sql'));
-for (const f of files) await db.exec(readFileSync(f, 'utf8'));
+if (!empty) for (const f of files) await db.exec(readFileSync(f, 'utf8'));
 // The seed sets a session tenant. A server must start without one.
 await db.exec("select set_config('app.tenant_id', '', false)");
 

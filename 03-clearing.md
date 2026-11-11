@@ -54,6 +54,8 @@ Worked example (company currency EUR, transaction currency USD): invoice +100 US
 
 LC sums to zero on the document (+2 -2) and on the cleared set (+90 -92 +2). The same logic applies to GC and RC.
 
+**Built in the first slice (F-IMPL-20, 2026-10-26).** The difference document has the type CLEARING, `is_system_generated` true and `origin` SYSTEM, the posting and document date of the clearing and the number of the series assigned to the type CLEARING (04, 5.2): without an assignment the clearing is rejected with `SERIES.NO_ASSIGNMENT`. Line 1 is the `FX_REALISED` line, line 2 the `CLEARING_DIFF` line. Their amounts are the residual of the cleared items (R) and its opposite: the FX line carries R, the offset line -R, in LC, GC and RC (TC is 0, rates 1, rate type DERIVED, 02, 5.2, D9). In the example above R is -2 in LC, so the FX line is -2 and the offset +2. The account of the FX line is the role `FX_REALISED` (07, 6.3), resolved at the time of the command: `CONFIG.ROLE_NOT_ASSIGNED` without a row, `ACCOUNT.ROLE_ACCOUNT_NOT_USABLE` if the account is inactive or blocked. **Transaction currency of the document:** the spec does not say. It is the transaction currency of the items when they share one, else the local currency of the company. The offset item is the last item of the clearing, `cleared_amount_tc` 0 and the other three the whole line, and its open item row is created as OPEN and updated to CLEARED in the same transaction. The residual may be in one currency only: a set that nets to zero in LC can still have a residual in GC and RC.
+
 Differences in transaction currency (short payment, cash discount, small write-off) are not FX. The clearing command rejects a clearing whose same-currency items do not net to zero in TC (Q1 decided). A short payment clears partially and leaves the rest open. A discount or write-off is posted as an ordinary document (credit memo or journal, with tax by the usual rules) and then cleared against the invoice.
 
 ## 4. Tables
@@ -130,10 +132,14 @@ On every clearing or reset, in the same transaction, the command recomputes for 
 | S column | Value |
 |---|---|
 | cleared_amount_tc/lc/gc/rc | Sum of its `clearing_item` amounts |
-| clearing_status | OPEN if cleared TC = 0 and cleared LC = 0, CLEARED if equal to the line's `amount_tc` (and LC), otherwise PARTIAL |
+| clearing_status | OPEN if nothing is cleared in any currency, CLEARED if every currency of the line is cleared (TC, LC, GC and RC), otherwise PARTIAL. **Changed 2026-10-26 (F-IMPL-20):** the rule used TC and LC only, and the offset line of a difference document that arises only in group or reporting currency has TC 0 and LC 0 and could never be CLEARED |
 | last_clearing_id | The clearing just posted |
 
 The S columns are a denormalised cache of `clearing_item` (ADR-037). `chains:verify` recomputes them and reports mismatches. Per D2 (ADR-146) these S updates are allowed in hard-closed periods (the open item may be old, only `clearing_date` is checked, 5.1), are not written to `change_log`, and their event is the `clearing` and `clearing_item` rows of the same transaction, which the trigger backstop of 02, section 10 requires.
+
+**Database rules of the clearing tables (migration 0015, F-IMPL-18, 2026-10-26).** Checked at commit, because they span rows: (1) **The cache rule.** For every open item that a clearing item or an open item row names, `cleared_amount_tc/lc/gc/rc` equal the sum of its `clearing_item` amounts, `clearing_status` is the value that the sums give (OPEN at TC 0 and LC 0, CLEARED at the line's TC and LC, else PARTIAL), `last_clearing_id` is the item's clearing with the highest `chain_seq`, and the cleared TC and LC stay between 0 and the line amount with its sign. So a cache that lies, or a clearing item without its cache update, does not commit. (2) **The content of a clearing.** A CLEAR has at least two items, a RESET at least one. Every item is on the account and with the partner of the clearing, in the transaction currency of its document, and has a reporting amount if and only if its line has one. The items net to zero in LC, GC and RC, and in TC when they share one currency. A difference document is of type CLEARING (CLEAR) or CLEARING_RESET (RESET) and has the date of the clearing. A RESET undoes a CLEAR of the same account and partner, and a clearing is reset at most once (unique key of 4.1). (3) **The chain** (section 6): the head equals the newest clearing, the clearing links to its predecessor, sequence 1 starts at the genesis value. `clearing` and `clearing_item` are append-only. The `note` of a clearing cannot change yet: its guard comes with the command that changes it (02, 8, entity type CLEARING).
+
+**The clearing command role.** `cmd_clearing` is a role of its own, as 02, 10 assumes. It is **not** a member of `cmd_post`: the restrictive policy that limits `cmd_post` to the LEDGER head would apply together with the policy of `cmd_clearing`, and the two would allow no head at all. It has the grants it needs itself: INSERT on its two tables, on journal documents, lines, open item rows, the command log and the outbox, UPDATE of the status columns of a document (a reset marks the mirrored difference document), of the number counters, of the outbox head and of the S columns of open items, and the right to move the heads of CLEARING and LEDGER (the LEDGER head for a difference document). Only this role changes the S columns of an open item (02, 5A).
 
 ## 5. Rules
 
@@ -144,13 +150,15 @@ The S columns are a denormalised cache of `clearing_item` (ADR-037). `chains:ver
 - Items from hard-closed periods can be cleared. Only `clearing_date` must be in a period allowing posting (ADR-022, ADR-025).
 - Intercompany items clear within each company only. No cross-company clearing.
 - A payment block on an item does not stop the core from clearing it. Blocks are an app-level control.
+- **Control accounts (F-IMPL-25, 2026-10-26).** A clearing of a CONTROL account names the partner, and every item has that partner (R1 scope, 1). The partner must exist. A blocked, restricted or anonymised-status check is **not** made: a clearing closes existing obligations (12, 5.3). The offset line of a difference document is an open item of that partner and takes the date of the clearing as its due date, so that the rule of 02, 5A (a control item has a due date) holds. The mirror of the offset line in a reset (5.4) carries the partner and the due date of the offset line of D.
 
 ### 5.2 Amount allocation
 
 The caller supplies, per item, `cleared_amount_tc` (full or partial). The core derives the other three:
 - Full clearing of the remaining amount: LC, GC, RC = the remaining carried amounts (line amount minus already cleared), so the partials always sum to the original exactly.
-- Partial clearing: `cleared_lc = ROUND(line_lc x cleared_tc / line_tc)`, same for GC and RC, at the currency's scale.
+- Partial clearing: `cleared_lc = ROUND(line_lc x cleared_tc / line_tc)`, same for GC and RC, at the currency's scale. ROUND is half away from zero (ADR-229, F-IMPL-6, defined in 02, 5.2): a value and its mirror round to opposite amounts.
 - A line whose TC amount is zero (a difference-document offset line) is cleared as a whole.
+- **Never more than remains (F-IMPL-19, 2026-10-26).** A rounded partial amount never exceeds the remaining carried amount of its currency: if the rounding would take more, the remaining amount is taken. With the rule of the full clearing above, the partials of one line add up to the line in every currency.
 
 ### 5.3 Balance and residual
 
@@ -182,6 +190,7 @@ After allocation:
   The items net to zero in LC (-90 +92 -2), the pair D offset (+2) and D' offset (-2) are both fully cleared and net to zero on the customer account, and D' balances (+2 -2). The same logic applies to GC and RC.
 - Items return to OPEN or PARTIAL through the S columns.
 - Not allowed if it would leave an item with negative cleared TC.
+- **Built in the first slice (F-IMPL-21, 2026-10-26).** (a) The date of a reset is not before the date of the clearing (`SCHEMA.INVALID_VALUE`, path `clearing_date`), and the period rules are those of a posting. (b) `clearing_method` of a reset is MANUAL, its `command_name` `clearings:reset`. The `reason_text` of the request is kept in the `note` of the reset (the one L2 column), the `reason_code` goes to `reversal_reason_code` of D'. (c) D' needs a number series for the document type CLEARING_RESET (`SERIES.NO_ASSIGNMENT`), separate from the series of CLEARING. D' copies the accounts, rates, currencies and rate types of D and negates the amounts, with `reversed_line_no` on every line and `reversal_of_document_id` = D. (d) The pre-lock of 5.6 is taken whenever C has a difference document, a fact that is known before the locks, so a reset has no restart path. (e) Codes: a clearing that does not exist is `CLEARING.NOT_FOUND`, a RESET or a REVERSAL clearing is `CLEARING.NOT_RESETTABLE` (a reset is undone by a new clearing, 4.1: a clearing is reset at most once), a second reset is `CLEARING.ALREADY_RESET`, read after the lock of the CLEARING head so that two resets cannot both pass. (f) **Events:** `clearing.reset` (audit, chain reference), `open_item.reset` for each mirrored item, and `ledger.document_reversed` for D' with the entity of D, as for a reversal (06, 5.3, F-IMPL-15d). The offset line of D' is not announced: it never was open.
 
 ### 5.5 Interaction with other commands
 
@@ -217,6 +226,7 @@ When a mirror document carries open-item lines (02, 3, any mirror-producing comm
 - Lock order of the reversal command: number counter of the mirror, LEDGER head, CLEARING head, the original open items (sorted by key), `outbox_head` last (04, 6.3). The mirror lines are new rows and need no lock.
 - Events: `clearing.posted` and `open_item.cleared` per cleared line, in the same transaction (6). Revaluation sees the cleared items from `clearing_date` on (05, 3.1).
 - A later `clearings:reset` of such a REVERSAL clearing is rejected (`CLEARING.NOT_RESETTABLE`, new): the originals stay reversed.
+- **Built (F-IMPL-22, 2026-10-26).** (a) The mirror's open item rows are created OPEN with the partner of the original and no legacy columns, and the clearing updates them to CLEARED, like the offset line of a difference document. (b) The items are the original lines in line order, then the mirror lines in line order, each for its full line amounts, so a clearing has two items per open item line. (c) A document with open item lines on several accounts or partners gets one clearing per (account, partner), ordered by account and partner, which take consecutive nodes of the chain. The `idempotency_key` of a clearing is unique, so the key of the reversal is extended with `#` and the number of the group (the key of the command is cut to 90 characters first). (d) The command's locks are the number counter of the series REVERSAL, the LEDGER head, the CLEARING head, the original document row, the period rows in share mode, the original open items sorted by key, `outbox_head` last. (e) `journal-documents:reverse` runs in the role of the clearing command when the document has open item lines (the role of the posting command cannot write the clearing tables). (f) Events per clearing: `clearing.posted` (audit, chain reference) and `open_item.cleared` for each of its items.
 
 ## 6. Tamper evidence
 
@@ -229,6 +239,17 @@ Chain head: the row of `chain_head` (02, 9.2) with key (`tenant_id`, `company_id
 - `items_digest = H( concat of clearing_item L1 columns ordered by item_no )`.
 - `linked_document_hash`: the `row_hash` of `document_id`, or a fixed NULL marker. This binds the clearing to its difference document in the ledger chain, so the two chains cannot be separated or swapped unnoticed.
 - `note` (L2) and the S columns of open items are outside the hash.
+
+**6.1 Canonical form (hash_version 2, finding F-IMPL-17, 2026-10-26).** The formula above gives the principle but not the byte layout. The layout is the one of the ledger chain and the period event chain (02, 9.3a, 04, 3.5a): the same value encoding and the same field and block rules. `row_hash` is the SHA-256 of these fields in this order:
+
+1. the hash version as text (`2`), `tenant_id`, `company_id`, `chain_seq` as text and `prev_hash` as 64 lower-case hex characters, each as one field;
+2. one block with the L1 columns of `clearing` in the order of 4.1, **without** `tenant_id`, `company_id`, `chain_seq`, `prev_hash`, `row_hash`, `hash_version` (outer fields or hash columns) and without `note` (L2): `clearing_id`, `clearing_type`, `clearing_date`, `fiscal_year`, `fiscal_period`, `cleared_at`, `account_id`, `partner_id`, `document_id`, `reset_of_clearing_id`, `clearing_method`, `matching_ref`, `source_system`, `idempotency_key`, `command_name`, `cleared_by`, `correlation_id`. Types: ID, TEXT, DATE for `clearing_date`, INT for the fiscal columns, TS for `cleared_at` (UTC, six fraction digits, `Z`). NULL is the length `FFFFFFFF`;
+3. one field with `items_digest` as 64 hex characters;
+4. one field with `linked_document_hash`: the `row_hash` of `document_id` as 64 hex characters, or the NULL field when `document_id` is null (the fixed NULL marker of the formula).
+
+`items_digest` is the SHA-256 of the concatenation of one block per `clearing_item`, ordered by `item_no`. An item block holds `tenant_id`, `company_id`, `clearing_id`, `item_no`, `clearing_date`, `open_item_document_id`, `open_item_line_no`, `currency_tc`, `cleared_amount_tc`, `cleared_amount_lc`, `cleared_amount_gc`, `cleared_amount_rc` (the L1 columns of 4.2, amounts with four fraction digits, `cleared_amount_rc` NULL when absent). A clearing has at least one item (4.2), so the concatenation is never empty.
+
+The genesis value is the one of 02, 9.3a with `chain_type` CLEARING and an empty `scope_key`. Two implementations (C# and Node) reproduce `test-vectors/clearing-hash-v2.json` (ADR-211). `chains:verify` recomputes the hash from the stored columns and the stored `row_hash` of the difference document.
 
 Anchoring uses the shared `chain_anchor` table (02, 9.5) with `chain_type` = CLEARING.
 
@@ -287,6 +308,14 @@ Events (K3, ADR-159): `clearings:post` and `clearings:reset` write `clearing.pos
 | 14, sections 3 and 4 | Command names normalised (`clearings:post`, `clearings:reset`, `journal-documents:reverse`, `chains:verify`). Q2 reference to the ADR-022 pending-job check replaced by the stale check of ADR-051 and ADR-053 |
 | Fix pass 4 (17, section 4, v0.5) | **B2:** reset item list with amounts, no item on D's offset line, one item on the reset's own offset line (5.4, 4.2). **Reset lock order:** pre-lock of counter and LEDGER head whenever C has a difference document (5.6). **A1:** period re-check in share mode after the CLEARING head lock (5.6). **B3:** automatic clearing of mirror open items at reversal, `clearing_method` REVERSAL (4.1, 5.7). **`change_log` shape:** clearing notes use `clearing_id`, entity type CLEARING, governing period is the clearing's own (4.1, 02, 8). **A5:** the revaluation run locks the CLEARING head (5.5). **Stale text:** "or reversed" in Q2 removed (8). New code: `CLEARING.NOT_RESETTABLE` (reset of a REVERSAL clearing, for 06) |
 | Propagation pass (17, section 5, v0.6) | The reset item list of 5.4 (no item on D's offset line, one item on the reset's own offset line, all other items mirrored, worked example with amounts) is final. Open point 5 added as resolved. The B1 rerun form (four documents) and the D9 rate rule are final in 05 and 02. Clearing differences use rate 1 and `DERIVED` (02, 5.2, D9). Open point 4 stays open (not covered by a decision of 17) |
+| ADR-229 (2026-10-26) | 5.2: ROUND is half away from zero, defined once in 02, 5.2. The same word in 05, 08 and 19 has the same meaning |
+| F-IMPL-25 (2026-10-26) | 5.1: clearing of control accounts (partner, status of the partner, due date of the offset line) |
+| F-IMPL-22 (2026-10-26) | 5.7: the automatic clearing at reversal as built. `chains:verify` for the clearing chain: 06, 13.9 |
+| F-IMPL-21 (2026-10-26) | 5.4: the points settled while building `clearings:reset` |
+| F-IMPL-20 (2026-10-26) | 3.1: the difference document as built (lines, signs, number, role, transaction currency of items in more than one currency). 4.3: `clearing_status` looks at every currency. 5.6: the pre-lock and its restart path are built |
+| F-IMPL-19 (2026-10-26) | 5.2: a rounded partial never exceeds what remains. 06, 7.1: the points settled while building `clearings:post` for a clean match |
+| F-IMPL-18 (2026-10-26) | 4.3: the database rules of the clearing tables and the role `cmd_clearing`, which is not a member of `cmd_post` |
+| F-IMPL-17 (2026-10-26) | 6.1: the canonical form of the clearing row hash and of `items_digest`, with test vectors in two implementations. 4.1 and 4.2 are unchanged |
 | Delta toward other specs | 04, 6.3 holds the lock order. 02, 9.2 defines `chain_head`. 06 command contract for `clearings:reset` already has `reason_code`, limited to `CORRECTION` and `ERROR` (verify in 06). 06: new code `CLEARING.NOT_RESETTABLE`. 15: `clearing.posted` is also emitted by reversal commands (5.7) |
 
 ## 11. Open points

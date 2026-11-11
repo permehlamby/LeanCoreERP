@@ -12,7 +12,8 @@ namespace FinanceCore.Data;
 /// journal-documents:post of 06, 5.2 for the first slice: base lines on plain accounts, one transaction currency,
 /// derived local, group and reporting amounts, gapless number, hash chain, idempotency and outbox event.
 /// Not in the slice (answered with a LIMIT.* error, never silently ignored): tax, partners, open items, dimensions,
-/// special periods, rate overrides, rounding lines, the AP and AR document types.
+/// special periods, rate overrides, the AP and AR document types. Rounding differences of the derived currencies go to one
+/// ROUNDING line on the account of the role ROUNDING (07, 6.3).
 /// One command is one transaction. Everything that can be checked is checked before the first lock (P1 to P6),
 /// the locks come in the order of 06, 9: number counter, ledger chain head, period rows, outbox head.
 /// </summary>
@@ -23,14 +24,15 @@ public sealed class JournalDocumentPoster(NpgsqlDataSource source)
     public const string SoftClosedPermission = "post.soft_closed";
 
     private static readonly HashSet<string> ExternalTypes = ["JOURNAL", "AP_INVOICE", "AP_CREDIT", "AR_INVOICE", "AR_CREDIT", "PAYMENT"];
-    private static readonly HashSet<string> SliceTypes = ["JOURNAL", "PAYMENT"];
+    private static readonly HashSet<string> SalesTypes = ["AR_INVOICE", "AR_CREDIT"];
+    private static readonly HashSet<string> PurchaseTypes = ["AP_INVOICE", "AP_CREDIT"];
 
     public async Task<CommandResult<PostedDocument>> PostAsync(
         Guid tenantId, CommandContext ctx, PostJournalDocumentRequest req, CancellationToken ct = default)
     {
         // P0
         if (!ctx.Permissions.Contains(PostPermission))
-            return Reject(Error("AUTH.PERMISSION_DENIED", "P0", "", ("permission", PostPermission)));
+            return Reject(Error("AUTH.PERMISSION_MISSING", "P0", "", ("permission", PostPermission)));
 
         // P1, schema part
         List<CommandError> shape = ValidateShape(ctx, req);
@@ -91,6 +93,16 @@ public sealed class JournalDocumentPoster(NpgsqlDataSource source)
                 if (l.AccountId == Guid.Empty) Invalid($"lines[{i}].account_id", "required");
                 if (Math.Round(l.AmountTc, Canonical.AmountScale) != l.AmountTc) Invalid($"lines[{i}].amount_tc", $"at most {Canonical.AmountScale} fraction digits");
                 if (l.LineText?.Length > 200) Invalid($"lines[{i}].line_text", "at most 200 characters");
+                if (l.Dimensions is { } dims)
+                {
+                    foreach (var (column, _) in DimensionChecks.Typed)
+                        if (DimensionChecks.TypedValue(dims, column) == Guid.Empty) Invalid($"lines[{i}].dimensions.{column}", "an id, or absent");
+                    for (int j = 0; j < (dims.Free?.Count ?? 0); j++)
+                    {
+                        if (dims.Free![j].DimensionTypeId == Guid.Empty) Invalid($"lines[{i}].dimensions.free[{j}].dimension_type_id", "required");
+                        if (dims.Free![j].DimensionValueId == Guid.Empty) Invalid($"lines[{i}].dimensions.free[{j}].dimension_value_id", "required");
+                    }
+                }
             }
         }
         return errors;
@@ -131,8 +143,10 @@ public sealed class JournalDocumentPoster(NpgsqlDataSource source)
         // P2: company, ledger, type, currency, accounts, series
         if (!ExternalTypes.Contains(req.DocumentType))
             errors.Add(Error("DOCUMENT.TYPE_NOT_ALLOWED", "P2", "document_type", ("allowed_values", ExternalTypes.Order().ToArray())));
-        else if (!SliceTypes.Contains(req.DocumentType))
-            errors.Add(Error("LIMIT.DOCUMENT_TYPE_NEEDS_PARTNER", "P2", "document_type", ("allowed_values", SliceTypes.Order().ToArray())));
+        else if ((SalesTypes.Contains(req.DocumentType) || PurchaseTypes.Contains(req.DocumentType)) && req.PartnerId is null)
+            errors.Add(Error("SCHEMA.REQUIRED_FIELD_MISSING", "P1", "partner_id", ("document_type", req.DocumentType)));
+        if (req.PartnerId is { } headerPartner)
+            await CheckHeaderPartnerAsync(tx, tenantId, req, headerPartner, errors, ct);
 
         CompanyRow? company = await ReadCompanyAsync(tx, tenantId, req.CompanyId, ct);
         if (company is null)
@@ -172,10 +186,17 @@ public sealed class JournalDocumentPoster(NpgsqlDataSource source)
             if (a.ValidFrom > req.PostingDate || (a.ValidTo is { } to && to < req.PostingDate))
                 errors.Add(Error("ACCOUNT.NOT_VALID_AT_DATE", "P2", path, ("account_no", a.AccountNo), ("posting_date", req.PostingDate)));
             if (a.PostingBlocked) errors.Add(Error("ACCOUNT.POSTING_BLOCKED", "P2", path, ("account_no", a.AccountNo)));
-            if (a.OpenItemMode != "NONE") errors.Add(Error("LIMIT.OPEN_ITEM_ACCOUNT", "P2", path, ("account_no", a.AccountNo)));
+            ValidateOpenItem(errors, i, a, req.Lines[i].OpenItem, scales.GetValueOrDefault(req.TransactionCurrency, 4));
+            // the open item of a control account belongs to the partner of the document (F-IMPL-28)
+            if (a.OpenItemMode == "CONTROL" && req.PartnerId is { } headerPartnerId && req.Lines[i].OpenItem?.PartnerId is { } linePartner && linePartner != headerPartnerId)
+                errors.Add(Error("ACCOUNT_RULE.PARTNER_MISMATCH", "P4", $"lines[{i}].open_item/partner_id", ("account_no", a.AccountNo), ("partner_id", linePartner), ("header_partner_id", headerPartnerId)));
             if (a.TaxCodeRule == "MANDATORY") errors.Add(Error("LIMIT.TAX_CODE_MANDATORY", "P2", path, ("account_no", a.AccountNo)));
             if (a.CurrencyCode is not null) errors.Add(Error("LIMIT.ACCOUNT_CURRENCY", "P2", path, ("account_no", a.AccountNo)));
         }
+
+        errors.AddRange(await DimensionChecks.CheckPostingAsync(tx, tenantId, req.CompanyId, req.PostingDate, req.Lines, ct));
+
+        Dictionary<int, RelationDefaults> openItemDefaults = await CheckOpenItemReferencesAsync(tx, tenantId, req, accounts, errors, ct);
 
         SeriesRow? series = ledgerId is null ? null : await ReadSeriesAsync(tx, tenantId, req.CompanyId, req.DocumentType, req.PostingDate, ledgerId.Value, ct);
         if (ledgerId is not null && series is null)
@@ -189,7 +210,7 @@ public sealed class JournalDocumentPoster(NpgsqlDataSource source)
 
         // P6 (TC balance) is cheap and independent, so it is reported with the other errors.
         decimal sumTc = req.Lines.Sum(l => l.AmountTc);
-        if (sumTc != 0m) errors.Add(Error("DOCUMENT.NOT_BALANCED", "P6", "lines", ("currency", "TC"), ("difference", sumTc)));
+        if (sumTc != 0m) errors.Add(Error("BALANCE.UNBALANCED_TC", "P6", "lines", ("currency", "TC"), ("difference", sumTc)));
 
         if (errors.Count > 0) return CommandResult<PostedDocument>.Rejected(errors.Take(100).ToList());
 
@@ -212,16 +233,24 @@ public sealed class JournalDocumentPoster(NpgsqlDataSource source)
                 PostingRules.Round(l.AmountTc * rateGc.Value, scales[groupCurrency!]),
                 rateRc is null ? null : PostingRules.Round(l.AmountTc * rateRc.Value, scales[company.ReportingCurrency!])));
 
-        // P6: balance of the derived currencies. Rounding lines need configured rounding accounts (03, design
-        // principle 4), which the schema does not have yet. Finding F-IMPL-7.
-        void CheckBalance(string label, string currency, decimal sum)
+        // P5/P6: the derived currencies balance with one ROUNDING line (design principle 4 of 00) on the account of the role
+        // ROUNDING for the transaction currency, else the default row. Its amounts are the differences, TC is 0 (finding F-IMPL-16).
+        decimal diffLc = -derived.Sum(d => d.Lc), diffGc = -derived.Sum(d => d.Gc);
+        decimal? diffRc = rateRc is null ? null : -derived.Sum(d => d.Rc!.Value);
+        Guid? roundingAccount = null;
+        if (diffLc != 0m || diffGc != 0m || diffRc is not null and not 0m)
         {
-            if (sum != 0m)
-                errors.Add(Error("LIMIT.ROUNDING_DIFFERENCE", "P6", "lines", ("currency", currency), ("scope", label), ("difference", sum)));
+            roundingAccount = await AccountRoleResolver.ResolveAsync(tx, tenantId, req.CompanyId, "ROUNDING", req.TransactionCurrency, null, null, ct);
+            if (roundingAccount is null)
+                errors.Add(Error("BALANCE.ROUNDING_ACCOUNT_MISSING", "P6", "lines", ("role_code", "ROUNDING"),
+                    ("currency", req.TransactionCurrency), ("difference_lc", diffLc), ("difference_gc", diffGc), ("difference_rc", diffRc)));
+            else
+            {
+                AccountRow? a = (await ReadAccountRowsAsync(tx, tenantId, req.CompanyId, [roundingAccount.Value], ct)).GetValueOrDefault(roundingAccount.Value);
+                if (a is null || !a.Active || a.PostingBlocked || a.ValidFrom > req.PostingDate || (a.ValidTo is { } to && to < req.PostingDate))
+                    errors.Add(Error("ACCOUNT.ROLE_ACCOUNT_NOT_USABLE", "P6", "lines", ("role_code", "ROUNDING"), ("account_id", roundingAccount)));
+            }
         }
-        CheckBalance("local", company.LocalCurrency, derived.Sum(d => d.Lc));
-        CheckBalance("group", groupCurrency!, derived.Sum(d => d.Gc));
-        if (rateRc is not null) CheckBalance("reporting", company.ReportingCurrency!, derived.Sum(d => d.Rc!.Value));
         if (errors.Count > 0) return CommandResult<PostedDocument>.Rejected(errors);
 
         // P7: locks in the order of 06, 9. Counter first.
@@ -299,39 +328,54 @@ public sealed class JournalDocumentPoster(NpgsqlDataSource source)
             ["correlation_id"] = ctx.CorrelationId, ["hash_version"] = LedgerHash2.Version
         };
 
+        // Base lines first, then the generated lines (06, A2)
         var lines = new List<PostedLine>();
-        var lineHashes = new List<byte[]>();
         for (int i = 0; i < derived.Count; i++)
         {
             var d = derived[i];
-            int lineNo = i + 1;
-            var line = new PostedLine(lineNo, d.Line.LineRef, d.Line.AccountId, "BASE",
+            lines.Add(new PostedLine(i + 1, d.Line.LineRef, d.Line.AccountId, "BASE",
                 d.Line.AmountTc, d.Lc, company.LocalCurrency, rateLc.Value,
                 d.Gc, groupCurrency!, rateGc.Value,
                 d.Rc, company.ReportingCurrency, rateRc?.Value,
-                "SPOT", req.PostingDate);
-            lines.Add(line);
-            lineHashes.Add(LedgerHash2.LineHash(new HashedLine(new Dictionary<string, object?>
+                "SPOT", req.PostingDate));
+        }
+        if (roundingAccount is not null)
+            // A DERIVED line (02, 5.2, D9): TC 0 and rate 1 in every currency, the amounts are authoritative
+            lines.Add(new PostedLine(lines.Count + 1, null, roundingAccount.Value, "ROUNDING",
+                0m, diffLc, company.LocalCurrency, 1m,
+                diffGc, groupCurrency!, 1m,
+                diffRc, company.ReportingCurrency, rateRc is null ? null : 1m,
+                "DERIVED", req.PostingDate));
+
+        var lineHashes = new List<byte[]>();
+        foreach (PostedLine line in lines)
+            lineHashes.Add(LedgerHash2.LineHash(new HashedLine(OpenItem: OpenItemHashRow(tenantId, req, documentId, line), Line: new Dictionary<string, object?>
             {
-                ["tenant_id"] = tenantId, ["company_id"] = req.CompanyId, ["document_id"] = documentId, ["line_no"] = lineNo,
-                ["ledger_id"] = ledgerId.Value, ["line_type"] = "BASE", ["account_id"] = d.Line.AccountId,
+                ["tenant_id"] = tenantId, ["company_id"] = req.CompanyId, ["document_id"] = documentId, ["line_no"] = line.LineNo,
+                ["ledger_id"] = ledgerId.Value, ["line_type"] = line.LineType, ["account_id"] = line.AccountId,
                 ["posting_date"] = req.PostingDate, ["fiscal_year"] = fiscalYear, ["fiscal_period"] = recheck.PeriodNo!.Value,
                 ["reversed_line_no"] = null, ["tax_code_id"] = null,
                 ["amount_tc"] = line.AmountTc, ["amount_lc"] = line.AmountLc, ["currency_lc"] = line.CurrencyLc,
                 ["rate_lc"] = line.RateLc, ["rate_lc_table"] = null,
                 ["amount_gc"] = line.AmountGc, ["currency_gc"] = line.CurrencyGc, ["rate_gc"] = line.RateGc, ["rate_gc_table"] = null,
                 ["amount_rc"] = line.AmountRc, ["currency_rc"] = line.CurrencyRc, ["rate_rc"] = line.RateRc, ["rate_rc_table"] = null,
-                ["rate_type"] = "SPOT", ["rate_date"] = req.PostingDate, ["ic_counterpart_company_id"] = null
+                ["rate_type"] = line.RateType, ["rate_date"] = line.RateDate, ["ic_counterpart_company_id"] = null
             })));
-        }
         byte[] rowHash = LedgerHash2.RowHash(header, chainSeq, headHash, LedgerHash2.LineDigest(lineHashes));
 
         // Insert document and lines
         await InsertDocumentAsync(tx, tenantId, req, ctx, documentId, ledgerId.Value, series, fiscalYear, recheck.PeriodNo!.Value,
             sequenceNo, number, softOverride, postedAt, chainSeq, headHash, rowHash, ct);
+        if (await LegalSnapshots.WriteAsync(tx, tenantId, req.CompanyId, documentId, fiscalYear, req.PostingDate, postedAt, ct, partnerId: req.PartnerId) is { } noSnapshot)
+            return Reject(noSnapshot);
         foreach (PostedLine l in lines)
             await InsertLineAsync(tx, tenantId, req, documentId, ledgerId.Value, fiscalYear, recheck.PeriodNo!.Value,
-                req.Lines[l.LineNo - 1].LineText, l, ct);
+                l.LineType == "BASE" ? req.Lines[l.LineNo - 1].LineText : null, l.LineType == "BASE" ? req.Lines[l.LineNo - 1].Dimensions : null, l, ct);
+        foreach (PostedLine l in lines.Where(l => l.LineType == "BASE" && req.Lines[l.LineNo - 1].Dimensions?.Free is { Count: > 0 }))
+            foreach (FreeDimension f in req.Lines[l.LineNo - 1].Dimensions!.Free!.OrderBy(f => f.DimensionTypeId))
+                await InsertFreeDimensionAsync(tx, tenantId, req.CompanyId, documentId, l.LineNo, f, ct);
+        foreach (PostedLine l in lines.Where(l => l.LineType == "BASE" && req.Lines[l.LineNo - 1].OpenItem is not null))
+            await InsertOpenItemAsync(tx, tenantId, req.CompanyId, documentId, l, req.Lines[l.LineNo - 1].OpenItem!, openItemDefaults.GetValueOrDefault(l.LineNo - 1), ct);
 
         // Move the chain head
         await using (var cmd = tx.Command(
@@ -495,15 +539,19 @@ public sealed class JournalDocumentPoster(NpgsqlDataSource source)
         return value is null ? null : Convert.ToInt32(value, CultureInfo.InvariantCulture);
     }
 
-    private static async Task<Dictionary<Guid, AccountRow>> ReadAccountsAsync(
-        TenantTransaction tx, Guid tenantId, PostJournalDocumentRequest req, CancellationToken ct)
+    private static Task<Dictionary<Guid, AccountRow>> ReadAccountsAsync(
+        TenantTransaction tx, Guid tenantId, PostJournalDocumentRequest req, CancellationToken ct) =>
+        ReadAccountRowsAsync(tx, tenantId, req.CompanyId, req.Lines.Select(l => l.AccountId).Distinct().ToArray(), ct);
+
+    internal static async Task<Dictionary<Guid, AccountRow>> ReadAccountRowsAsync(
+        TenantTransaction tx, Guid tenantId, Guid companyId, Guid[] accountIds, CancellationToken ct)
     {
         await using var cmd = tx.Command(
             "select account_id, account_no, active, valid_from, valid_to, posting_blocked, open_item_mode, tax_code_rule, currency_code " +
             "from core.gl_account where tenant_id = @t and company_id = @c and account_id = any(@ids)");
         cmd.Parameters.AddWithValue("t", tenantId);
-        cmd.Parameters.AddWithValue("c", req.CompanyId);
-        cmd.Parameters.AddWithValue("ids", req.Lines.Select(l => l.AccountId).Distinct().ToArray());
+        cmd.Parameters.AddWithValue("c", companyId);
+        cmd.Parameters.AddWithValue("ids", accountIds);
         var result = new Dictionary<Guid, AccountRow>();
         await using var r = await cmd.ExecuteReaderAsync(ct);
         while (await r.ReadAsync(ct))
@@ -714,15 +762,173 @@ public sealed class JournalDocumentPoster(NpgsqlDataSource source)
         await cmd.ExecuteNonQueryAsync(ct);
     }
 
+    /// <summary>The open item rules of 02, 5A and 06, 5.2 (P4) for the accounts the slice supports. A CONTROL account needs a partner,
+    /// and there is no partner table yet. The attributes that point at tables that do not exist yet are rejected, not stored unchecked.</summary>
+    private static void ValidateOpenItem(List<CommandError> errors, int i, AccountRow account, OpenItemRequest? oi, int tcScale)
+    {
+        string at = $"lines[{i}].open_item";
+        if (account.OpenItemMode == "NONE")
+        {
+            if (oi is not null) errors.Add(Error("ACCOUNT_RULE.OPEN_ITEM_FORBIDDEN", "P4", at, ("account_no", account.AccountNo)));
+            return;
+        }
+        if (oi is null)
+        {
+            errors.Add(Error("ACCOUNT_RULE.OPEN_ITEM_REQUIRED", "P4", at, ("account_no", account.AccountNo)));
+            return;
+        }
+        if (account.OpenItemMode == "CONTROL")
+        {
+            // a control account needs the partner and the due date (02, 5A, 06, 5.2)
+            if (oi.PartnerId is null) errors.Add(Error("ACCOUNT_RULE.PARTNER_REQUIRED", "P4", $"{at}/partner_id", ("account_no", account.AccountNo)));
+            if (oi.DueDate is null) errors.Add(Error("ACCOUNT_RULE.DUE_DATE_REQUIRED", "P4", $"{at}/due_date", ("account_no", account.AccountNo)));
+        }
+        else if (oi.PartnerId is not null)
+            errors.Add(Error("ACCOUNT_RULE.PARTNER_FORBIDDEN", "P4", $"{at}/partner_id", ("account_no", account.AccountNo)));
+        if (oi.BankAccountId is not null) errors.Add(Error("LIMIT.OPEN_ITEM_FIELD_NOT_BUILT", "P4", $"{at}/bank_account_id"));
+        if (oi.DiscountAmountTc is { } d && (d < 0 || Math.Round(d, tcScale) != d))
+            errors.Add(Error("SCHEMA.INVALID_VALUE", "P1", $"{at}/discount_amount_tc", ("reason", $"not negative, at most {tcScale} fraction digits")));
+        void Text(string name, string? value, int max)
+        {
+            if (value is not null && (value.Length == 0 || value.Length > max))
+                errors.Add(Error("SCHEMA.INVALID_VALUE", "P1", $"{at}/{name}", ("reason", $"1 to {max} characters, or absent")));
+        }
+        Text("payment_block", oi.PaymentBlock, 50);
+        Text("dunning_block", oi.DunningBlock, 50);
+        Text("payment_reference", oi.PaymentReference, 100);
+    }
+
+    /// <summary>The L1 columns of the open item row that the line hash covers (02, 5A, 9.3a). Null for a line without a row.</summary>
+    private static Dictionary<string, object?>? OpenItemHashRow(Guid tenantId, PostJournalDocumentRequest req, Guid documentId, PostedLine line) =>
+        line.LineType == "BASE" && req.Lines[line.LineNo - 1].OpenItem is not null
+            ? new Dictionary<string, object?>
+            {
+                ["tenant_id"] = tenantId, ["company_id"] = req.CompanyId, ["document_id"] = documentId, ["line_no"] = line.LineNo,
+                ["partner_id"] = req.Lines[line.LineNo - 1].OpenItem!.PartnerId, ["legacy_document_date"] = null, ["legacy_posting_date"] = null, ["legacy_document_ref"] = null
+            }
+            : null;
+
+    /// <summary>
+    /// The header partner of a document (06, 5.2): it exists, is not anonymised, blocked or restricted, and has an active relation to the company. A sales
+    /// type needs a customer, a purchase type a supplier, the other types either role.
+    /// </summary>
+    private static async Task CheckHeaderPartnerAsync(
+        TenantTransaction tx, Guid tenantId, PostJournalDocumentRequest req, Guid partner, List<CommandError> errors, CancellationToken ct)
+    {
+        string? status, restriction, relStatus; bool customer, supplier;
+        await using (var cmd = tx.Command(
+            "select p.status, p.restriction_status, r.status, coalesce(r.is_customer, false), coalesce(r.is_supplier, false) " +
+            "from core.business_partner p left join core.partner_company_relation r on r.tenant_id = p.tenant_id and r.partner_id = p.partner_id and r.company_id = @c " +
+            "where p.tenant_id = @t and p.partner_id = @p"))
+        {
+            cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("c", req.CompanyId); cmd.Parameters.AddWithValue("p", partner);
+            await using var r = await cmd.ExecuteReaderAsync(ct);
+            if (!await r.ReadAsync(ct)) { errors.Add(Error("MASTER.PARTNER_NOT_FOUND", "P2", "partner_id", ("partner_id", partner))); return; }
+            status = r.GetString(0); restriction = r.GetString(1); relStatus = r.IsDBNull(2) ? null : r.GetString(2); customer = r.GetBoolean(3); supplier = r.GetBoolean(4);
+        }
+        bool sales = SalesTypes.Contains(req.DocumentType), purchase = PurchaseTypes.Contains(req.DocumentType);
+        if (status == "ANONYMISED") errors.Add(Error("MASTER.PARTNER_ANONYMISED", "P2", "partner_id", ("partner_id", partner)));
+        else if (status == "BLOCKED") errors.Add(Error("MASTER.PARTNER_INACTIVE", "P2", "partner_id", ("partner_id", partner), ("reason", "the partner is blocked")));
+        else if (restriction == "RESTRICTED") errors.Add(Error("MASTER.PARTNER_RESTRICTED", "P2", "partner_id", ("partner_id", partner)));
+        else if (relStatus is null) errors.Add(Error("MASTER.PARTNER_NOT_FOUND", "P2", "partner_id", ("partner_id", partner), ("reason", "the partner has no relation to the company")));
+        else if (relStatus == "BLOCKED") errors.Add(Error("MASTER.PARTNER_INACTIVE", "P2", "partner_id", ("partner_id", partner), ("reason", "the relation to the company is blocked")));
+        else if (sales ? !customer : purchase ? !supplier : !(customer || supplier))
+            errors.Add(Error("MASTER.PARTNER_INACTIVE", "P2", "partner_id", ("partner_id", partner),
+                ("reason", sales ? "the relation is not a customer" : purchase ? "the relation is not a supplier" : "the relation is neither customer nor supplier")));
+    }
+
+    /// <summary>What a partner's relation to the company hands to a new open item: the payment block and the dunning block (07, 9.3).</summary>
+    internal sealed record RelationDefaults(string? PaymentBlock, string? DunningBlock);
+
+    /// <summary>
+    /// The references of the open items that need the database (06, 5.2 P2 and P4): payment terms that exist and are active, and for a control
+    /// account the partner: it exists, is not anonymised, not blocked and not restricted (a restricted partner takes no new items, 12, 5.3), and
+    /// has an active relation to the company with a role. The partner is read without a lock: a block that commits later applies to the postings
+    /// that start after it. Returns the defaults of the relation by line index.
+    /// </summary>
+    private static async Task<Dictionary<int, RelationDefaults>> CheckOpenItemReferencesAsync(
+        TenantTransaction tx, Guid tenantId, PostJournalDocumentRequest req, Dictionary<Guid, AccountRow> accounts, List<CommandError> errors, CancellationToken ct)
+    {
+        var defaults = new Dictionary<int, RelationDefaults>();
+        var partners = new Dictionary<Guid, (string? Status, string? Restriction, string? RelStatus, bool Role, string? PaymentBlock, string? DunningBlock)>();
+        for (int i = 0; i < req.Lines.Count; i++)
+        {
+            OpenItemRequest? oi = req.Lines[i].OpenItem;
+            if (oi is null) continue;
+            string at = $"lines[{i}].open_item";
+            if (oi.PaymentTermsId is { } terms)
+            {
+                await using var cmd = tx.Command("select 1 from core.payment_terms where tenant_id = @t and payment_terms_id = @p and active");
+                cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("p", terms);
+                if (await cmd.ExecuteScalarAsync(ct) is null)
+                    errors.Add(Error("CONFIG.INVALID_REFERENCE", "P2", $"{at}/payment_terms_id", ("payment_terms_id", terms)));
+            }
+            if (oi.PartnerId is not { } partner || !accounts.TryGetValue(req.Lines[i].AccountId, out AccountRow? account) || account.OpenItemMode != "CONTROL") continue;
+            if (!partners.TryGetValue(partner, out var p))
+            {
+                await using var cmd = tx.Command(
+                    "select p.status, p.restriction_status, r.status, coalesce(r.is_customer or r.is_supplier, false), r.payment_block, r.dunning_block " +
+                    "from core.business_partner p left join core.partner_company_relation r on r.tenant_id = p.tenant_id and r.partner_id = p.partner_id and r.company_id = @c " +
+                    "where p.tenant_id = @t and p.partner_id = @p");
+                cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("c", req.CompanyId); cmd.Parameters.AddWithValue("p", partner);
+                await using var r = await cmd.ExecuteReaderAsync(ct);
+                p = await r.ReadAsync(ct)
+                    ? (r.GetString(0), r.GetString(1), r.IsDBNull(2) ? null : r.GetString(2), r.GetBoolean(3), r.IsDBNull(4) ? null : r.GetString(4), r.IsDBNull(5) ? null : r.GetString(5))
+                    : (null, null, null, false, null, null);
+                partners[partner] = p;
+            }
+            string path = $"{at}/partner_id";
+            if (p.Status is null) errors.Add(Error("MASTER.PARTNER_NOT_FOUND", "P2", path, ("partner_id", partner)));
+            else if (p.Status == "ANONYMISED") errors.Add(Error("MASTER.PARTNER_ANONYMISED", "P2", path, ("partner_id", partner)));
+            else if (p.Status == "BLOCKED") errors.Add(Error("MASTER.PARTNER_INACTIVE", "P2", path, ("partner_id", partner), ("reason", "the partner is blocked")));
+            else if (p.Restriction == "RESTRICTED") errors.Add(Error("MASTER.PARTNER_RESTRICTED", "P2", path, ("partner_id", partner)));
+            else if (p.RelStatus is null) errors.Add(Error("MASTER.PARTNER_NOT_FOUND", "P2", path, ("partner_id", partner), ("reason", "the partner has no relation to the company")));
+            else if (p.RelStatus == "BLOCKED") errors.Add(Error("MASTER.PARTNER_INACTIVE", "P2", path, ("partner_id", partner), ("reason", "the relation to the company is blocked")));
+            else if (!p.Role) errors.Add(Error("MASTER.PARTNER_INACTIVE", "P2", path, ("partner_id", partner), ("reason", "the relation is neither customer nor supplier")));
+            else defaults[i] = new RelationDefaults(p.PaymentBlock, p.DunningBlock);
+        }
+        return defaults;
+    }
+
+    private static async Task InsertOpenItemAsync(
+        TenantTransaction tx, Guid tenantId, Guid companyId, Guid documentId, PostedLine line, OpenItemRequest oi, RelationDefaults? defaults, CancellationToken ct)
+    {
+        await using var cmd = tx.Command(
+            "insert into core.journal_line_open_item (tenant_id, company_id, document_id, line_no, partner_id, payment_terms_id, baseline_date, due_date, discount_due_date, " +
+            "discount_amount_tc, payment_block, dunning_block, payment_reference, cleared_amount_rc) " +
+            "values (@t, @c, @d, @n, @partner, @terms, @bd, @dd, @ddd, @da, @pb, @db, @pr, @rc)");
+        cmd.Parameters.Add(new NpgsqlParameter("partner", NpgsqlDbType.Uuid) { Value = (object?)oi.PartnerId ?? DBNull.Value });
+        cmd.Parameters.Add(new NpgsqlParameter("terms", NpgsqlDbType.Uuid) { Value = (object?)oi.PaymentTermsId ?? DBNull.Value });
+        cmd.Parameters.AddWithValue("t", tenantId);
+        cmd.Parameters.AddWithValue("c", companyId);
+        cmd.Parameters.AddWithValue("d", documentId);
+        cmd.Parameters.AddWithValue("n", line.LineNo);
+        cmd.Parameters.Add(new NpgsqlParameter("bd", NpgsqlDbType.Date) { Value = (object?)oi.BaselineDate ?? DBNull.Value });
+        cmd.Parameters.Add(new NpgsqlParameter("dd", NpgsqlDbType.Date) { Value = (object?)oi.DueDate ?? DBNull.Value });
+        cmd.Parameters.Add(new NpgsqlParameter("ddd", NpgsqlDbType.Date) { Value = (object?)oi.DiscountDueDate ?? DBNull.Value });
+        cmd.Parameters.Add(new NpgsqlParameter("da", NpgsqlDbType.Numeric) { Value = (object?)oi.DiscountAmountTc ?? DBNull.Value });
+        // the blocks of the partner's relation are the defaults of a new open item, a block of the request wins (07, 9.3)
+        cmd.Parameters.Add(new NpgsqlParameter("pb", NpgsqlDbType.Text) { Value = (object?)(oi.PaymentBlock ?? defaults?.PaymentBlock) ?? DBNull.Value });
+        cmd.Parameters.Add(new NpgsqlParameter("db", NpgsqlDbType.Text) { Value = (object?)(oi.DunningBlock ?? defaults?.DunningBlock) ?? DBNull.Value });
+        cmd.Parameters.Add(new NpgsqlParameter("pr", NpgsqlDbType.Text) { Value = (object?)oi.PaymentReference ?? DBNull.Value });
+        // the cleared reporting amount is 0 when the line has a reporting amount, null when it has none (02, 5A)
+        cmd.Parameters.Add(new NpgsqlParameter("rc", NpgsqlDbType.Numeric) { Value = line.AmountRc is null ? DBNull.Value : 0m });
+        await cmd.ExecuteNonQueryAsync(ct);
+    }
+
     private static async Task InsertLineAsync(
         TenantTransaction tx, Guid tenantId, PostJournalDocumentRequest req, Guid documentId, Guid ledgerId,
-        int fiscalYear, int period, string? lineText, PostedLine l, CancellationToken ct)
+        int fiscalYear, int period, string? lineText, LineDimensions? dims, PostedLine l, CancellationToken ct)
     {
         await using var cmd = tx.Command(
             "insert into core.journal_line (tenant_id, company_id, document_id, line_no, ledger_id, line_type, account_id, posting_date, " +
             "fiscal_year, fiscal_period, line_text, amount_tc, amount_lc, currency_lc, rate_lc, amount_gc, currency_gc, rate_gc, " +
-            "amount_rc, currency_rc, rate_rc, rate_type, rate_date) " +
-            "values (@t, @c, @d, @n, @l, @lt, @a, @pd, @fy, @fp, @txt, @tc, @lc, @clc, @rlc, @gc, @cgc, @rgc, @rc, @crc, @rrc, @rt, @rd)");
+            "amount_rc, currency_rc, rate_rc, rate_type, rate_date, cost_center_id, project_id, profit_center_id, business_unit_id) " +
+            "values (@t, @c, @d, @n, @l, @lt, @a, @pd, @fy, @fp, @txt, @tc, @lc, @clc, @rlc, @gc, @cgc, @rgc, @rc, @crc, @rrc, @rt, @rd, @cc, @pr, @pc, @bu)");
+        cmd.Parameters.Add(new NpgsqlParameter("cc", NpgsqlDbType.Uuid) { Value = (object?)dims?.CostCenterId ?? DBNull.Value });
+        cmd.Parameters.Add(new NpgsqlParameter("pr", NpgsqlDbType.Uuid) { Value = (object?)dims?.ProjectId ?? DBNull.Value });
+        cmd.Parameters.Add(new NpgsqlParameter("pc", NpgsqlDbType.Uuid) { Value = (object?)dims?.ProfitCenterId ?? DBNull.Value });
+        cmd.Parameters.Add(new NpgsqlParameter("bu", NpgsqlDbType.Uuid) { Value = (object?)dims?.BusinessUnitId ?? DBNull.Value });
         cmd.Parameters.AddWithValue("t", tenantId);
         cmd.Parameters.AddWithValue("c", req.CompanyId);
         cmd.Parameters.AddWithValue("d", documentId);
@@ -746,6 +952,19 @@ public sealed class JournalDocumentPoster(NpgsqlDataSource source)
         cmd.Parameters.Add(new NpgsqlParameter("rrc", NpgsqlDbType.Numeric) { Value = (object?)l.RateRc ?? DBNull.Value });
         cmd.Parameters.AddWithValue("rt", l.RateType);
         cmd.Parameters.AddWithValue("rd", l.RateDate);
+        await cmd.ExecuteNonQueryAsync(ct);
+    }
+
+    private static async Task InsertFreeDimensionAsync(TenantTransaction tx, Guid tenantId, Guid companyId, Guid documentId, int lineNo, FreeDimension f, CancellationToken ct)
+    {
+        await using var cmd = tx.Command(
+            "insert into core.journal_line_dimension (tenant_id, company_id, document_id, line_no, dimension_type_id, dimension_value_id) values (@t, @c, @d, @n, @ty, @v)");
+        cmd.Parameters.AddWithValue("t", tenantId);
+        cmd.Parameters.AddWithValue("c", companyId);
+        cmd.Parameters.AddWithValue("d", documentId);
+        cmd.Parameters.AddWithValue("n", lineNo);
+        cmd.Parameters.AddWithValue("ty", f.DimensionTypeId);
+        cmd.Parameters.AddWithValue("v", f.DimensionValueId);
         await cmd.ExecuteNonQueryAsync(ct);
     }
 

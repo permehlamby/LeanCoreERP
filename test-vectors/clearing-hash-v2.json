@@ -1,0 +1,197 @@
+{
+  "version": 2,
+  "note": "Test vectors of 03, 6.1 (clearing row hash and items_digest). Expected values come from the independent implementation verify-clearing-hash-v2.mjs and are reproduced by the C# library.",
+  "cases": [
+    {
+      "name": "clean-match-genesis-no-document",
+      "tenant_id": "11111111-1111-4111-8111-111111111111",
+      "company_id": "22222222-2222-4222-8222-222222222222",
+      "chain_seq": 1,
+      "prev_hash": "GENESIS",
+      "document_row_hash": null,
+      "clearing": {
+        "clearing_id": "cccccccc-0000-4000-8000-000000000001",
+        "clearing_type": "CLEAR",
+        "clearing_date": "2026-10-21",
+        "fiscal_year": 2026,
+        "fiscal_period": 10,
+        "cleared_at": "2026-10-21T09:15:00.123456Z",
+        "account_id": "aaaaaaaa-0000-4000-8000-000000000101",
+        "partner_id": null,
+        "document_id": null,
+        "reset_of_clearing_id": null,
+        "clearing_method": "MANUAL",
+        "matching_ref": null,
+        "source_system": "TEST",
+        "idempotency_key": "clear-1",
+        "command_name": "clearings:post",
+        "cleared_by": "tester",
+        "correlation_id": "corr-1"
+      },
+      "items": [
+        {
+          "item_no": 1,
+          "clearing_date": "2026-10-21",
+          "open_item_document_id": "bbbbbbbb-0000-4000-8000-000000000001",
+          "open_item_line_no": 1,
+          "currency_tc": "EUR",
+          "cleared_amount_tc": "1250.00",
+          "cleared_amount_lc": "1250.00",
+          "cleared_amount_gc": "1250.00",
+          "cleared_amount_rc": null
+        },
+        {
+          "item_no": 2,
+          "clearing_date": "2026-10-21",
+          "open_item_document_id": "bbbbbbbb-0000-4000-8000-000000000002",
+          "open_item_line_no": 1,
+          "currency_tc": "EUR",
+          "cleared_amount_tc": "-1250.00",
+          "cleared_amount_lc": "-1250.00",
+          "cleared_amount_gc": "-1250.00",
+          "cleared_amount_rc": null
+        }
+      ],
+      "expected": {
+        "genesis": "4aafe8383717288a362487483bf86908c98c04193d0b5c9e7fa311f27bd0a039",
+        "items_digest": "8b0de4e23f05cc7e0b8ac7560b2b95b309edfc3309c218bb2b726bf1b767ce92",
+        "row_hash": "009499bfca874deba1eb2567ae86aeb4b8cd11461ecb67f364b05cea543d4cdb"
+      }
+    },
+    {
+      "name": "with-difference-document-partner-and-reporting-currency",
+      "tenant_id": "11111111-1111-4111-8111-111111111111",
+      "company_id": "22222222-2222-4222-8222-222222222222",
+      "chain_seq": 2,
+      "prev_hash": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "document_row_hash": "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+      "clearing": {
+        "clearing_id": "cccccccc-0000-4000-8000-000000000002",
+        "clearing_type": "CLEAR",
+        "clearing_date": "2026-10-22",
+        "fiscal_year": 2026,
+        "fiscal_period": 10,
+        "cleared_at": "2026-10-22T14:00:00.000001Z",
+        "account_id": "aaaaaaaa-0000-4000-8000-000000000102",
+        "partner_id": "aaaaaaaa-0000-4000-8000-000000000040",
+        "document_id": "bbbbbbbb-0000-4000-8000-0000000000d1",
+        "reset_of_clearing_id": null,
+        "clearing_method": "PAYMENT_ALLOCATION",
+        "matching_ref": "BANK-2026-10-22/7",
+        "source_system": "BANKAPP",
+        "idempotency_key": "clear-2",
+        "command_name": "clearings:post",
+        "cleared_by": "per.amby",
+        "correlation_id": "corr-2"
+      },
+      "items": [
+        {
+          "item_no": 1,
+          "clearing_date": "2026-10-22",
+          "open_item_document_id": "bbbbbbbb-0000-4000-8000-000000000003",
+          "open_item_line_no": 1,
+          "currency_tc": "USD",
+          "cleared_amount_tc": "100",
+          "cleared_amount_lc": "90.00",
+          "cleared_amount_gc": "12.1",
+          "cleared_amount_rc": "12.10"
+        },
+        {
+          "item_no": 2,
+          "clearing_date": "2026-10-22",
+          "open_item_document_id": "bbbbbbbb-0000-4000-8000-000000000004",
+          "open_item_line_no": 2,
+          "currency_tc": "USD",
+          "cleared_amount_tc": "-100.00",
+          "cleared_amount_lc": "-92.00",
+          "cleared_amount_gc": "-12.37",
+          "cleared_amount_rc": "-12.37"
+        },
+        {
+          "item_no": 3,
+          "clearing_date": "2026-10-22",
+          "open_item_document_id": "bbbbbbbb-0000-4000-8000-0000000000d1",
+          "open_item_line_no": 2,
+          "currency_tc": "USD",
+          "cleared_amount_tc": "0",
+          "cleared_amount_lc": "2.00",
+          "cleared_amount_gc": "0.27",
+          "cleared_amount_rc": "0.27"
+        }
+      ],
+      "expected": {
+        "genesis": "4aafe8383717288a362487483bf86908c98c04193d0b5c9e7fa311f27bd0a039",
+        "items_digest": "6f1f7793cd3248e37703ad25136ea6e62e7d14e9e7a5108a53b3b585d04b05e4",
+        "row_hash": "b9784c34b8aa36bdffc3f72a25a6b1daee3a63c8ee1e73dc544d26003639b284"
+      }
+    },
+    {
+      "name": "reset-with-unicode-and-items-in-reverse-order",
+      "tenant_id": "11111111-1111-4111-8111-111111111111",
+      "company_id": "22222222-2222-4222-8222-222222222222",
+      "chain_seq": 3,
+      "prev_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "document_row_hash": "1111111111111111111111111111111111111111111111111111111111111111",
+      "clearing": {
+        "clearing_id": "cccccccc-0000-4000-8000-000000000003",
+        "clearing_type": "RESET",
+        "clearing_date": "2026-11-02",
+        "fiscal_year": 2026,
+        "fiscal_period": 11,
+        "cleared_at": "2026-11-02T07:45:30.999999Z",
+        "account_id": "aaaaaaaa-0000-4000-8000-000000000102",
+        "partner_id": "aaaaaaaa-0000-4000-8000-000000000040",
+        "document_id": "bbbbbbbb-0000-4000-8000-0000000000d2",
+        "reset_of_clearing_id": "cccccccc-0000-4000-8000-000000000002",
+        "clearing_method": "MANUAL",
+        "matching_ref": "Fortrudt: forkert beløb æøå ÆØÅ",
+        "source_system": "TEST",
+        "idempotency_key": "reset-2",
+        "command_name": "clearings:reset",
+        "cleared_by": "per.amby",
+        "correlation_id": "corr-3"
+      },
+      "items": [
+        {
+          "item_no": 3,
+          "clearing_date": "2026-11-02",
+          "open_item_document_id": "bbbbbbbb-0000-4000-8000-0000000000d2",
+          "open_item_line_no": 2,
+          "currency_tc": "USD",
+          "cleared_amount_tc": "0.00",
+          "cleared_amount_lc": "-2.00",
+          "cleared_amount_gc": "-0.27",
+          "cleared_amount_rc": "-0.27"
+        },
+        {
+          "item_no": 2,
+          "clearing_date": "2026-11-02",
+          "open_item_document_id": "bbbbbbbb-0000-4000-8000-000000000004",
+          "open_item_line_no": 2,
+          "currency_tc": "USD",
+          "cleared_amount_tc": "100.00",
+          "cleared_amount_lc": "92.00",
+          "cleared_amount_gc": "12.37",
+          "cleared_amount_rc": "12.37"
+        },
+        {
+          "item_no": 1,
+          "clearing_date": "2026-11-02",
+          "open_item_document_id": "bbbbbbbb-0000-4000-8000-000000000003",
+          "open_item_line_no": 1,
+          "currency_tc": "USD",
+          "cleared_amount_tc": "-100.00",
+          "cleared_amount_lc": "-90.00",
+          "cleared_amount_gc": "-12.10",
+          "cleared_amount_rc": "-12.10"
+        }
+      ],
+      "expected": {
+        "genesis": "4aafe8383717288a362487483bf86908c98c04193d0b5c9e7fa311f27bd0a039",
+        "items_digest": "985170b8acef8342bff7b5771f2fa98ab705cc58d6ae1b94a70001d49ad0bab0",
+        "row_hash": "6be18caf81012213264d484bf45de27094e005e61068993e2ab6d5b9ce08ad59"
+      }
+    }
+  ]
+}
+

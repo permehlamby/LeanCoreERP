@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>financecore-platform</AssemblyName>
+    <RootNamespace>FinanceCore.Platform.Cli</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\FinanceCore.Data\FinanceCore.Data.csproj" />
+  </ItemGroup>
+
+</Project>

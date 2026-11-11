@@ -1,5 +1,6 @@
--- Finance core schema, generated from db/migrations (0001_foundation.sql, 0002_platform_reference.sql, 0003_organisation.sql, 0004_calendar_and_numbers.sql, 0005_ledger.sql, 0006_security_and_integrity.sql, 0007_posting_period_lock.sql, 0008_migration_role_membership.sql, 0009_config_outbox_head.sql, 0010_document_lookup.sql).
--- Do not edit: change the numbered files and run db/tools/build-all.mjs. Safe to run again.
+-- Finance core schema, generated from db/migrations (0001_foundation.sql, 0002_platform_reference.sql, 0003_organisation.sql, 0004_calendar_and_numbers.sql, 0005_ledger.sql, 0006_security_and_integrity.sql, 0007_posting_period_lock.sql, 0008_migration_role_membership.sql, 0009_config_outbox_head.sql, 0010_document_lookup.sql, 0011_account_roles.sql, 0012_change_logs.sql, 0013_l2_guard.sql, 0014_open_items.sql, 0015_clearing.sql, 0016_open_item_status.sql, 0017_business_partner.sql, 0018_open_item_partner.sql, 0019_retention_rule.sql, 0020_document_legal_snapshot.sql, 0021_posting_reads_partner.sql, 0022_dimensions.sql, 0023_vat_configuration.sql).
+-- Do not edit: change the numbered files and run db/tools/build-all.mjs.
+-- For an EMPTY database only. An existing database is brought up to date with financecore-platform db migrate (F-IMPL-32).
 
 -- ==================== 0001_foundation.sql ====================
 -- 0001 foundation: schemas, domains, roles, helper functions (spec 20, ADR-208, ADR-209)
@@ -1056,4 +1057,1938 @@ create index if not exists jd_document on core.journal_document (tenant_id, docu
 
 insert into platform.schema_migration (version, description)
 values ('0010', 'journal_document lookup by document_id')
+on conflict (version) do nothing;
+
+-- ==================== 0011_account_roles.sql ====================
+-- 0011 account_role_assignment (07, 6.3): the accounts the core posts to on its own (rounding, FX, retained earnings,
+-- intercompany, migration). The roles that depend on item group, warehouse, item or partner belong to
+-- account_determination (10, 3.9) and are not part of this table.
+
+create table if not exists core.account_role_assignment (
+    tenant_id              uuid not null,
+    company_id             uuid not null,
+    assignment_id          uuid not null default gen_random_uuid(),
+    role_code              core.code not null check (role_code in (
+        'ROUNDING', 'TAX_ROUNDING', 'FX_REALISED', 'FX_UNREALISED_GAIN', 'FX_UNREALISED_LOSS', 'RETAINED_EARNINGS',
+        'IC_RECEIVABLE', 'IC_PAYABLE', 'VAT_SETTLEMENT', 'MIGRATION_CLEARING', 'HISTORY_RESULT')),
+    currency_code          char(3) references platform.ref_currency(currency_code),
+    counterpart_company_id uuid,
+    vat_registration_id    uuid,      -- no FK: company_vat_registration (08, 4.1) does not exist yet
+    account_id             uuid not null,
+    effective_from         timestamptz not null,
+    primary key (tenant_id, company_id, assignment_id),
+    foreign key (tenant_id, company_id) references core.company (tenant_id, company_id),
+    foreign key (tenant_id, company_id, account_id) references core.gl_account (tenant_id, company_id, account_id),
+    foreign key (tenant_id, counterpart_company_id) references core.company (tenant_id, company_id),
+    -- 6.3: a currency belongs to the roles that are per currency, a counterpart to the IC roles, a registration to VAT_SETTLEMENT.
+    check (currency_code is null or role_code in ('ROUNDING', 'FX_UNREALISED_GAIN', 'FX_UNREALISED_LOSS')),
+    check ((counterpart_company_id is not null) = (role_code in ('IC_RECEIVABLE', 'IC_PAYABLE'))),
+    check (counterpart_company_id is null or counterpart_company_id <> company_id),
+    check (vat_registration_id is null or role_code = 'VAT_SETTLEMENT')
+);
+-- The unique key of 6.3 with the nullable parts replaced by a fixed marker (ADR-149, D5).
+create unique index if not exists account_role_assignment_key on core.account_role_assignment (
+    tenant_id, company_id, role_code,
+    coalesce(currency_code, '***'),
+    coalesce(counterpart_company_id, '00000000-0000-0000-0000-000000000000'::uuid),
+    coalesce(vat_registration_id, '00000000-0000-0000-0000-000000000000'::uuid),
+    effective_from);
+create index if not exists account_role_assignment_account on core.account_role_assignment (tenant_id, company_id, account_id);
+
+-- ---------------------------------------------------------------------------------------------------------
+-- Security: forced RLS, read for every command role, insert for the configuration role, never update or delete.
+-- A change of a role is a new row with a later effective_from (V table).
+-- ---------------------------------------------------------------------------------------------------------
+alter table core.account_role_assignment enable row level security;
+alter table core.account_role_assignment force row level security;
+do $$ begin
+    if not exists (select 1 from pg_policies where schemaname = 'core' and tablename = 'account_role_assignment' and policyname = 'tenant_isolation') then
+        create policy tenant_isolation on core.account_role_assignment using (tenant_id = core.current_tenant_id())
+            with check (tenant_id = core.current_tenant_id());
+    end if;
+end $$;
+revoke all on core.account_role_assignment from public;
+grant select on core.account_role_assignment to cmd_read, cmd_config, cmd_period, cmd_post;
+grant insert on core.account_role_assignment to cmd_config;
+
+drop trigger if exists account_role_assignment_append_only on core.account_role_assignment;
+create trigger account_role_assignment_append_only before update or delete on core.account_role_assignment
+    for each row execute function core.reject_change();
+drop trigger if exists account_role_assignment_no_truncate on core.account_role_assignment;
+create trigger account_role_assignment_no_truncate before truncate on core.account_role_assignment
+    for each statement execute function core.reject_change();
+
+-- ---------------------------------------------------------------------------------------------------------
+-- The account rules of the role table (07, 6.3) as a backstop. The command checks the same rules first and answers with
+-- parameters; this trigger stops every other writer. Error code in the message: CONFIG.ROLE_ACCOUNT_RULE_VIOLATED.
+-- Not checked here, because the table does not exist yet: "no mandatory dimension rules" (account_dimension_rule, 6.2).
+-- ---------------------------------------------------------------------------------------------------------
+create or replace function core.guard_account_role_assignment() returns trigger language plpgsql as $$
+declare a core.gl_account%rowtype; pl boolean; bs boolean;
+begin
+    select * into a from core.gl_account
+     where tenant_id = new.tenant_id and company_id = new.company_id and account_id = new.account_id;
+    if not found then
+        raise exception 'CONFIG.INVALID_REFERENCE: account % of the role % does not exist', new.account_id, new.role_code using errcode = '23503';
+    end if;
+    pl := new.role_code in ('ROUNDING', 'TAX_ROUNDING', 'FX_REALISED', 'FX_UNREALISED_GAIN', 'FX_UNREALISED_LOSS');
+    bs := new.role_code in ('IC_RECEIVABLE', 'IC_PAYABLE', 'VAT_SETTLEMENT', 'MIGRATION_CLEARING', 'HISTORY_RESULT');
+    if pl and a.account_type not in ('REVENUE', 'EXPENSE') then
+        raise exception 'CONFIG.ROLE_ACCOUNT_RULE_VIOLATED: role % needs a P&L account (ACCOUNT_TYPE)', new.role_code using errcode = '23514';
+    end if;
+    if bs and a.account_type not in ('ASSET', 'LIABILITY', 'EQUITY') then
+        raise exception 'CONFIG.ROLE_ACCOUNT_RULE_VIOLATED: role % needs a balance sheet account (ACCOUNT_TYPE)', new.role_code using errcode = '23514';
+    end if;
+    if new.role_code = 'RETAINED_EARNINGS' and a.account_type <> 'EQUITY' then
+        raise exception 'CONFIG.ROLE_ACCOUNT_RULE_VIOLATED: role RETAINED_EARNINGS needs an EQUITY account (ACCOUNT_TYPE)' using errcode = '23514';
+    end if;
+    if new.role_code = 'RETAINED_EARNINGS' and a.revalue_flag then
+        raise exception 'CONFIG.REVALUE_FLAG_ON_RETAINED_EARNINGS: the account has revalue_flag' using errcode = '23514';
+    end if;
+    if a.open_item_mode <> 'NONE' then
+        raise exception 'CONFIG.ROLE_ACCOUNT_RULE_VIOLATED: role % needs open_item_mode NONE (OPEN_ITEM_MODE)', new.role_code using errcode = '23514';
+    end if;
+    if exists (select 1 from core.account_role_assignment r
+                where r.tenant_id = new.tenant_id and r.company_id = new.company_id and r.account_id = new.account_id
+                  and r.role_code <> new.role_code) then
+        raise exception 'CONFIG.ROLE_ACCOUNT_RULE_VIOLATED: the account has another role (ONE_ROLE_PER_ACCOUNT)' using errcode = '23514';
+    end if;
+    if new.currency_code is not null and a.currency_code is not null and a.currency_code <> new.currency_code then
+        raise exception 'CONFIG.ROLE_ACCOUNT_RULE_VIOLATED: the account is for % only (CURRENCY)', a.currency_code using errcode = '23514';
+    end if;
+    if new.currency_code is null and a.currency_code is not null then
+        raise exception 'CONFIG.ROLE_ACCOUNT_RULE_VIOLATED: a default row needs an account without currency (CURRENCY)' using errcode = '23514';
+    end if;
+    if a.tax_account and new.role_code <> 'VAT_SETTLEMENT' then
+        raise exception 'CONFIG.ROLE_ACCOUNT_RULE_VIOLATED: a tax account accepts only VAT_SETTLEMENT (TAX_ACCOUNT)' using errcode = '23514';
+    end if;
+    return new;
+end $$;
+drop trigger if exists account_role_assignment_guard on core.account_role_assignment;
+create trigger account_role_assignment_guard before insert on core.account_role_assignment
+    for each row execute function core.guard_account_role_assignment();
+
+-- gl_account: what a role row fixes (07, 6.1 and the role rules F8, 1).
+create or replace function core.guard_gl_account() returns trigger language plpgsql as $$
+begin
+    if new.tax_account is distinct from old.tax_account and not (new.tax_account and not old.tax_account) then
+        raise exception 'gl_account: tax_account is never reset' using errcode = '23000';
+    end if;
+    if (new.account_type, new.open_item_mode, new.currency_code, new.account_no)
+       is distinct from (old.account_type, old.open_item_mode, old.currency_code, old.account_no)
+       and exists (select 1 from core.journal_line l
+                   where l.tenant_id = old.tenant_id and l.company_id = old.company_id and l.account_id = old.account_id) then
+        raise exception 'gl_account: account type, open item mode, currency and number are fixed once the account has postings'
+            using errcode = '23000';
+    end if;
+    if (new.account_type, new.open_item_mode) is distinct from (old.account_type, old.open_item_mode)
+       and exists (select 1 from core.account_role_assignment r
+                   where r.tenant_id = old.tenant_id and r.company_id = old.company_id and r.account_id = old.account_id) then
+        raise exception 'CONFIG.REFERENCED: account type and open item mode are fixed while a role refers to the account' using errcode = '23000';
+    end if;
+    if new.revalue_flag and not old.revalue_flag
+       and exists (select 1 from core.account_role_assignment r
+                   where r.tenant_id = old.tenant_id and r.company_id = old.company_id and r.account_id = old.account_id
+                     and r.role_code = 'RETAINED_EARNINGS') then
+        raise exception 'CONFIG.REVALUE_FLAG_ON_RETAINED_EARNINGS: the account has the role RETAINED_EARNINGS' using errcode = '23000';
+    end if;
+    return new;
+end $$;
+
+insert into platform.schema_migration (version, description)
+values ('0011', 'account_role_assignment with the account rules of the role table')
+on conflict (version) do nothing;
+
+-- ==================== 0012_change_logs.sql ====================
+-- 0012 change_log (02, 8) and master_change_log (07, 10.1): the field-level evidence of L2 changes of journal records
+-- and of changes of master data. Both are append-only. No command writes them yet: change_log waits for
+-- journal-documents:change-open-fields, master_change_log for the first {resource}:update of a master table (M).
+-- V tables (such as account_role_assignment) have no rows here: their rows are the history (07, 10.1).
+
+-- ---------------------------------------------------------------------------------------------------------
+-- change_log (02, 8)
+-- ---------------------------------------------------------------------------------------------------------
+create table if not exists core.change_log (
+    tenant_id       uuid not null,
+    change_id       uuid not null default gen_random_uuid(),
+    change_set_id   uuid not null,
+    company_id      uuid not null,
+    entity_type     core.code not null check (entity_type in (
+        'DOCUMENT', 'LINE', 'LINE_OPEN_ITEM', 'LINE_DIMENSION', 'LEGAL_SNAPSHOT', 'CLEARING', 'TAX_EVIDENCE')),
+    document_id     uuid,
+    clearing_id     uuid,     -- no FK: clearing (03, 4.1) does not exist yet
+    line_no         int,
+    sub_key         varchar(50),
+    field_name      core.code not null,
+    value_type      core.code not null check (value_type in ('AMOUNT', 'DATE', 'TEXT', 'ID', 'CODE', 'BOOL')),
+    old_value       varchar(500),
+    new_value       varchar(500),
+    lock_class      core.code not null check (lock_class in ('L2', 'L1*')),
+    period_status   core.code not null check (period_status in ('OPEN', 'SOFT_CLOSED', 'NONE')),
+    reason_code     core.code not null,
+    reason_text     varchar(500),
+    changed_by      varchar(100) not null,
+    changed_at      timestamptz not null,
+    correlation_id  varchar(100) not null,
+    idempotency_key varchar(100) not null,
+    primary key (tenant_id, change_id),
+    foreign key (tenant_id, company_id) references core.company (tenant_id, company_id),
+    foreign key (tenant_id, company_id, document_id) references core.journal_document (tenant_id, company_id, document_id),
+    foreign key (tenant_id, company_id, document_id, line_no) references core.journal_line (tenant_id, company_id, document_id, line_no),
+    -- 02, 8: exactly one of document_id and clearing_id is set. CLEARING has the clearing and no line.
+    check ((document_id is null) <> (clearing_id is null)),
+    check ((entity_type = 'CLEARING') = (clearing_id is not null)),
+    -- line_no: null for header changes and for CLEARING, set for the entity types that belong to a line.
+    check ((entity_type in ('LINE', 'LINE_OPEN_ITEM', 'LINE_DIMENSION', 'TAX_EVIDENCE')) = (line_no is not null)),
+    -- L2 changes happen in an open or soft-closed period (a hard-closed period rejects them, L3). The one logged L1
+    -- exception, the retention overwrite of the legal snapshot, is not period-governed and has the reason SYSTEM.
+    check ((lock_class = 'L2' and period_status in ('OPEN', 'SOFT_CLOSED') and reason_code <> 'SYSTEM')
+        or (lock_class = 'L1*' and period_status = 'NONE' and reason_code = 'SYSTEM' and entity_type = 'LEGAL_SNAPSHOT')),
+    check (old_value is distinct from new_value)
+);
+create index if not exists change_log_document on core.change_log (tenant_id, company_id, document_id, line_no);
+create index if not exists change_log_clearing on core.change_log (tenant_id, company_id, clearing_id);
+create index if not exists change_log_correlation on core.change_log (tenant_id, correlation_id);
+create index if not exists change_log_time on core.change_log (tenant_id, changed_at);
+
+-- ---------------------------------------------------------------------------------------------------------
+-- master_change_log (07, 10.1)
+-- ---------------------------------------------------------------------------------------------------------
+create table if not exists core.master_change_log (
+    tenant_id      uuid not null,
+    change_id      uuid not null default gen_random_uuid(),
+    change_set_id  uuid not null,
+    entity_type    core.code not null,
+    entity_id      varchar(100) not null,
+    action         core.code not null check (action in ('CREATE', 'UPDATE', 'DEACTIVATE', 'REACTIVATE', 'ANONYMISE', 'CLEAR')),
+    app_id         uuid,      -- no FK: app registration (15, 4) does not exist yet
+    field_name     core.code,
+    is_pii         boolean not null default false,
+    old_value      varchar(500),
+    new_value      varchar(500),
+    reason_code    core.code,
+    changed_by     varchar(100) not null,
+    changed_at     timestamptz not null,
+    correlation_id varchar(100) not null,
+    command_log_id uuid not null,
+    primary key (tenant_id, change_id),
+    foreign key (tenant_id) references platform.tenant (tenant_id),
+    -- The command writes its log row in the same transaction, after the change rows, so the check runs at commit.
+    foreign key (tenant_id, command_log_id) references core.command_log (tenant_id, command_log_id) deferrable initially deferred,
+    -- Null for CREATE (the whole row is the new state) and for DEACTIVATE. A field change names its field.
+    check (action not in ('CREATE', 'DEACTIVATE') or field_name is null),
+    check (action <> 'UPDATE' or field_name is not null),
+    -- The log never holds a personal value (07, 10.1). Anonymisation does not touch it, because it never held the values.
+    check (not is_pii or (old_value is null and new_value is null)),
+    -- A create or a deactivation carries no field values. An update changes a value.
+    check (action not in ('CREATE', 'DEACTIVATE') or (old_value is null and new_value is null)),
+    check (action <> 'UPDATE' or is_pii or old_value is distinct from new_value)
+);
+create index if not exists master_change_log_entity on core.master_change_log (tenant_id, entity_type, entity_id, changed_at);
+create index if not exists master_change_log_correlation on core.master_change_log (tenant_id, correlation_id);
+create index if not exists master_change_log_set on core.master_change_log (tenant_id, change_set_id);
+
+-- ---------------------------------------------------------------------------------------------------------
+-- Security: forced RLS, read for every command role, insert only for the roles that write the log, never update or delete.
+-- change_log: the posting role runs the change command (02, 10 lists "the change command role"), the retention role
+-- writes the L1* row of its snapshot overwrite. master_change_log: the configuration role, and the retention role for ANONYMISE.
+-- ---------------------------------------------------------------------------------------------------------
+do $$
+declare t text;
+begin
+    foreach t in array array['change_log', 'master_change_log'] loop
+        execute format('alter table core.%I enable row level security', t);
+        execute format('alter table core.%I force row level security', t);
+        if not exists (select 1 from pg_policies where schemaname = 'core' and tablename = t and policyname = 'tenant_isolation') then
+            execute format('create policy tenant_isolation on core.%I using (tenant_id = core.current_tenant_id()) with check (tenant_id = core.current_tenant_id())', t);
+        end if;
+        execute format('revoke all on core.%I from public', t);
+        execute format('grant select on core.%I to cmd_read, cmd_config, cmd_period, cmd_post', t);
+        execute format('drop trigger if exists %I on core.%I', t || '_append_only', t);
+        execute format('create trigger %I before update or delete on core.%I for each row execute function core.reject_change()', t || '_append_only', t);
+        execute format('drop trigger if exists %I on core.%I', t || '_no_truncate', t);
+        execute format('create trigger %I before truncate on core.%I for each statement execute function core.reject_change()', t || '_no_truncate', t);
+    end loop;
+end $$;
+grant insert on core.change_log to cmd_post, cmd_retention;
+grant insert on core.master_change_log to cmd_config, cmd_retention;
+grant select on core.change_log, core.master_change_log to cmd_retention;
+
+insert into platform.schema_migration (version, description)
+values ('0012', 'change_log and master_change_log, append-only')
+on conflict (version) do nothing;
+
+-- ==================== 0013_l2_guard.sql ====================
+-- 0013 The L2 columns open (F-IMPL-3, 02, 8 and 10): header_text and external_reference of a document and line_text of a line
+-- can change, and only together with a change_log row of the same transaction, and never in a hard-closed period (L3).
+-- Every other column stays locked: L1 never changes, the S columns of a document stay as 0006 allows them.
+-- Not built: the typed dimensions of a line (cost_center_id and the three others), because the dimension tables that
+-- validate them do not exist (06, 5.4 P4), the free dimensions, the open-item fields and the tax evidence.
+
+-- "The same transaction" is checked by content and by time, not by transaction id, which breaks under savepoints (F-IMPL-2):
+-- the log row must carry the old and the new value, the lock class L2, the status of the governing period, and the
+-- timestamp of this transaction (the command writes it with now()).
+create or replace function core.require_l2_log(
+    p_tenant uuid, p_company uuid, p_document uuid, p_line_no int, p_field text, p_old text, p_new text,
+    p_fiscal_year int, p_fiscal_period int) returns void language plpgsql as $$
+declare
+    v_status text;
+begin
+    select status into v_status from core.fiscal_period
+     where tenant_id = p_tenant and company_id = p_company and fiscal_year = p_fiscal_year and period_no = p_fiscal_period;
+    if v_status = 'HARD_CLOSED' then
+        raise exception 'LOCK.FIELD_LOCKED_L3: % cannot change in a hard-closed period', p_field using errcode = '23000';
+    end if;
+    if not exists (
+        select 1 from core.change_log c
+         where c.tenant_id = p_tenant and c.company_id = p_company and c.document_id = p_document
+           and c.line_no is not distinct from p_line_no
+           and c.entity_type = case when p_line_no is null then 'DOCUMENT' else 'LINE' end
+           and c.field_name = p_field
+           and c.old_value is not distinct from p_old and c.new_value is not distinct from p_new
+           and c.lock_class = 'L2' and c.period_status = v_status
+           and c.changed_at = transaction_timestamp()) then
+        raise exception 'journal record: the L2 column % cannot change without a matching change_log row in this transaction', p_field
+            using errcode = '23000';
+    end if;
+end $$;
+
+create or replace function core.guard_journal_document() returns trigger language plpgsql as $$
+begin
+    -- The S columns status and reversed_by_document_id and the L2 columns header_text and external_reference may change.
+    -- Everything else is L1.
+    if (to_jsonb(new) - array['status', 'reversed_by_document_id', 'header_text', 'external_reference'])
+       is distinct from (to_jsonb(old) - array['status', 'reversed_by_document_id', 'header_text', 'external_reference']) then
+        raise exception 'journal_document: an L1 column cannot change' using errcode = '23000';
+    end if;
+    if new.status is distinct from old.status and not (old.status = 'posted' and new.status = 'reversed') then
+        raise exception 'journal_document: status can only change from posted to reversed' using errcode = '23000';
+    end if;
+    if old.reversed_by_document_id is not null and new.reversed_by_document_id is distinct from old.reversed_by_document_id then
+        raise exception 'journal_document: reversed_by_document_id is never overwritten (B1)' using errcode = '23000';
+    end if;
+    if new.header_text is distinct from old.header_text then
+        perform core.require_l2_log(new.tenant_id, new.company_id, new.document_id, null, 'header_text',
+                                    old.header_text, new.header_text, new.fiscal_year, new.fiscal_period);
+    end if;
+    if new.external_reference is distinct from old.external_reference then
+        perform core.require_l2_log(new.tenant_id, new.company_id, new.document_id, null, 'external_reference',
+                                    old.external_reference, new.external_reference, new.fiscal_year, new.fiscal_period);
+    end if;
+    return new;
+end $$;
+
+create or replace function core.guard_journal_line() returns trigger language plpgsql as $$
+begin
+    -- Only line_text is open. The typed dimensions open with the dimension tables.
+    if (to_jsonb(new) - 'line_text') is distinct from (to_jsonb(old) - 'line_text') then
+        raise exception 'journal_line: only line_text can change, and only through the change command' using errcode = '23000';
+    end if;
+    if new.line_text is distinct from old.line_text then
+        perform core.require_l2_log(new.tenant_id, new.company_id, new.document_id, new.line_no, 'line_text',
+                                    old.line_text, new.line_text, new.fiscal_year, new.fiscal_period);
+    end if;
+    return new;
+end $$;
+
+-- The posting role runs the change command (02, 10). It gets UPDATE on the open columns only.
+grant update (header_text, external_reference) on core.journal_document to cmd_post;
+grant update (line_text) on core.journal_line to cmd_post;
+
+insert into platform.schema_migration (version, description)
+values ('0013', 'L2 columns of documents and lines open with a change_log row (F-IMPL-3)')
+on conflict (version) do nothing;
+
+-- ==================== 0014_open_items.sql ====================
+-- 0014 journal_line_open_item (02, 5A, ADR-033): the open-item attributes of a line on an open-item-managed account.
+-- Row existence marks an open item. This slice builds the accounts of mode GL_OPEN_ITEM (no partner). The accounts of mode
+-- CONTROL need business_partner (07, 9.1), which does not exist yet: partner_id has no foreign key and the backstop below
+-- rejects a CONTROL line, because a CONTROL line needs a partner. The clearing tables (03) do not exist either, so the S columns
+-- (clearing_status, cleared_amount_*, last_clearing_id) cannot change yet and last_clearing_id has no foreign key.
+
+create table if not exists core.journal_line_open_item (
+    tenant_id             uuid not null,
+    company_id            uuid not null,
+    document_id           uuid not null,
+    line_no               int  not null,
+    partner_id            uuid,                 -- L1. No FK until business_partner exists
+    baseline_date         date,                 -- L2
+    payment_terms_id      uuid,                 -- L2. No FK until payment_terms exists (07, 9.6)
+    due_date              date,                 -- L2. Mandatory for CONTROL accounts
+    discount_due_date     date,                 -- L2
+    discount_amount_tc    core.amt,             -- L2. Informational: the core posts no discount (Q9)
+    payment_block         core.code,            -- L2
+    dunning_block         core.code,            -- L2
+    payment_reference     varchar(100),         -- L2
+    bank_account_id       uuid,                 -- L2. No FK until company_bank_account exists (07, 9.5)
+    legacy_document_date  date,                 -- L1. Migrated open items (13, 6.3)
+    legacy_posting_date   date,                 -- L1
+    legacy_document_ref   varchar(100),         -- L1
+    clearing_status       core.code not null default 'OPEN' check (clearing_status in ('OPEN', 'PARTIAL', 'CLEARED')),  -- S
+    cleared_amount_tc     core.amt not null default 0,   -- S
+    cleared_amount_lc     core.amt not null default 0,   -- S
+    cleared_amount_gc     core.amt not null default 0,   -- S
+    cleared_amount_rc     core.amt,                      -- S. Null if the line has no RC amount
+    last_clearing_id      uuid,                 -- S. No FK until clearing exists (03, 4.1)
+    primary key (tenant_id, company_id, document_id, line_no),
+    foreign key (tenant_id, company_id, document_id, line_no) references core.journal_line (tenant_id, company_id, document_id, line_no),
+    -- a status that says nothing is cleared has nothing cleared
+    check (clearing_status <> 'OPEN' or (cleared_amount_tc = 0 and cleared_amount_lc = 0 and cleared_amount_gc = 0 and coalesce(cleared_amount_rc, 0) = 0)),
+    check (clearing_status = 'OPEN' or last_clearing_id is not null),
+    check (discount_amount_tc is null or discount_amount_tc >= 0)
+);
+create index if not exists jloi_partner_status on core.journal_line_open_item (tenant_id, company_id, partner_id, clearing_status);
+create index if not exists jloi_partner_due on core.journal_line_open_item (tenant_id, company_id, partner_id, due_date);
+
+-- ---------------------------------------------------------------------------------------------------------
+-- Security: forced RLS, read for every command role, insert by the posting role, UPDATE on the L2 columns for the change command
+-- (the posting role runs it, 02, 10). The S columns get their own grant when the clearing role exists. No delete.
+-- ---------------------------------------------------------------------------------------------------------
+alter table core.journal_line_open_item enable row level security;
+alter table core.journal_line_open_item force row level security;
+do $$ begin
+    if not exists (select 1 from pg_policies where schemaname = 'core' and tablename = 'journal_line_open_item' and policyname = 'tenant_isolation') then
+        create policy tenant_isolation on core.journal_line_open_item using (tenant_id = core.current_tenant_id())
+            with check (tenant_id = core.current_tenant_id());
+    end if;
+end $$;
+revoke all on core.journal_line_open_item from public;
+grant select on core.journal_line_open_item to cmd_read, cmd_config, cmd_period, cmd_post;
+grant insert on core.journal_line_open_item to cmd_post;
+grant update (baseline_date, payment_terms_id, due_date, discount_due_date, discount_amount_tc, payment_block, dunning_block,
+              payment_reference, bank_account_id) on core.journal_line_open_item to cmd_post;
+do $$ begin
+    execute 'drop trigger if exists journal_line_open_item_no_delete on core.journal_line_open_item';
+    execute 'create trigger journal_line_open_item_no_delete before delete on core.journal_line_open_item for each row execute function core.reject_delete()';
+    execute 'drop trigger if exists journal_line_open_item_no_truncate on core.journal_line_open_item';
+    execute 'create trigger journal_line_open_item_no_truncate before truncate on core.journal_line_open_item for each statement execute function core.reject_delete()';
+end $$;
+
+-- ---------------------------------------------------------------------------------------------------------
+-- The L2 guard knows the entity type (0013 chose DOCUMENT or LINE by the line number). The nine-argument form of 0013 stays
+-- and calls the new one.
+-- ---------------------------------------------------------------------------------------------------------
+create or replace function core.require_l2_log(
+    p_tenant uuid, p_company uuid, p_document uuid, p_line_no int, p_field text, p_old text, p_new text,
+    p_fiscal_year int, p_fiscal_period int, p_entity text) returns void language plpgsql as $$
+declare
+    v_status text;
+begin
+    select status into v_status from core.fiscal_period
+     where tenant_id = p_tenant and company_id = p_company and fiscal_year = p_fiscal_year and period_no = p_fiscal_period;
+    if v_status = 'HARD_CLOSED' then
+        raise exception 'LOCK.FIELD_LOCKED_L3: % cannot change in a hard-closed period', p_field using errcode = '23000';
+    end if;
+    if not exists (
+        select 1 from core.change_log c
+         where c.tenant_id = p_tenant and c.company_id = p_company and c.document_id = p_document
+           and c.line_no is not distinct from p_line_no
+           and c.entity_type = p_entity
+           and c.field_name = p_field
+           and c.old_value is not distinct from p_old and c.new_value is not distinct from p_new
+           and c.lock_class = 'L2' and c.period_status = v_status
+           and c.changed_at = transaction_timestamp()) then
+        raise exception 'journal record: the L2 column % cannot change without a matching change_log row in this transaction', p_field
+            using errcode = '23000';
+    end if;
+end $$;
+
+create or replace function core.require_l2_log(
+    p_tenant uuid, p_company uuid, p_document uuid, p_line_no int, p_field text, p_old text, p_new text,
+    p_fiscal_year int, p_fiscal_period int) returns void language sql as $$
+    select core.require_l2_log(p_tenant, p_company, p_document, p_line_no, p_field, p_old, p_new, p_fiscal_year, p_fiscal_period,
+                               case when p_line_no is null then 'DOCUMENT' else 'LINE' end)
+$$;
+
+-- ---------------------------------------------------------------------------------------------------------
+-- Lock classes of the open item (02, 5A and 10): L1 never changes, the L2 columns change with a change_log row (entity type
+-- LINE_OPEN_ITEM), the S columns change only with a clearing, which cannot exist yet.
+-- ---------------------------------------------------------------------------------------------------------
+create or replace function core.guard_journal_line_open_item() returns trigger language plpgsql as $$
+declare
+    v_year int; v_period int;
+    f text;
+    l2 constant text[] := array['baseline_date', 'payment_terms_id', 'due_date', 'discount_due_date', 'discount_amount_tc',
+                                'payment_block', 'dunning_block', 'payment_reference', 'bank_account_id'];
+    s  constant text[] := array['clearing_status', 'cleared_amount_tc', 'cleared_amount_lc', 'cleared_amount_gc', 'cleared_amount_rc', 'last_clearing_id'];
+begin
+    if (to_jsonb(new) - l2 - s) is distinct from (to_jsonb(old) - l2 - s) then
+        raise exception 'journal_line_open_item: an L1 column cannot change' using errcode = '23000';
+    end if;
+    if (to_jsonb(new) - l2) is distinct from (to_jsonb(old) - l2) then
+        raise exception 'journal_line_open_item: the S columns change only with a clearing, and clearing is not built yet' using errcode = '23000';
+    end if;
+    select fiscal_year, fiscal_period into v_year, v_period from core.journal_line
+     where tenant_id = new.tenant_id and company_id = new.company_id and document_id = new.document_id and line_no = new.line_no;
+    foreach f in array l2 loop
+        if (to_jsonb(new) ->> f) is distinct from (to_jsonb(old) ->> f) then
+            perform core.require_l2_log(new.tenant_id, new.company_id, new.document_id, new.line_no, f,
+                                        to_jsonb(old) ->> f, to_jsonb(new) ->> f, v_year, v_period, 'LINE_OPEN_ITEM');
+        end if;
+    end loop;
+    return new;
+end $$;
+drop trigger if exists journal_line_open_item_guard on core.journal_line_open_item;
+create trigger journal_line_open_item_guard before update on core.journal_line_open_item
+    for each row execute function core.guard_journal_line_open_item();
+
+-- ---------------------------------------------------------------------------------------------------------
+-- Backstop at commit (02, 5A): a line on an open-item account has a row, a line on a NONE account has none, a CONTROL line has a
+-- partner. Row existence is decided at posting, so the check reads the account once at commit. The lines of 02, 5A that are
+-- exempt (REVAL_ADJUSTMENT, CLOSING, HISTORY_PL, OPENING) carry no row. With no partner table yet, a CONTROL line cannot pass.
+-- ---------------------------------------------------------------------------------------------------------
+create or replace function core.check_open_item_rows() returns trigger language plpgsql as $$
+declare
+    v_type text; v_account uuid; v_mode text; v_partner uuid; v_has boolean;
+begin
+    select line_type, account_id into v_type, v_account from core.journal_line
+     where tenant_id = new.tenant_id and company_id = new.company_id and document_id = new.document_id and line_no = new.line_no;
+    if v_type in ('REVAL_ADJUSTMENT', 'CLOSING', 'HISTORY_PL', 'OPENING') then
+        return null;
+    end if;
+    select open_item_mode into v_mode from core.gl_account
+     where tenant_id = new.tenant_id and company_id = new.company_id and account_id = v_account;
+    select true, partner_id into v_has, v_partner from core.journal_line_open_item
+     where tenant_id = new.tenant_id and company_id = new.company_id and document_id = new.document_id and line_no = new.line_no;
+    v_has := coalesce(v_has, false);
+    if v_mode = 'NONE' and v_has then
+        raise exception 'journal_line_open_item: line % of document % is on an account that is not open-item managed', new.line_no, new.document_id using errcode = '23514';
+    end if;
+    if v_mode <> 'NONE' and not v_has then
+        raise exception 'journal_line_open_item: line % of document % is on an open-item account and has no open item row', new.line_no, new.document_id using errcode = '23514';
+    end if;
+    if v_mode = 'CONTROL' and v_partner is null then
+        raise exception 'journal_line_open_item: line % of document % is on a control account and has no partner', new.line_no, new.document_id using errcode = '23514';
+    end if;
+    if v_mode = 'GL_OPEN_ITEM' and v_partner is not null then
+        raise exception 'journal_line_open_item: line % of document % is on a GL open-item account, which takes no partner', new.line_no, new.document_id using errcode = '23514';
+    end if;
+    return null;
+end $$;
+drop trigger if exists journal_line_open_item_rows on core.journal_line;
+create constraint trigger journal_line_open_item_rows after insert on core.journal_line
+    deferrable initially deferred for each row execute function core.check_open_item_rows();
+drop trigger if exists journal_line_open_item_rows_oi on core.journal_line_open_item;
+create constraint trigger journal_line_open_item_rows_oi after insert on core.journal_line_open_item
+    deferrable initially deferred for each row execute function core.check_open_item_rows();
+
+insert into platform.schema_migration (version, description)
+values ('0014', 'journal_line_open_item for GL_OPEN_ITEM accounts, with its guards')
+on conflict (version) do nothing;
+
+-- ==================== 0015_clearing.sql ====================
+-- 0015 clearing (03): the clearing record, its items, the clearing chain, the clearing command role and the rule that the
+-- S columns of an open item are a cache of the clearing items (03, 4.3). No command writes these tables yet: clearings:post
+-- (03, 5) and clearings:reset come next. The hash is computed by the application (ADR-211, 03, 6.1), SQL checks the links.
+
+-- ---------------------------------------------------------------------------------------------------------
+-- The clearing command role (02, 10: "the clearing command role"). It is not a member of cmd_post: a restrictive policy
+-- of 0006 limits cmd_post to the LEDGER head, and membership would make both policies apply. It gets the grants it needs
+-- itself: its own chain, a CLEARING difference document with its number and its LEDGER head, and the S columns of open items.
+-- ---------------------------------------------------------------------------------------------------------
+do $$ begin
+    if not exists (select 1 from pg_roles where rolname = 'cmd_clearing') then
+        create role cmd_clearing nologin;
+    end if;
+end $$;
+grant cmd_clearing to core_app;
+do $$ begin
+    if exists (select 1 from pg_roles where rolname = 'postgres') then
+        grant cmd_clearing to postgres;
+    end if;
+end $$;
+
+grant usage on schema platform, core to cmd_clearing;
+
+-- ---------------------------------------------------------------------------------------------------------
+-- clearing (03, 4.1)
+-- ---------------------------------------------------------------------------------------------------------
+create table if not exists core.clearing (
+    tenant_id            uuid not null,
+    company_id           uuid not null,
+    clearing_id          uuid not null default gen_random_uuid(),
+    chain_seq            bigint not null check (chain_seq >= 1),
+    clearing_type        core.code not null check (clearing_type in ('CLEAR', 'RESET')),
+    clearing_date        date not null,
+    fiscal_year          int not null,
+    fiscal_period        int not null,
+    cleared_at           timestamptz not null,
+    account_id           uuid not null,
+    partner_id           uuid,                 -- no FK until business_partner exists. Null only for GL_OPEN_ITEM accounts
+    document_id          uuid,                 -- the difference document, if one was posted
+    reset_of_clearing_id uuid,
+    clearing_method      core.code not null check (clearing_method in ('MANUAL', 'AUTO_MATCH', 'PAYMENT_ALLOCATION', 'REVERSAL')),
+    matching_ref         varchar(100),
+    source_system        core.code not null,
+    idempotency_key      varchar(100) not null,
+    command_name         core.code not null,
+    cleared_by           varchar(100) not null,
+    correlation_id       varchar(100) not null,
+    note                 varchar(200),         -- L2. Changes will be logged with entity type CLEARING (02, 8). Not changeable yet
+    prev_hash            core.hash32 not null,
+    row_hash             core.hash32 not null,
+    hash_version         smallint not null check (hash_version in (1, 2)),
+    primary key (tenant_id, company_id, clearing_id),
+    unique (tenant_id, company_id, chain_seq),
+    unique (tenant_id, idempotency_key),
+    unique (tenant_id, company_id, clearing_id, clearing_date),    -- the target of the date copy of clearing_item
+    foreign key (tenant_id, company_id) references core.company (tenant_id, company_id),
+    foreign key (tenant_id, company_id, account_id) references core.gl_account (tenant_id, company_id, account_id),
+    foreign key (tenant_id, company_id, document_id) references core.journal_document (tenant_id, company_id, document_id),
+    foreign key (tenant_id, company_id, reset_of_clearing_id) references core.clearing (tenant_id, company_id, clearing_id),
+    foreign key (tenant_id, company_id, fiscal_year, fiscal_period) references core.fiscal_period (tenant_id, company_id, fiscal_year, period_no),
+    check ((reset_of_clearing_id is not null) = (clearing_type = 'RESET')),
+    check (reset_of_clearing_id is distinct from clearing_id)
+);
+create unique index if not exists clearing_document on core.clearing (tenant_id, company_id, document_id) where document_id is not null;
+create unique index if not exists clearing_reset_of on core.clearing (tenant_id, company_id, reset_of_clearing_id) where reset_of_clearing_id is not null;
+create index if not exists clearing_account_partner on core.clearing (tenant_id, company_id, account_id, partner_id);
+
+-- ---------------------------------------------------------------------------------------------------------
+-- clearing_item (03, 4.2)
+-- ---------------------------------------------------------------------------------------------------------
+create table if not exists core.clearing_item (
+    tenant_id             uuid not null,
+    company_id            uuid not null,
+    clearing_id           uuid not null,
+    item_no               int not null check (item_no >= 1),
+    clearing_date         date not null,
+    open_item_document_id uuid not null,
+    open_item_line_no     int not null,
+    currency_tc           char(3) not null references platform.ref_currency (currency_code),
+    cleared_amount_tc     core.amt not null,
+    cleared_amount_lc     core.amt not null,
+    cleared_amount_gc     core.amt not null,
+    cleared_amount_rc     core.amt,
+    primary key (tenant_id, company_id, clearing_id, item_no),
+    unique (tenant_id, company_id, clearing_id, open_item_document_id, open_item_line_no),
+    foreign key (tenant_id, company_id, clearing_id, clearing_date) references core.clearing (tenant_id, company_id, clearing_id, clearing_date),
+    foreign key (tenant_id, company_id, open_item_document_id, open_item_line_no)
+        references core.journal_line_open_item (tenant_id, company_id, document_id, line_no)
+);
+create index if not exists clearing_item_open_item on core.clearing_item
+    (tenant_id, company_id, open_item_document_id, open_item_line_no, clearing_date);
+
+-- The open item points at the clearing that touched it last (S column of 0014).
+do $$ begin
+    if not exists (select 1 from pg_constraint where conname = 'journal_line_open_item_last_clearing_fk') then
+        alter table core.journal_line_open_item add constraint journal_line_open_item_last_clearing_fk
+            foreign key (tenant_id, company_id, last_clearing_id) references core.clearing (tenant_id, company_id, clearing_id);
+    end if;
+end $$;
+
+-- ---------------------------------------------------------------------------------------------------------
+-- Security: forced RLS, read for every command role, append-only, insert for the clearing role only.
+-- ---------------------------------------------------------------------------------------------------------
+do $$
+declare t text;
+begin
+    foreach t in array array['clearing', 'clearing_item'] loop
+        execute format('alter table core.%I enable row level security', t);
+        execute format('alter table core.%I force row level security', t);
+        if not exists (select 1 from pg_policies where schemaname = 'core' and tablename = t and policyname = 'tenant_isolation') then
+            execute format('create policy tenant_isolation on core.%I using (tenant_id = core.current_tenant_id()) with check (tenant_id = core.current_tenant_id())', t);
+        end if;
+        execute format('revoke all on core.%I from public', t);
+        execute format('grant select on core.%I to cmd_read, cmd_config, cmd_period, cmd_post, cmd_clearing', t);
+        execute format('drop trigger if exists %I on core.%I', t || '_append_only', t);
+        execute format('create trigger %I before update or delete on core.%I for each row execute function core.reject_change()', t || '_append_only', t);
+        execute format('drop trigger if exists %I on core.%I', t || '_no_truncate', t);
+        execute format('create trigger %I before truncate on core.%I for each statement execute function core.reject_change()', t || '_no_truncate', t);
+    end loop;
+end $$;
+grant insert on core.clearing, core.clearing_item to cmd_clearing;
+
+-- What the clearing role needs besides its own tables. A difference document (type CLEARING) is a journal document, so the role
+-- inserts documents, lines and open item rows, takes a number, moves the LEDGER head and, for a reset, marks the mirrored
+-- document as reversed. It locks the period rows in share mode (A1) and writes the command log and the outbox.
+grant select on all tables in schema core to cmd_clearing;
+grant select on all tables in schema platform to cmd_clearing;
+grant insert on core.journal_document, core.journal_line, core.journal_line_open_item, core.command_log, core.command_log_result,
+      core.outbox_event, core.chain_head to cmd_clearing;
+grant update (status, reversed_by_document_id) on core.journal_document to cmd_clearing;
+grant update (last_number, updated_at) on core.number_range_counter to cmd_clearing;
+grant update (last_seq, last_hash, hash_version, updated_at) on core.chain_head to cmd_clearing;
+grant update (last_position) on core.outbox_head to cmd_clearing;
+grant update (last_event_id) on core.fiscal_period, core.fiscal_year to cmd_clearing;
+-- The S columns of an open item (02, 5A, 10). Only the clearing role changes them.
+grant update (clearing_status, cleared_amount_tc, cleared_amount_lc, cleared_amount_gc, cleared_amount_rc, last_clearing_id)
+      on core.journal_line_open_item to cmd_clearing;
+
+-- A command role moves only its own chain (02, 9.2). The clearing role moves CLEARING, and LEDGER for its difference documents.
+drop policy if exists chain_head_clearing on core.chain_head;
+create policy chain_head_clearing on core.chain_head as restrictive for update to cmd_clearing
+    using (chain_type in ('LEDGER', 'CLEARING')) with check (chain_type in ('LEDGER', 'CLEARING'));
+
+-- ---------------------------------------------------------------------------------------------------------
+-- The S columns of an open item (03, 4.3). The guard of 0014 rejected every change. Now the clearing role may change them, and
+-- the check at commit below makes sure that they are what the clearing items say. A change of an L1 column is still rejected.
+-- ---------------------------------------------------------------------------------------------------------
+create or replace function core.guard_journal_line_open_item() returns trigger language plpgsql as $$
+declare
+    v_year int; v_period int;
+    f text;
+    l2 constant text[] := array['baseline_date', 'payment_terms_id', 'due_date', 'discount_due_date', 'discount_amount_tc',
+                                'payment_block', 'dunning_block', 'payment_reference', 'bank_account_id'];
+    s  constant text[] := array['clearing_status', 'cleared_amount_tc', 'cleared_amount_lc', 'cleared_amount_gc', 'cleared_amount_rc', 'last_clearing_id'];
+begin
+    if (to_jsonb(new) - l2 - s) is distinct from (to_jsonb(old) - l2 - s) then
+        raise exception 'journal_line_open_item: an L1 column cannot change' using errcode = '23000';
+    end if;
+    if (to_jsonb(new) - l2) is distinct from (to_jsonb(old) - l2) and not pg_has_role(current_user, 'cmd_clearing', 'member') then
+        raise exception 'journal_line_open_item: the S columns change only by the clearing role' using errcode = '23000';
+    end if;
+    select fiscal_year, fiscal_period into v_year, v_period from core.journal_line
+     where tenant_id = new.tenant_id and company_id = new.company_id and document_id = new.document_id and line_no = new.line_no;
+    foreach f in array l2 loop
+        if (to_jsonb(new) ->> f) is distinct from (to_jsonb(old) ->> f) then
+            perform core.require_l2_log(new.tenant_id, new.company_id, new.document_id, new.line_no, f,
+                                        to_jsonb(old) ->> f, to_jsonb(new) ->> f, v_year, v_period, 'LINE_OPEN_ITEM');
+        end if;
+    end loop;
+    return new;
+end $$;
+
+-- The cache of an open item is the sum of its clearing items (ADR-037, 03, 4.3): the cleared amounts, the status and the most
+-- recent clearing. The cleared amount stays between 0 and the line amount, in transaction and in local currency, with the sign of
+-- the line (never over-cleared, never negative, 4.2). Checked at commit, for the open item that a row of either table names.
+create or replace function core.check_open_item_cache() returns trigger language plpgsql as $$
+declare
+    v_t uuid := new.tenant_id; v_c uuid := new.company_id; v_doc uuid; v_line int;
+    l core.journal_line%rowtype; o core.journal_line_open_item%rowtype;
+    s_tc numeric; s_lc numeric; s_gc numeric; s_rc numeric; n int; v_last uuid; v_status text;
+begin
+    if tg_table_name = 'clearing_item' then
+        v_doc := new.open_item_document_id; v_line := new.open_item_line_no;
+    else
+        v_doc := new.document_id; v_line := new.line_no;
+    end if;
+    select * into o from core.journal_line_open_item where tenant_id = v_t and company_id = v_c and document_id = v_doc and line_no = v_line;
+    select * into l from core.journal_line where tenant_id = v_t and company_id = v_c and document_id = v_doc and line_no = v_line;
+    select coalesce(sum(cleared_amount_tc), 0), coalesce(sum(cleared_amount_lc), 0), coalesce(sum(cleared_amount_gc), 0),
+           sum(cleared_amount_rc), count(*)
+      into s_tc, s_lc, s_gc, s_rc, n
+      from core.clearing_item
+     where tenant_id = v_t and company_id = v_c and open_item_document_id = v_doc and open_item_line_no = v_line;
+    select c.clearing_id into v_last from core.clearing c
+      join core.clearing_item i on i.tenant_id = c.tenant_id and i.company_id = c.company_id and i.clearing_id = c.clearing_id
+     where i.tenant_id = v_t and i.company_id = v_c and i.open_item_document_id = v_doc and i.open_item_line_no = v_line
+     order by c.chain_seq desc limit 1;
+
+    if s_tc not between least(0, l.amount_tc) and greatest(0, l.amount_tc)
+       or s_lc not between least(0, l.amount_lc) and greatest(0, l.amount_lc) then
+        raise exception 'open item % line %: cleared amounts (tc %, lc %) are outside the line amount (tc %, lc %)',
+            v_doc, v_line, s_tc, s_lc, l.amount_tc, l.amount_lc using errcode = '23514';
+    end if;
+    if o.cleared_amount_tc <> s_tc or o.cleared_amount_lc <> s_lc or o.cleared_amount_gc <> s_gc
+       or coalesce(o.cleared_amount_rc, 0) <> coalesce(s_rc, 0) then
+        raise exception 'open item % line %: the cleared amounts differ from the sum of the clearing items', v_doc, v_line using errcode = '23514';
+    end if;
+    v_status := case when s_tc = 0 and s_lc = 0 then 'OPEN'
+                     when s_tc = l.amount_tc and s_lc = l.amount_lc then 'CLEARED' else 'PARTIAL' end;
+    if o.clearing_status <> v_status then
+        raise exception 'open item % line %: clearing_status is % but the clearing items give %', v_doc, v_line, o.clearing_status, v_status using errcode = '23514';
+    end if;
+    if o.last_clearing_id is distinct from v_last then
+        raise exception 'open item % line %: last_clearing_id is not the most recent clearing of the item', v_doc, v_line using errcode = '23514';
+    end if;
+    return null;
+end $$;
+drop trigger if exists journal_line_open_item_cache on core.journal_line_open_item;
+create constraint trigger journal_line_open_item_cache after insert or update on core.journal_line_open_item
+    deferrable initially deferred for each row execute function core.check_open_item_cache();
+drop trigger if exists clearing_item_cache on core.clearing_item;
+create constraint trigger clearing_item_cache after insert on core.clearing_item
+    deferrable initially deferred for each row execute function core.check_open_item_cache();
+
+-- ---------------------------------------------------------------------------------------------------------
+-- A clearing at commit (03, 4.1, 4.2, 5.3): its items are on its account and partner, in the currency of their document, with a
+-- reporting amount where the line has one. They net to zero in local and group currency and in reporting currency, and in transaction
+-- currency when they share one. A CLEAR has at least two items (the offset line of a difference document is one of them), a
+-- reset at least one. The difference document is of the type that belongs to the clearing type and has the date of the clearing.
+-- A reset undoes a CLEAR of the same account and partner (5.4).
+-- ---------------------------------------------------------------------------------------------------------
+create or replace function core.check_clearing_content() returns trigger language plpgsql as $$
+declare
+    c core.clearing%rowtype; n int; ccy int; s_tc numeric; s_lc numeric; s_gc numeric; s_rc numeric; bad int; d record; r record; v_type text;
+begin
+    select * into c from core.clearing where tenant_id = new.tenant_id and company_id = new.company_id and clearing_id = new.clearing_id;
+    select count(*), count(distinct currency_tc), sum(cleared_amount_tc), sum(cleared_amount_lc), sum(cleared_amount_gc), sum(cleared_amount_rc)
+      into n, ccy, s_tc, s_lc, s_gc, s_rc
+      from core.clearing_item where tenant_id = c.tenant_id and company_id = c.company_id and clearing_id = c.clearing_id;
+    if n < 1 or (c.clearing_type = 'CLEAR' and n < 2) then
+        raise exception 'clearing %: a % has % item(s)', c.clearing_id, c.clearing_type, n using errcode = '23514';
+    end if;
+    if s_lc <> 0 or s_gc <> 0 or coalesce(s_rc, 0) <> 0 or (ccy = 1 and s_tc <> 0) then
+        raise exception 'clearing %: the items do not net to zero (tc %, lc %, gc %, rc %)', c.clearing_id, s_tc, s_lc, s_gc, s_rc using errcode = '23514';
+    end if;
+    select count(*) into bad
+      from core.clearing_item i
+      join core.journal_line l on l.tenant_id = i.tenant_id and l.company_id = i.company_id and l.document_id = i.open_item_document_id and l.line_no = i.open_item_line_no
+      join core.journal_document d2 on d2.tenant_id = l.tenant_id and d2.company_id = l.company_id and d2.document_id = l.document_id
+      join core.journal_line_open_item o on o.tenant_id = l.tenant_id and o.company_id = l.company_id and o.document_id = l.document_id and o.line_no = l.line_no
+     where i.tenant_id = c.tenant_id and i.company_id = c.company_id and i.clearing_id = c.clearing_id
+       and (l.account_id <> c.account_id
+            or o.partner_id is distinct from c.partner_id
+            or i.currency_tc <> d2.transaction_currency
+            or (i.cleared_amount_rc is null) <> (l.amount_rc is null));
+    if bad > 0 then
+        raise exception 'clearing %: % item(s) are not on the account and partner of the clearing, or differ in currency or reporting amount from their line', c.clearing_id, bad using errcode = '23514';
+    end if;
+    if c.document_id is not null then
+        select document_type, posting_date into d from core.journal_document
+         where tenant_id = c.tenant_id and company_id = c.company_id and document_id = c.document_id;
+        v_type := case when c.clearing_type = 'CLEAR' then 'CLEARING' else 'CLEARING_RESET' end;
+        if d.document_type <> v_type or d.posting_date <> c.clearing_date then
+            raise exception 'clearing %: the difference document must be of type % and dated %', c.clearing_id, v_type, c.clearing_date using errcode = '23514';
+        end if;
+    end if;
+    if c.clearing_type = 'RESET' then
+        select clearing_type, account_id, partner_id into r from core.clearing
+         where tenant_id = c.tenant_id and company_id = c.company_id and clearing_id = c.reset_of_clearing_id;
+        if r.clearing_type <> 'CLEAR' or r.account_id <> c.account_id or r.partner_id is distinct from c.partner_id then
+            raise exception 'clearing %: a reset undoes a CLEAR of the same account and partner', c.clearing_id using errcode = '23514';
+        end if;
+    end if;
+    return null;
+end $$;
+drop trigger if exists clearing_content on core.clearing;
+create constraint trigger clearing_content after insert on core.clearing
+    deferrable initially deferred for each row execute function core.check_clearing_content();
+drop trigger if exists clearing_item_content on core.clearing_item;
+create constraint trigger clearing_item_content after insert on core.clearing_item
+    deferrable initially deferred for each row execute function core.check_clearing_content();
+
+-- The clearing chain (03, 6, 02, 9.2): the head equals the newest clearing, the clearing links to its predecessor, sequence 1
+-- starts at the genesis value (from the same text as the application's library).
+create or replace function core.check_clearing_chain() returns trigger language plpgsql as $$
+declare h core.chain_head%rowtype; max_seq bigint; max_hash bytea; expected_prev bytea;
+begin
+    select * into h from core.chain_head
+     where tenant_id = new.tenant_id and company_id = new.company_id and chain_type = 'CLEARING' and scope_key = '';
+    if not found then
+        raise exception 'no CLEARING chain head for company %', new.company_id using errcode = '23514';
+    end if;
+    select chain_seq, row_hash into max_seq, max_hash from core.clearing
+     where tenant_id = new.tenant_id and company_id = new.company_id order by chain_seq desc limit 1;
+    if h.last_seq <> max_seq or h.last_hash <> max_hash then
+        raise exception 'CLEARING chain head (seq %) does not match the newest clearing (seq %)', h.last_seq, max_seq using errcode = '23514';
+    end if;
+    if new.chain_seq = 1 then
+        expected_prev := sha256(convert_to('genesis|' || new.tenant_id::text || '|' || new.company_id::text || '|CLEARING|', 'UTF8'));
+    else
+        select row_hash into expected_prev from core.clearing
+         where tenant_id = new.tenant_id and company_id = new.company_id and chain_seq = new.chain_seq - 1;
+    end if;
+    if expected_prev is distinct from new.prev_hash then
+        raise exception 'clearing % does not link to its predecessor in the chain', new.clearing_id using errcode = '23514';
+    end if;
+    return null;
+end $$;
+drop trigger if exists clearing_chain on core.clearing;
+create constraint trigger clearing_chain after insert on core.clearing
+    deferrable initially deferred for each row execute function core.check_clearing_chain();
+
+insert into platform.schema_migration (version, description)
+values ('0015', 'clearing and clearing_item, the clearing chain and role, and the cache rule of the open item S columns')
+on conflict (version) do nothing;
+
+-- ==================== 0016_open_item_status.sql ====================
+-- 0016 The status of an open item looks at every currency (03, 4.3, finding F-IMPL-20). 0015 used TC and LC: OPEN at TC 0 and LC 0,
+-- CLEARED at the line's TC and LC. The offset line of a difference document that arises only in group or reporting currency has TC 0 and
+-- LC 0 and could never be CLEARED. Now OPEN means nothing is cleared in any currency, CLEARED that every currency of the line is
+-- cleared, and the cleared group amount stays between 0 and the line amount like TC and LC.
+
+create or replace function core.check_open_item_cache() returns trigger language plpgsql as $$
+declare
+    v_t uuid := new.tenant_id; v_c uuid := new.company_id; v_doc uuid; v_line int;
+    l core.journal_line%rowtype; o core.journal_line_open_item%rowtype;
+    s_tc numeric; s_lc numeric; s_gc numeric; s_rc numeric; n int; v_last uuid; v_status text;
+begin
+    if tg_table_name = 'clearing_item' then
+        v_doc := new.open_item_document_id; v_line := new.open_item_line_no;
+    else
+        v_doc := new.document_id; v_line := new.line_no;
+    end if;
+    select * into o from core.journal_line_open_item where tenant_id = v_t and company_id = v_c and document_id = v_doc and line_no = v_line;
+    select * into l from core.journal_line where tenant_id = v_t and company_id = v_c and document_id = v_doc and line_no = v_line;
+    select coalesce(sum(cleared_amount_tc), 0), coalesce(sum(cleared_amount_lc), 0), coalesce(sum(cleared_amount_gc), 0),
+           sum(cleared_amount_rc), count(*)
+      into s_tc, s_lc, s_gc, s_rc, n
+      from core.clearing_item
+     where tenant_id = v_t and company_id = v_c and open_item_document_id = v_doc and open_item_line_no = v_line;
+    select c.clearing_id into v_last from core.clearing c
+      join core.clearing_item i on i.tenant_id = c.tenant_id and i.company_id = c.company_id and i.clearing_id = c.clearing_id
+     where i.tenant_id = v_t and i.company_id = v_c and i.open_item_document_id = v_doc and i.open_item_line_no = v_line
+     order by c.chain_seq desc limit 1;
+
+    if s_tc not between least(0, l.amount_tc) and greatest(0, l.amount_tc)
+       or s_lc not between least(0, l.amount_lc) and greatest(0, l.amount_lc)
+       or s_gc not between least(0, l.amount_gc) and greatest(0, l.amount_gc) then
+        raise exception 'open item % line %: cleared amounts (tc %, lc %, gc %) are outside the line amount (tc %, lc %, gc %)',
+            v_doc, v_line, s_tc, s_lc, s_gc, l.amount_tc, l.amount_lc, l.amount_gc using errcode = '23514';
+    end if;
+    if o.cleared_amount_tc <> s_tc or o.cleared_amount_lc <> s_lc or o.cleared_amount_gc <> s_gc
+       or coalesce(o.cleared_amount_rc, 0) <> coalesce(s_rc, 0) then
+        raise exception 'open item % line %: the cleared amounts differ from the sum of the clearing items', v_doc, v_line using errcode = '23514';
+    end if;
+    -- OPEN when nothing is cleared in any currency, CLEARED when every currency of the line is cleared, else PARTIAL. TC and LC alone
+    -- would not do: the offset line of a difference document that arises only in group or reporting currency has TC 0 and LC 0.
+    v_status := case when s_tc = 0 and s_lc = 0 and s_gc = 0 and coalesce(s_rc, 0) = 0 then 'OPEN'
+                     when s_tc = l.amount_tc and s_lc = l.amount_lc and s_gc = l.amount_gc and coalesce(s_rc, 0) = coalesce(l.amount_rc, 0) then 'CLEARED'
+                     else 'PARTIAL' end;
+    if o.clearing_status <> v_status then
+        raise exception 'open item % line %: clearing_status is % but the clearing items give %', v_doc, v_line, o.clearing_status, v_status using errcode = '23514';
+    end if;
+    if o.last_clearing_id is distinct from v_last then
+        raise exception 'open item % line %: last_clearing_id is not the most recent clearing of the item', v_doc, v_line using errcode = '23514';
+    end if;
+    return null;
+end $$;
+
+insert into platform.schema_migration (version, description)
+values ('0016', 'open item status looks at every currency')
+on conflict (version) do nothing;
+
+-- ==================== 0017_business_partner.sql ====================
+-- 0017 The partner master (07, 9.1 to 9.3) and payment terms (07, 9.6): business_partner, business_partner_pii (anonymisable),
+-- partner_company_relation and payment_terms, all pattern M (current state, row_version, every change in master_change_log).
+-- Written by the commands of 07, 11.1 (write.master for the partner, write.config for the terms). Not in this migration: partner_tax_registration
+-- (waits for tax), the bank accounts (07, 9.5), the anonymisation and the retention columns' writers (12). The foreign keys of the
+-- columns that already carry a partner or terms (open items, clearings) are added with the posting of CONTROL accounts.
+
+-- ---------------------------------------------------------------------------------------------------------
+-- payment_terms (07, 9.6)
+-- ---------------------------------------------------------------------------------------------------------
+create table if not exists core.payment_terms (
+    tenant_id        uuid not null references platform.tenant (tenant_id),
+    payment_terms_id uuid not null default gen_random_uuid(),
+    code             core.code not null,
+    description      varchar(100) not null,
+    baseline_rule    core.code not null check (baseline_rule in ('DOCUMENT_DATE', 'POSTING_DATE', 'END_OF_MONTH')),
+    net_days         smallint not null check (net_days >= 0),
+    discount_days    smallint check (discount_days >= 0),
+    discount_pct     core.rate check (discount_pct > 0 and discount_pct <= 100),
+    active           boolean not null default true,
+    row_version      bigint not null default 1,
+    created_at       timestamptz not null default now(),
+    created_by       varchar(100) not null,
+    updated_at       timestamptz not null default now(),
+    updated_by       varchar(100) not null,
+    primary key (tenant_id, payment_terms_id),
+    unique (tenant_id, code),
+    check ((discount_days is null) = (discount_pct is null))
+);
+
+-- ---------------------------------------------------------------------------------------------------------
+-- business_partner (07, 9.1): nothing in this table is personal data
+-- ---------------------------------------------------------------------------------------------------------
+create table if not exists core.business_partner (
+    tenant_id                    uuid not null references platform.tenant (tenant_id),
+    partner_id                   uuid not null default gen_random_uuid(),
+    partner_code                 core.code not null,
+    partner_kind                 core.code not null check (partner_kind in ('ORGANISATION', 'PERSON')),   -- IAP
+    is_customer                  boolean not null default false,
+    is_supplier                  boolean not null default false,
+    ic_company_id                uuid,
+    tenant_credit_limit          core.amt check (tenant_credit_limit >= 0),
+    tenant_credit_limit_currency char(3) references platform.ref_currency (currency_code),
+    status                       core.code not null default 'ACTIVE' check (status in ('ACTIVE', 'BLOCKED', 'ANONYMISED')),
+    retention_until              date,                                 -- S, written by the retention job (12, 4.2)
+    retention_floor              date,                                 -- S, written by retention:extend (12)
+    restriction_status           core.code not null default 'NONE' check (restriction_status in ('NONE', 'RESTRICTED')),   -- S, data subject requests (12, 5.3)
+    anonymised_at                timestamptz,                          -- S, written by the retention job
+    row_version                  bigint not null default 1,
+    created_at                   timestamptz not null default now(),
+    created_by                   varchar(100) not null,
+    updated_at                   timestamptz not null default now(),
+    updated_by                   varchar(100) not null,
+    primary key (tenant_id, partner_id),
+    unique (tenant_id, partner_code),
+    foreign key (tenant_id, ic_company_id) references core.company (tenant_id, company_id),
+    check (tenant_credit_limit is null or tenant_credit_limit_currency is not null),
+    check ((status = 'ANONYMISED') = (anonymised_at is not null))
+);
+
+-- ---------------------------------------------------------------------------------------------------------
+-- business_partner_pii (07, 9.2): personal data, 1:1 with the partner, anonymised with it
+-- ---------------------------------------------------------------------------------------------------------
+create table if not exists core.business_partner_pii (
+    tenant_id                uuid not null,
+    partner_id               uuid not null,
+    legal_name               varchar(200) not null,
+    trade_name               varchar(200),
+    address_line_1           varchar(200),
+    address_line_2           varchar(200),
+    postal_code              varchar(20),
+    city                     varchar(100),
+    country_code             char(2) not null references platform.ref_country (country_code),
+    email                    varchar(200),
+    phone                    varchar(50),
+    contact_person           varchar(200),
+    electronic_address       varchar(100),
+    electronic_address_scheme core.code,
+    legal_registration_id    varchar(50),
+    row_version              bigint not null default 1,
+    created_at               timestamptz not null default now(),
+    created_by               varchar(100) not null,
+    updated_at               timestamptz not null default now(),
+    updated_by               varchar(100) not null,
+    primary key (tenant_id, partner_id),
+    foreign key (tenant_id, partner_id) references core.business_partner (tenant_id, partner_id)
+);
+
+-- ---------------------------------------------------------------------------------------------------------
+-- partner_company_relation (07, 9.3)
+-- ---------------------------------------------------------------------------------------------------------
+create table if not exists core.partner_company_relation (
+    tenant_id                uuid not null,
+    partner_id               uuid not null,
+    company_id               uuid not null,
+    is_customer              boolean not null default false,
+    is_supplier              boolean not null default false,
+    default_payment_terms_id uuid,
+    credit_limit             core.amt check (credit_limit >= 0),
+    credit_limit_currency    char(3) references platform.ref_currency (currency_code),
+    default_currency         char(3) references platform.ref_currency (currency_code),
+    payment_block            core.code,
+    dunning_block            core.code,
+    status                   core.code not null default 'ACTIVE' check (status in ('ACTIVE', 'BLOCKED')),
+    row_version              bigint not null default 1,
+    created_at               timestamptz not null default now(),
+    created_by               varchar(100) not null,
+    updated_at               timestamptz not null default now(),
+    updated_by               varchar(100) not null,
+    primary key (tenant_id, partner_id, company_id),
+    foreign key (tenant_id, partner_id) references core.business_partner (tenant_id, partner_id),
+    foreign key (tenant_id, company_id) references core.company (tenant_id, company_id),
+    foreign key (tenant_id, default_payment_terms_id) references core.payment_terms (tenant_id, payment_terms_id),
+    check (credit_limit is null or credit_limit_currency is not null)
+);
+create index if not exists partner_company_relation_company on core.partner_company_relation (tenant_id, company_id);
+
+-- ---------------------------------------------------------------------------------------------------------
+-- Security: forced RLS, read for the command roles, write for the configuration role only, never delete.
+-- The partner's S columns have no UPDATE grant: the retention job and the data subject commands get theirs with their commands (12).
+-- ---------------------------------------------------------------------------------------------------------
+do $$
+declare t text;
+begin
+    foreach t in array array['payment_terms', 'business_partner', 'business_partner_pii', 'partner_company_relation'] loop
+        execute format('alter table core.%I enable row level security', t);
+        execute format('alter table core.%I force row level security', t);
+        if not exists (select 1 from pg_policies where schemaname = 'core' and tablename = t and policyname = 'tenant_isolation') then
+            execute format('create policy tenant_isolation on core.%I using (tenant_id = core.current_tenant_id()) with check (tenant_id = core.current_tenant_id())', t);
+        end if;
+        execute format('revoke all on core.%I from public', t);
+        execute format('drop trigger if exists %I on core.%I', t || '_no_delete', t);
+        execute format('create trigger %I before delete on core.%I for each row execute function core.reject_delete()', t || '_no_delete', t);
+        execute format('drop trigger if exists %I on core.%I', t || '_no_truncate', t);
+        execute format('create trigger %I before truncate on core.%I for each statement execute function core.reject_delete()', t || '_no_truncate', t);
+    end loop;
+end $$;
+-- the personal data is read by the roles that need it: the posting roles for the legal snapshot (02, 4) come with the invoice types
+grant select on core.payment_terms, core.business_partner, core.partner_company_relation
+      to cmd_read, cmd_config, cmd_period, cmd_post, cmd_clearing, cmd_retention;
+grant select on core.business_partner_pii to cmd_read, cmd_config, cmd_retention;
+grant insert on core.payment_terms, core.business_partner, core.business_partner_pii, core.partner_company_relation to cmd_config;
+grant update (code, description, baseline_rule, net_days, discount_days, discount_pct, active, row_version, updated_at, updated_by)
+      on core.payment_terms to cmd_config;
+grant update (partner_code, partner_kind, is_customer, is_supplier, ic_company_id, tenant_credit_limit, tenant_credit_limit_currency, status,
+              row_version, updated_at, updated_by) on core.business_partner to cmd_config;
+grant update (legal_name, trade_name, address_line_1, address_line_2, postal_code, city, country_code, email, phone, contact_person,
+              electronic_address, electronic_address_scheme, legal_registration_id, row_version, updated_at, updated_by)
+      on core.business_partner_pii to cmd_config;
+grant update (is_customer, is_supplier, default_payment_terms_id, credit_limit, credit_limit_currency, default_currency, payment_block,
+              dunning_block, status, row_version, updated_at, updated_by) on core.partner_company_relation to cmd_config;
+
+-- ---------------------------------------------------------------------------------------------------------
+-- Guards (07, 2.3, 9.1): the kind of a partner is IAP, an anonymised partner changes no more, and only the retention job anonymises
+-- ---------------------------------------------------------------------------------------------------------
+create or replace function core.guard_business_partner() returns trigger language plpgsql as $$
+begin
+    if old.status = 'ANONYMISED' and not pg_has_role(current_user, 'cmd_retention', 'member') then
+        raise exception 'MASTER.PARTNER_ANONYMISED: an anonymised partner cannot change' using errcode = '23000';
+    end if;
+    if new.status = 'ANONYMISED' and old.status <> 'ANONYMISED' and not pg_has_role(current_user, 'cmd_retention', 'member') then
+        raise exception 'business_partner: only the retention job anonymises a partner' using errcode = '23000';
+    end if;
+    if new.partner_kind <> old.partner_kind and exists (
+        select 1 from core.journal_line_open_item o where o.tenant_id = old.tenant_id and o.partner_id = old.partner_id) then
+        raise exception 'CONFIG.IMMUTABLE_AFTER_POSTING: partner_kind of a partner that open items refer to cannot change' using errcode = '23000';
+    end if;
+    return new;
+end $$;
+drop trigger if exists business_partner_guard on core.business_partner;
+create trigger business_partner_guard before update on core.business_partner
+    for each row execute function core.guard_business_partner();
+
+create or replace function core.guard_partner_dependents() returns trigger language plpgsql as $$
+begin
+    if exists (select 1 from core.business_partner p where p.tenant_id = new.tenant_id and p.partner_id = new.partner_id and p.status = 'ANONYMISED')
+       and not pg_has_role(current_user, 'cmd_retention', 'member') then
+        raise exception 'MASTER.PARTNER_ANONYMISED: the data of an anonymised partner cannot change' using errcode = '23000';
+    end if;
+    return new;
+end $$;
+drop trigger if exists business_partner_pii_guard on core.business_partner_pii;
+create trigger business_partner_pii_guard before update on core.business_partner_pii
+    for each row execute function core.guard_partner_dependents();
+drop trigger if exists partner_company_relation_guard on core.partner_company_relation;
+create trigger partner_company_relation_guard before update on core.partner_company_relation
+    for each row execute function core.guard_partner_dependents();
+
+insert into platform.schema_migration (version, description)
+values ('0017', 'business_partner, business_partner_pii, partner_company_relation and payment_terms')
+on conflict (version) do nothing;
+
+-- ==================== 0018_open_item_partner.sql ====================
+-- 0018 Partners on open items (02, 5A, 07, 9). The partner and the payment terms of an open item, and the partner of a clearing, now refer to
+-- their tables. A CONTROL line needs a partner (0014) and now also a due date, at posting and for good: the due date of such an open item cannot
+-- be cleared by a change (06, 5.4). Whether a partner may be posted to (status, relation, restriction) is a rule of the command, not of a key.
+
+do $$ begin
+    if not exists (select 1 from pg_constraint where conname = 'journal_line_open_item_partner_fk') then
+        alter table core.journal_line_open_item add constraint journal_line_open_item_partner_fk
+            foreign key (tenant_id, partner_id) references core.business_partner (tenant_id, partner_id);
+    end if;
+    if not exists (select 1 from pg_constraint where conname = 'journal_line_open_item_terms_fk') then
+        alter table core.journal_line_open_item add constraint journal_line_open_item_terms_fk
+            foreign key (tenant_id, payment_terms_id) references core.payment_terms (tenant_id, payment_terms_id);
+    end if;
+    if not exists (select 1 from pg_constraint where conname = 'clearing_partner_fk') then
+        alter table core.clearing add constraint clearing_partner_fk
+            foreign key (tenant_id, partner_id) references core.business_partner (tenant_id, partner_id);
+    end if;
+end $$;
+
+create or replace function core.guard_journal_line_open_item() returns trigger language plpgsql as $$
+declare
+    v_year int; v_period int;
+    f text;
+    l2 constant text[] := array['baseline_date', 'payment_terms_id', 'due_date', 'discount_due_date', 'discount_amount_tc',
+                                'payment_block', 'dunning_block', 'payment_reference', 'bank_account_id'];
+    s  constant text[] := array['clearing_status', 'cleared_amount_tc', 'cleared_amount_lc', 'cleared_amount_gc', 'cleared_amount_rc', 'last_clearing_id'];
+begin
+    if (to_jsonb(new) - l2 - s) is distinct from (to_jsonb(old) - l2 - s) then
+        raise exception 'journal_line_open_item: an L1 column cannot change' using errcode = '23000';
+    end if;
+    if (to_jsonb(new) - l2) is distinct from (to_jsonb(old) - l2) and not pg_has_role(current_user, 'cmd_clearing', 'member') then
+        raise exception 'journal_line_open_item: the S columns change only by the clearing role' using errcode = '23000';
+    end if;
+    -- the due date of an open item on a control account stays mandatory (02, 5A, 06, 5.4)
+    if new.due_date is null and old.due_date is not null and exists (
+        select 1 from core.journal_line l join core.gl_account a on a.tenant_id = l.tenant_id and a.company_id = l.company_id and a.account_id = l.account_id
+         where l.tenant_id = new.tenant_id and l.company_id = new.company_id and l.document_id = new.document_id and l.line_no = new.line_no
+           and a.open_item_mode = 'CONTROL') then
+        raise exception 'ACCOUNT_RULE.DUE_DATE_REQUIRED: the due date of an open item on a control account cannot be cleared' using errcode = '23000';
+    end if;
+    select fiscal_year, fiscal_period into v_year, v_period from core.journal_line
+     where tenant_id = new.tenant_id and company_id = new.company_id and document_id = new.document_id and line_no = new.line_no;
+    foreach f in array l2 loop
+        if (to_jsonb(new) ->> f) is distinct from (to_jsonb(old) ->> f) then
+            perform core.require_l2_log(new.tenant_id, new.company_id, new.document_id, new.line_no, f,
+                                        to_jsonb(old) ->> f, to_jsonb(new) ->> f, v_year, v_period, 'LINE_OPEN_ITEM');
+        end if;
+    end loop;
+    return new;
+end $$;
+
+create or replace function core.check_open_item_rows() returns trigger language plpgsql as $$
+declare
+    v_type text; v_account uuid; v_mode text; v_partner uuid; v_due date; v_has boolean;
+begin
+    select line_type, account_id into v_type, v_account from core.journal_line
+     where tenant_id = new.tenant_id and company_id = new.company_id and document_id = new.document_id and line_no = new.line_no;
+    if v_type in ('REVAL_ADJUSTMENT', 'CLOSING', 'HISTORY_PL', 'OPENING') then
+        return null;
+    end if;
+    select open_item_mode into v_mode from core.gl_account
+     where tenant_id = new.tenant_id and company_id = new.company_id and account_id = v_account;
+    select true, partner_id, due_date into v_has, v_partner, v_due from core.journal_line_open_item
+     where tenant_id = new.tenant_id and company_id = new.company_id and document_id = new.document_id and line_no = new.line_no;
+    v_has := coalesce(v_has, false);
+    if v_mode = 'NONE' and v_has then
+        raise exception 'journal_line_open_item: line % of document % is on an account that is not open-item managed', new.line_no, new.document_id using errcode = '23514';
+    end if;
+    if v_mode <> 'NONE' and not v_has then
+        raise exception 'journal_line_open_item: line % of document % is on an open-item account and has no open item row', new.line_no, new.document_id using errcode = '23514';
+    end if;
+    if v_mode = 'CONTROL' and v_partner is null then
+        raise exception 'journal_line_open_item: line % of document % is on a control account and has no partner', new.line_no, new.document_id using errcode = '23514';
+    end if;
+    if v_mode = 'CONTROL' and v_due is null then
+        raise exception 'journal_line_open_item: line % of document % is on a control account and has no due date', new.line_no, new.document_id using errcode = '23514';
+    end if;
+    if v_mode = 'GL_OPEN_ITEM' and v_partner is not null then
+        raise exception 'journal_line_open_item: line % of document % is on a GL open-item account, which takes no partner', new.line_no, new.document_id using errcode = '23514';
+    end if;
+    return null;
+end $$;
+
+insert into platform.schema_migration (version, description)
+values ('0018', 'partner and payment terms of an open item refer to their tables, the due date of a control account item stays')
+on conflict (version) do nothing;
+
+-- ==================== 0019_retention_rule.sql ====================
+-- 0019 retention_rule (12, 4.1): how long a record class is kept, per company and country, versioned. A rule change affects only records created
+-- afterwards (12, Q13), so the table is insert-only (pattern V). The records that store a date take it from here at creation: the legal snapshot of
+-- a document comes with the next step. Written by retention-rules:create-version (permission retention.manage), read by the posting commands.
+
+create table if not exists core.retention_rule (
+    tenant_id       uuid not null,
+    company_id      uuid not null,
+    rule_id         uuid not null,
+    effective_from  timestamptz not null,
+    record_class    core.code not null check (record_class in (
+        'LEDGER', 'VAT_RETURN', 'STOCK', 'ORDER', 'FULFILMENT', 'INVOICE_ISSUE', 'LEGAL_SNAPSHOT', 'ADDRESS_SNAPSHOT', 'AUDIT_LOG', 'READ_LOG')),
+    country_code    char(2) not null references platform.ref_country (country_code),
+    retention_years smallint not null check (retention_years between 1 and 100),
+    start_event     core.code not null check (start_event in (
+        'FISCAL_YEAR_END', 'RECORD_DATE', 'CALENDAR_YEAR_END_OF_RECORD', 'CALENDAR_YEAR_END_OF_FISCAL_YEAR')),
+    legal_basis     varchar(200),
+    created_at      timestamptz not null default now(),
+    created_by      varchar(100) not null,
+    primary key (tenant_id, company_id, rule_id, effective_from),
+    foreign key (tenant_id, company_id) references core.company (tenant_id, company_id),
+    -- one version of a rule at a time: a rule is a (company, class, country)
+    unique (tenant_id, company_id, record_class, country_code, effective_from)
+);
+create index if not exists retention_rule_class on core.retention_rule (tenant_id, company_id, record_class, effective_from);
+
+-- All versions of a rule_id are versions of the same rule: the class and the country never change (12, 4.1)
+create or replace function core.guard_retention_rule() returns trigger language plpgsql as $$
+begin
+    if exists (select 1 from core.retention_rule r
+                where r.tenant_id = new.tenant_id and r.company_id = new.company_id and r.rule_id = new.rule_id
+                  and (r.record_class <> new.record_class or r.country_code <> new.country_code)) then
+        raise exception 'retention_rule: the class and the country of a rule do not change between its versions' using errcode = '23000';
+    end if;
+    return new;
+end $$;
+drop trigger if exists retention_rule_guard on core.retention_rule;
+create trigger retention_rule_guard before insert on core.retention_rule
+    for each row execute function core.guard_retention_rule();
+
+alter table core.retention_rule enable row level security;
+alter table core.retention_rule force row level security;
+do $$ begin
+    if not exists (select 1 from pg_policies where schemaname = 'core' and tablename = 'retention_rule' and policyname = 'tenant_isolation') then
+        create policy tenant_isolation on core.retention_rule using (tenant_id = core.current_tenant_id()) with check (tenant_id = core.current_tenant_id());
+    end if;
+end $$;
+revoke all on core.retention_rule from public;
+grant select on core.retention_rule to cmd_read, cmd_config, cmd_period, cmd_post, cmd_clearing, cmd_retention;
+grant insert on core.retention_rule to cmd_config;
+drop trigger if exists retention_rule_append_only on core.retention_rule;
+create trigger retention_rule_append_only before update or delete on core.retention_rule
+    for each row execute function core.reject_change();
+drop trigger if exists retention_rule_no_truncate on core.retention_rule;
+create trigger retention_rule_no_truncate before truncate on core.retention_rule
+    for each statement execute function core.reject_change();
+
+insert into platform.schema_migration (version, description)
+values ('0019', 'retention_rule, versioned and insert-only')
+on conflict (version) do nothing;
+
+-- ==================== 0020_document_legal_snapshot.sql ====================
+-- 0020 document_legal_snapshot (02, 4): the legal name, address and retention date of a document, 1:1 with journal_document and outside the hash
+-- (P8, ADR-008). Every document has one, whoever writes it (posting, reversal, clearing difference document, reset mirror): the deferred trigger
+-- below is the backstop. The personal columns stay empty until the header partner exists (step 3): the snapshot of a document without a partner
+-- carries only its retention date. retention_until comes from the retention rules at creation (12, 4.1, consistency rule). The table is insert-only
+-- here: the retention job (overwrite of the L1* columns, anonymised_at) and retention:extend (retention_until) come with their own commands.
+
+create table if not exists core.document_legal_snapshot (
+    tenant_id                 uuid not null,
+    company_id                uuid not null,
+    document_id               uuid not null,
+    partner_id                uuid,
+    legal_name                varchar(200),
+    address_line_1            varchar(200),
+    address_line_2            varchar(200),
+    postal_code               varchar(20),
+    city                      varchar(100),
+    country_code              char(2) references platform.ref_country (country_code),
+    partner_vat_id            varchar(30),
+    electronic_address        varchar(100),
+    electronic_address_scheme core.code,
+    legal_registration_id     varchar(50),
+    anonymised_at             timestamptz,
+    retention_until           date not null,
+    primary key (tenant_id, company_id, document_id),
+    foreign key (tenant_id, company_id, document_id) references core.journal_document (tenant_id, company_id, document_id),
+    foreign key (tenant_id, partner_id) references core.business_partner (tenant_id, partner_id)
+);
+
+alter table core.document_legal_snapshot enable row level security;
+alter table core.document_legal_snapshot force row level security;
+do $$ begin
+    if not exists (select 1 from pg_policies where schemaname = 'core' and tablename = 'document_legal_snapshot' and policyname = 'tenant_isolation') then
+        create policy tenant_isolation on core.document_legal_snapshot
+            using (tenant_id = core.current_tenant_id()) with check (tenant_id = core.current_tenant_id());
+    end if;
+end $$;
+revoke all on core.document_legal_snapshot from public;
+grant select on core.document_legal_snapshot to cmd_read, cmd_config, cmd_period, cmd_post, cmd_clearing, cmd_retention;
+grant insert on core.document_legal_snapshot to cmd_post, cmd_clearing;
+drop trigger if exists document_legal_snapshot_append_only on core.document_legal_snapshot;
+create trigger document_legal_snapshot_append_only before update or delete on core.document_legal_snapshot
+    for each row execute function core.reject_change();
+drop trigger if exists document_legal_snapshot_no_truncate on core.document_legal_snapshot;
+create trigger document_legal_snapshot_no_truncate before truncate on core.document_legal_snapshot
+    for each statement execute function core.reject_change();
+
+-- Backstop: a document without a snapshot cannot be committed (02, 4: 1:1)
+create or replace function core.check_document_has_snapshot() returns trigger language plpgsql as $$
+begin
+    if not exists (select 1 from core.document_legal_snapshot where tenant_id = new.tenant_id and company_id = new.company_id
+                   and document_id = new.document_id) then
+        raise exception 'document % has no legal snapshot', new.document_id using errcode = '23514';
+    end if;
+    return null;
+end $$;
+drop trigger if exists journal_document_has_snapshot on core.journal_document;
+create constraint trigger journal_document_has_snapshot after insert on core.journal_document
+    deferrable initially deferred for each row execute function core.check_document_has_snapshot();
+
+insert into platform.schema_migration (version, description)
+values ('0020', 'document_legal_snapshot, one per document')
+on conflict (version) do nothing;
+
+-- ==================== 0021_posting_reads_partner.sql ====================
+-- 0021 The posting role reads the partner for the legal snapshot of a document (02, 4, 06, 5.2): the name, address, country, electronic address and
+-- registration id of business_partner_pii. Column grants: the contact data (email, phone, contact person) stays out of reach of the posting role.
+
+-- 0006 and 0015 grant select on all tables of the schema to these roles. They did not reach this table on a fresh database (it came later in 0017),
+-- but they do when the schema file is applied again over an existing database, and a table grant would make the column grant below meaningless.
+-- Found on Supabase (F-IMPL-32): the posting role could read the contact data.
+revoke all on core.business_partner_pii from cmd_period, cmd_post, cmd_clearing;
+
+grant select (tenant_id, partner_id, legal_name, address_line_1, address_line_2, postal_code, city, country_code,
+              electronic_address, electronic_address_scheme, legal_registration_id)
+    on core.business_partner_pii to cmd_post;
+
+insert into platform.schema_migration (version, description)
+values ('0021', 'the posting role reads the partner for the legal snapshot')
+on conflict (version) do nothing;
+
+-- ==================== 0022_dimensions.sql ====================
+-- 0022 Dimensions (02, 5.3 and 6, 07, 6.2 and 6.5, ADR-010, ADR-034, ADR-067): dimension_type and dimension_value (pattern M),
+-- account_dimension_rule (M), journal_line_dimension (the free dimensions of a line), the keys of the four typed columns of journal_line,
+-- and the opening of the L2 columns cost_center_id, project_id, profit_center_id, business_unit_id and journal_line_dimension.dimension_value_id
+-- (a change needs a change_log row of the same transaction, as for line_text in 0013).
+-- The four standard types exist in every tenant: a trigger on platform.tenant creates them, and this script creates them for the tenants that exist.
+-- What is validated where: the command checks the rules of the account, the validity of a value at the posting date and its state (06, 5.2 P2 and P4).
+-- The database checks what never depends on a date: the type of a value against the column or the type it is used for, the company restriction,
+-- the hierarchy, and who may change what.
+
+-- ---------------------------------------------------------------------------------------------------------
+-- dimension_type (07, 6.5)
+-- ---------------------------------------------------------------------------------------------------------
+create table if not exists core.dimension_type (
+    tenant_id         uuid not null references platform.tenant (tenant_id),
+    dimension_type_id uuid not null default gen_random_uuid(),
+    type_code         core.code not null,
+    name              varchar(100) not null,
+    kind              core.code not null check (kind in ('STANDARD', 'FREE')),                                                 -- IAP
+    standard_role     core.code check (standard_role in ('COST_CENTER', 'PROJECT', 'PROFIT_CENTER', 'BUSINESS_UNIT')),         -- IAP
+    active            boolean not null default true,
+    row_version       bigint not null default 1,
+    created_at        timestamptz not null default now(),
+    created_by        varchar(100) not null,
+    updated_at        timestamptz not null default now(),
+    updated_by        varchar(100) not null,
+    primary key (tenant_id, dimension_type_id),
+    unique (tenant_id, type_code),
+    check ((kind = 'STANDARD') = (standard_role is not null)),
+    check (kind = 'FREE' or active)                                                                                        -- a standard type is never deactivated
+);
+create unique index if not exists dimension_type_standard_role on core.dimension_type (tenant_id, standard_role) where standard_role is not null;
+
+-- ---------------------------------------------------------------------------------------------------------
+-- dimension_value (07, 6.5): tenant-wide with an optional company restriction (ADR-067)
+-- ---------------------------------------------------------------------------------------------------------
+create table if not exists core.dimension_value (
+    tenant_id          uuid not null references platform.tenant (tenant_id),
+    dimension_value_id uuid not null default gen_random_uuid(),
+    dimension_type_id  uuid not null,                                                                                      -- IAP
+    company_id         uuid,                                                                                               -- null = all companies of the tenant, IAP once referenced
+    value_code         core.code not null,
+    name               varchar(100) not null,
+    parent_value_id    uuid,
+    valid_from         date not null,
+    valid_to           date,
+    active             boolean not null default true,
+    row_version        bigint not null default 1,
+    created_at         timestamptz not null default now(),
+    created_by         varchar(100) not null,
+    updated_at         timestamptz not null default now(),
+    updated_by         varchar(100) not null,
+    primary key (tenant_id, dimension_value_id),
+    unique (tenant_id, dimension_type_id, value_code),
+    unique (tenant_id, dimension_value_id, dimension_type_id),
+    foreign key (tenant_id, dimension_type_id) references core.dimension_type (tenant_id, dimension_type_id),
+    foreign key (tenant_id, company_id) references core.company (tenant_id, company_id),
+    foreign key (tenant_id, parent_value_id, dimension_type_id) references core.dimension_value (tenant_id, dimension_value_id, dimension_type_id),
+    check (valid_to is null or valid_to >= valid_from),
+    check (parent_value_id is null or parent_value_id <> dimension_value_id)
+);
+create index if not exists dimension_value_type on core.dimension_value (tenant_id, dimension_type_id);
+
+-- ---------------------------------------------------------------------------------------------------------
+-- account_dimension_rule (07, 6.2): absence of a row means OPTIONAL. The rule in force at command time counts (Q8), no versions.
+-- ---------------------------------------------------------------------------------------------------------
+create table if not exists core.account_dimension_rule (
+    tenant_id         uuid not null,
+    company_id        uuid not null,
+    account_id        uuid not null,
+    dimension_type_id uuid not null,
+    rule              core.code not null check (rule in ('MANDATORY', 'OPTIONAL', 'FORBIDDEN')),
+    row_version       bigint not null default 1,
+    created_at        timestamptz not null default now(),
+    created_by        varchar(100) not null,
+    updated_at        timestamptz not null default now(),
+    updated_by        varchar(100) not null,
+    primary key (tenant_id, company_id, account_id, dimension_type_id),
+    foreign key (tenant_id, company_id, account_id) references core.gl_account (tenant_id, company_id, account_id),
+    foreign key (tenant_id, dimension_type_id) references core.dimension_type (tenant_id, dimension_type_id)
+);
+
+-- ---------------------------------------------------------------------------------------------------------
+-- journal_line_dimension (02, 6): the free dimensions of a line. The row is never deleted, clearing a value sets it to null (Q6).
+-- The foreign key to (value, type) makes the value belong to the type of the row.
+-- ---------------------------------------------------------------------------------------------------------
+create table if not exists core.journal_line_dimension (
+    tenant_id          uuid not null,
+    company_id         uuid not null,
+    document_id        uuid not null,
+    line_no            int not null,
+    dimension_type_id  uuid not null,                                                                                      -- L1
+    dimension_value_id uuid,                                                                                               -- L2
+    primary key (tenant_id, company_id, document_id, line_no, dimension_type_id),
+    foreign key (tenant_id, company_id, document_id, line_no) references core.journal_line (tenant_id, company_id, document_id, line_no),
+    foreign key (tenant_id, dimension_type_id) references core.dimension_type (tenant_id, dimension_type_id),
+    foreign key (tenant_id, dimension_value_id, dimension_type_id) references core.dimension_value (tenant_id, dimension_value_id, dimension_type_id)
+);
+create index if not exists journal_line_dimension_value on core.journal_line_dimension (tenant_id, dimension_value_id);
+
+-- the four typed columns of journal_line (0005) get their keys
+do $$
+declare c text;
+begin
+    foreach c in array array['cost_center_id', 'project_id', 'profit_center_id', 'business_unit_id'] loop
+        if not exists (select 1 from pg_constraint where conname = 'journal_line_' || c || '_fkey') then
+            execute format('alter table core.journal_line add constraint %I foreign key (tenant_id, %I) references core.dimension_value (tenant_id, dimension_value_id)',
+                           'journal_line_' || c || '_fkey', c);
+        end if;
+    end loop;
+end $$;
+create index if not exists journal_line_cost_center on core.journal_line (tenant_id, cost_center_id) where cost_center_id is not null;
+create index if not exists journal_line_project on core.journal_line (tenant_id, project_id) where project_id is not null;
+create index if not exists journal_line_profit_center on core.journal_line (tenant_id, profit_center_id) where profit_center_id is not null;
+create index if not exists journal_line_business_unit on core.journal_line (tenant_id, business_unit_id) where business_unit_id is not null;
+
+-- ---------------------------------------------------------------------------------------------------------
+-- Security: forced RLS, read for the command roles, write for the configuration role (the commands of 07, 11.1) and the posting roles
+-- (journal_line_dimension), never delete.
+-- ---------------------------------------------------------------------------------------------------------
+do $$
+declare t text;
+begin
+    foreach t in array array['dimension_type', 'dimension_value', 'account_dimension_rule', 'journal_line_dimension'] loop
+        execute format('alter table core.%I enable row level security', t);
+        execute format('alter table core.%I force row level security', t);
+        if not exists (select 1 from pg_policies where schemaname = 'core' and tablename = t and policyname = 'tenant_isolation') then
+            execute format('create policy tenant_isolation on core.%I using (tenant_id = core.current_tenant_id()) with check (tenant_id = core.current_tenant_id())', t);
+        end if;
+        execute format('revoke all on core.%I from public', t);
+        execute format('drop trigger if exists %I on core.%I', t || '_no_delete', t);
+        execute format('create trigger %I before delete on core.%I for each row execute function core.reject_delete()', t || '_no_delete', t);
+        execute format('drop trigger if exists %I on core.%I', t || '_no_truncate', t);
+        execute format('create trigger %I before truncate on core.%I for each statement execute function core.reject_delete()', t || '_no_truncate', t);
+    end loop;
+end $$;
+grant select on core.dimension_type, core.dimension_value, core.account_dimension_rule, core.journal_line_dimension
+      to cmd_read, cmd_config, cmd_period, cmd_post, cmd_clearing, cmd_retention;
+grant insert on core.dimension_type, core.dimension_value, core.account_dimension_rule to cmd_config;
+grant update (type_code, name, active, row_version, updated_at, updated_by) on core.dimension_type to cmd_config;
+grant update (company_id, value_code, name, parent_value_id, valid_from, valid_to, active, row_version, updated_at, updated_by)
+      on core.dimension_value to cmd_config;
+grant update (rule, row_version, updated_at, updated_by) on core.account_dimension_rule to cmd_config;
+grant insert on core.journal_line_dimension to cmd_post, cmd_clearing;
+grant update (dimension_value_id) on core.journal_line_dimension to cmd_post;
+grant update (cost_center_id, project_id, profit_center_id, business_unit_id) on core.journal_line to cmd_post;
+
+-- ---------------------------------------------------------------------------------------------------------
+-- The four standard types of every tenant (ADR-010): created with the tenant, and now for the tenants that exist
+-- ---------------------------------------------------------------------------------------------------------
+create or replace function core.seed_standard_dimension_types() returns trigger language plpgsql security definer
+set search_path = pg_catalog, core as $$
+begin
+    insert into core.dimension_type (tenant_id, type_code, name, kind, standard_role, created_by, updated_by)
+    select new.tenant_id, v.code, v.name, 'STANDARD', v.code, 'system', 'system'
+      from (values ('COST_CENTER', 'Cost center'), ('PROJECT', 'Project'), ('PROFIT_CENTER', 'Profit center'), ('BUSINESS_UNIT', 'Business unit')) v (code, name)
+    on conflict (tenant_id, type_code) do nothing;
+    return new;
+end $$;
+drop trigger if exists tenant_standard_dimension_types on platform.tenant;
+create trigger tenant_standard_dimension_types after insert on platform.tenant
+    for each row execute function core.seed_standard_dimension_types();
+
+insert into core.dimension_type (tenant_id, type_code, name, kind, standard_role, created_by, updated_by)
+select t.tenant_id, v.code, v.name, 'STANDARD', v.code, 'system', 'system'
+  from platform.tenant t
+ cross join (values ('COST_CENTER', 'Cost center'), ('PROJECT', 'Project'), ('PROFIT_CENTER', 'Profit center'), ('BUSINESS_UNIT', 'Business unit')) v (code, name)
+on conflict (tenant_id, type_code) do nothing;
+
+-- ---------------------------------------------------------------------------------------------------------
+-- Guards of the master tables (07, 2.3, 6.5)
+-- ---------------------------------------------------------------------------------------------------------
+create or replace function core.guard_dimension_type() returns trigger language plpgsql as $$
+begin
+    if new.kind <> old.kind or new.standard_role is distinct from old.standard_role then
+        raise exception 'CONFIG.IMMUTABLE_AFTER_POSTING: the kind and the standard role of a dimension type never change' using errcode = '23000';
+    end if;
+    if old.kind = 'STANDARD' and new.type_code <> old.type_code then
+        raise exception 'CONFIG.IMMUTABLE_AFTER_POSTING: the code of a standard dimension type never changes' using errcode = '23000';
+    end if;
+    return new;
+end $$;
+drop trigger if exists dimension_type_guard on core.dimension_type;
+create trigger dimension_type_guard before update on core.dimension_type
+    for each row execute function core.guard_dimension_type();
+
+create or replace function core.dimension_value_referenced(p_tenant uuid, p_value uuid) returns boolean language sql stable as $$
+    select exists (select 1 from core.journal_line l
+                    where l.tenant_id = p_tenant and p_value in (l.cost_center_id, l.project_id, l.profit_center_id, l.business_unit_id))
+        or exists (select 1 from core.journal_line_dimension d where d.tenant_id = p_tenant and d.dimension_value_id = p_value)
+$$;
+
+create or replace function core.guard_dimension_value() returns trigger language plpgsql as $$
+declare
+    v_up uuid;
+    v_depth int := 0;
+begin
+    if tg_op = 'UPDATE' then
+        if new.dimension_type_id <> old.dimension_type_id and core.dimension_value_referenced(old.tenant_id, old.dimension_value_id) then
+            raise exception 'CONFIG.IMMUTABLE_AFTER_POSTING: the type of a dimension value that lines refer to cannot change' using errcode = '23000';
+        end if;
+        if new.company_id is distinct from old.company_id and new.company_id is not null
+           and exists (select 1 from core.journal_line l
+                        where l.tenant_id = old.tenant_id and l.company_id <> new.company_id
+                          and old.dimension_value_id in (l.cost_center_id, l.project_id, l.profit_center_id, l.business_unit_id)
+                       union all
+                       select 1 from core.journal_line_dimension d
+                        where d.tenant_id = old.tenant_id and d.company_id <> new.company_id and d.dimension_value_id = old.dimension_value_id) then
+            raise exception 'CONFIG.DIMENSION_COMPANY_MISMATCH: lines of another company refer to this value' using errcode = '23000';
+        end if;
+    end if;
+    -- no cycle in the rollup hierarchy (07, 6.5)
+    v_up := new.parent_value_id;
+    while v_up is not null loop
+        if v_up = new.dimension_value_id then
+            raise exception 'CONFIG.HIERARCHY_CYCLE: the parent chain of a dimension value leads back to the value' using errcode = '23000';
+        end if;
+        v_depth := v_depth + 1;
+        if v_depth > 1000 then
+            raise exception 'CONFIG.HIERARCHY_CYCLE: the hierarchy is deeper than 1000 levels' using errcode = '23000';
+        end if;
+        select parent_value_id into v_up from core.dimension_value where tenant_id = new.tenant_id and dimension_value_id = v_up;
+    end loop;
+    return new;
+end $$;
+drop trigger if exists dimension_value_guard on core.dimension_value;
+create trigger dimension_value_guard before insert or update on core.dimension_value
+    for each row execute function core.guard_dimension_value();
+
+-- ---------------------------------------------------------------------------------------------------------
+-- What a line may carry (02, 5.3 and 6): the value of a typed column belongs to a type with the matching standard role, the value of a free
+-- dimension belongs to a FREE type, and a value restricted to a company is used by that company only. Dates and states are the command's.
+-- ---------------------------------------------------------------------------------------------------------
+create or replace function core.check_line_dimension(p_tenant uuid, p_company uuid, p_value uuid, p_role text, p_column text) returns void
+language plpgsql as $$
+declare
+    v_company uuid;
+    v_kind text;
+    v_role text;
+begin
+    if p_value is null then return; end if;
+    select v.company_id, t.kind, t.standard_role into v_company, v_kind, v_role
+      from core.dimension_value v join core.dimension_type t on t.tenant_id = v.tenant_id and t.dimension_type_id = v.dimension_type_id
+     where v.tenant_id = p_tenant and v.dimension_value_id = p_value;
+    if not found then
+        raise exception 'ACCOUNT_RULE.DIMENSION_VALUE_INVALID: % does not name a dimension value', p_column using errcode = '23000';
+    end if;
+    if p_role is null and v_kind <> 'FREE' or p_role is not null and v_role is distinct from p_role then
+        raise exception 'ACCOUNT_RULE.DIMENSION_VALUE_INVALID: the value of % belongs to a dimension type of another kind or role', p_column using errcode = '23000';
+    end if;
+    if v_company is not null and v_company <> p_company then
+        raise exception 'ACCOUNT_RULE.DIMENSION_VALUE_INVALID: the value of % is restricted to another company', p_column using errcode = '23000';
+    end if;
+end $$;
+
+create or replace function core.check_journal_line_dimensions() returns trigger language plpgsql as $$
+begin
+    perform core.check_line_dimension(new.tenant_id, new.company_id, new.cost_center_id, 'COST_CENTER', 'cost_center_id');
+    perform core.check_line_dimension(new.tenant_id, new.company_id, new.project_id, 'PROJECT', 'project_id');
+    perform core.check_line_dimension(new.tenant_id, new.company_id, new.profit_center_id, 'PROFIT_CENTER', 'profit_center_id');
+    perform core.check_line_dimension(new.tenant_id, new.company_id, new.business_unit_id, 'BUSINESS_UNIT', 'business_unit_id');
+    return new;
+end $$;
+drop trigger if exists journal_line_dimensions_check on core.journal_line;
+create trigger journal_line_dimensions_check before insert or update on core.journal_line
+    for each row execute function core.check_journal_line_dimensions();
+
+-- ---------------------------------------------------------------------------------------------------------
+-- The lock classes of a line now open the four typed columns (02, 8, 10), each with its change_log row (entity type LINE)
+-- ---------------------------------------------------------------------------------------------------------
+create or replace function core.guard_journal_line() returns trigger language plpgsql as $$
+declare
+    f text;
+    open_columns constant text[] := array['line_text', 'cost_center_id', 'project_id', 'profit_center_id', 'business_unit_id'];
+begin
+    if (to_jsonb(new) - open_columns) is distinct from (to_jsonb(old) - open_columns) then
+        raise exception 'journal_line: only line_text and the typed dimensions can change, and only through the change command' using errcode = '23000';
+    end if;
+    foreach f in array open_columns loop
+        if (to_jsonb(new) ->> f) is distinct from (to_jsonb(old) ->> f) then
+            perform core.require_l2_log(new.tenant_id, new.company_id, new.document_id, new.line_no, f,
+                                        to_jsonb(old) ->> f, to_jsonb(new) ->> f, new.fiscal_year, new.fiscal_period);
+        end if;
+    end loop;
+    return new;
+end $$;
+
+-- journal_line_dimension: the key and the type are L1, the value is L2 and changes with a change_log row (LINE_DIMENSION, sub_key = the type)
+create or replace function core.guard_journal_line_dimension() returns trigger language plpgsql as $$
+declare
+    v_year int; v_period int; v_status text;
+begin
+    if tg_op = 'INSERT' then
+        perform core.check_line_dimension(new.tenant_id, new.company_id, new.dimension_value_id, null, 'dimension_value_id');
+        if not exists (select 1 from core.dimension_type t where t.tenant_id = new.tenant_id and t.dimension_type_id = new.dimension_type_id and t.kind = 'FREE') then
+            raise exception 'journal_line_dimension: the type of a free dimension must be of kind FREE' using errcode = '23000';
+        end if;
+        return new;
+    end if;
+    if (to_jsonb(new) - 'dimension_value_id') is distinct from (to_jsonb(old) - 'dimension_value_id') then
+        raise exception 'journal_line_dimension: an L1 column cannot change' using errcode = '23000';
+    end if;
+    perform core.check_line_dimension(new.tenant_id, new.company_id, new.dimension_value_id, null, 'dimension_value_id');
+    select fiscal_year, fiscal_period into v_year, v_period from core.journal_line
+     where tenant_id = new.tenant_id and company_id = new.company_id and document_id = new.document_id and line_no = new.line_no;
+    select status into v_status from core.fiscal_period
+     where tenant_id = new.tenant_id and company_id = new.company_id and fiscal_year = v_year and period_no = v_period;
+    if v_status = 'HARD_CLOSED' then
+        raise exception 'LOCK.FIELD_LOCKED_L3: a dimension cannot change in a hard-closed period' using errcode = '23000';
+    end if;
+    if not exists (
+        select 1 from core.change_log c
+         where c.tenant_id = new.tenant_id and c.company_id = new.company_id and c.document_id = new.document_id and c.line_no = new.line_no
+           and c.entity_type = 'LINE_DIMENSION' and c.sub_key = new.dimension_type_id::text and c.field_name = 'dimension_value_id'
+           and c.old_value is not distinct from old.dimension_value_id::text and c.new_value is not distinct from new.dimension_value_id::text
+           and c.lock_class = 'L2' and c.period_status = v_status and c.changed_at = transaction_timestamp()) then
+        raise exception 'journal_line_dimension: the L2 column dimension_value_id cannot change without a matching change_log row in this transaction'
+            using errcode = '23000';
+    end if;
+    return new;
+end $$;
+drop trigger if exists journal_line_dimension_guard on core.journal_line_dimension;
+create trigger journal_line_dimension_guard before insert or update on core.journal_line_dimension
+    for each row execute function core.guard_journal_line_dimension();
+
+insert into platform.schema_migration (version, description)
+values ('0022', 'dimensions: types, values, account rules, journal_line_dimension, the L2 guard of the typed columns')
+on conflict (version) do nothing;
+
+-- ==================== 0023_vat_configuration.sql ====================
+-- 0023 VAT configuration (07, 4, 6.1, 8.1 to 8.3, 08, 4.1, 6.2, 6.7, 19, 3.1): the EU membership of a country, tax classes, return boxes, the
+-- VAT registrations of a company, tax codes with their versions and the boxes a version maps to.
+-- Written by the commands of 07, 11.1 (write.config). Not in this migration: the determination rules (8.4), the deduction keys and rates (8.6), the
+-- partner registrations (9.4), the tax lines of a document (02, 7) and the return snapshots (08, 6). A tax code is not used by any posting yet.
+
+-- ---------------------------------------------------------------------------------------------------------
+-- ref_country_eu_membership (07, 4): reference data, maintained by platform releases, readable by every command role
+-- ---------------------------------------------------------------------------------------------------------
+create table if not exists platform.ref_country_eu_membership (
+    country_code char(2) not null references platform.ref_country (country_code),
+    valid_from   date not null,
+    valid_to     date,
+    primary key (country_code, valid_from),
+    check (valid_to is null or valid_to > valid_from)
+);
+alter table platform.ref_country_eu_membership enable row level security;
+drop policy if exists ref_read on platform.ref_country_eu_membership;
+create policy ref_read on platform.ref_country_eu_membership for select using (true);
+revoke all on platform.ref_country_eu_membership from public;
+grant select on platform.ref_country_eu_membership to cmd_read, cmd_config, cmd_period, cmd_post, cmd_clearing, cmd_retention;
+
+-- ---------------------------------------------------------------------------------------------------------
+-- tax_class (07, 8.1)
+-- ---------------------------------------------------------------------------------------------------------
+create table if not exists core.tax_class (
+    tenant_id    uuid not null references platform.tenant (tenant_id),
+    tax_class_id uuid not null default gen_random_uuid(),
+    code         core.code not null,
+    name         varchar(100) not null,
+    active       boolean not null default true,
+    row_version  bigint not null default 1,
+    created_at   timestamptz not null default now(),
+    created_by   varchar(100) not null,
+    updated_at   timestamptz not null default now(),
+    updated_by   varchar(100) not null,
+    primary key (tenant_id, tax_class_id),
+    unique (tenant_id, code)
+);
+
+do $$ begin
+    if not exists (select 1 from pg_constraint where conname = 'gl_account_default_tax_class_fkey') then
+        alter table core.gl_account add constraint gl_account_default_tax_class_fkey
+            foreign key (tenant_id, default_tax_class_id) references core.tax_class (tenant_id, tax_class_id);
+    end if;
+end $$;
+
+-- ---------------------------------------------------------------------------------------------------------
+-- tax_return_box (07, 8.2, 08, 6.2): the boxes of the VAT returns of a country, per return type
+-- ---------------------------------------------------------------------------------------------------------
+create table if not exists core.tax_return_box (
+    tenant_id    uuid not null references platform.tenant (tenant_id),
+    country_code char(2) not null references platform.ref_country (country_code),
+    return_type  core.code not null check (return_type in ('STANDARD', 'EC_LIST', 'OSS', 'IOSS')),
+    box_code     core.code not null,
+    name         varchar(100) not null,
+    box_group    core.code,
+    active       boolean not null default true,
+    row_version  bigint not null default 1,
+    created_at   timestamptz not null default now(),
+    created_by   varchar(100) not null,
+    updated_at   timestamptz not null default now(),
+    updated_by   varchar(100) not null,
+    primary key (tenant_id, country_code, return_type, box_code)
+);
+
+-- ---------------------------------------------------------------------------------------------------------
+-- company_vat_registration (08, 4.1). The status ACTIVE or INACTIVE of the spec is the flag `active`.
+-- ---------------------------------------------------------------------------------------------------------
+create table if not exists core.company_vat_registration (
+    tenant_id          uuid not null references platform.tenant (tenant_id),
+    company_id         uuid not null,
+    registration_id    uuid not null default gen_random_uuid(),
+    country_code       char(2) not null references platform.ref_country (country_code),                                          -- IAP
+    vat_id             varchar(30) not null,
+    scheme             core.code not null check (scheme in ('STANDARD', 'OSS_UNION', 'OSS_NON_UNION', 'IOSS')),                  -- IAP
+    filing_frequency   core.code not null check (filing_frequency in ('MONTHLY', 'QUARTERLY', 'HALF_YEARLY', 'YEARLY')),
+    ec_list_frequency  core.code check (ec_list_frequency in ('MONTHLY', 'QUARTERLY')),
+    correction_method  core.code not null check (correction_method in ('ADJUST_NEXT', 'SUPPLEMENTARY', 'REPLACEMENT')),
+    return_currency    char(3) not null references platform.ref_currency (currency_code),
+    vat_rate_type      core.code not null default 'BOOKING' check (vat_rate_type in ('BOOKING', 'VAT')),
+    valid_from         date not null,
+    valid_to           date,
+    active             boolean not null default true,
+    row_version        bigint not null default 1,
+    created_at         timestamptz not null default now(),
+    created_by         varchar(100) not null,
+    updated_at         timestamptz not null default now(),
+    updated_by         varchar(100) not null,
+    primary key (tenant_id, company_id, registration_id),
+    unique (tenant_id, company_id, country_code, scheme, valid_from),
+    foreign key (tenant_id, company_id) references core.company (tenant_id, company_id),
+    check (valid_to is null or valid_to >= valid_from)
+);
+
+-- ---------------------------------------------------------------------------------------------------------
+-- tax_code (07, 8.3) and tax_code_version: a version is insert-only, the one with the latest valid_from not after a date is in force at it
+-- ---------------------------------------------------------------------------------------------------------
+create table if not exists core.tax_code (
+    tenant_id           uuid not null references platform.tenant (tenant_id),
+    company_id          uuid not null,
+    tax_code_id         uuid not null default gen_random_uuid(),
+    code                core.code not null,
+    description         varchar(100) not null,
+    tax_type            core.code not null check (tax_type in ('OUTPUT', 'INPUT', 'EXEMPT', 'ZERO_RATED')),   -- IAP once a version exists
+    vat_registration_id uuid not null,                                                                      -- IAP once a version exists
+    active              boolean not null default true,
+    row_version         bigint not null default 1,
+    created_at          timestamptz not null default now(),
+    created_by          varchar(100) not null,
+    updated_at          timestamptz not null default now(),
+    updated_by          varchar(100) not null,
+    primary key (tenant_id, company_id, tax_code_id),
+    unique (tenant_id, company_id, code),
+    foreign key (tenant_id, company_id) references core.company (tenant_id, company_id),
+    foreign key (tenant_id, company_id, vat_registration_id) references core.company_vat_registration (tenant_id, company_id, registration_id)
+);
+
+create table if not exists core.tax_code_version (
+    tenant_id                 uuid not null,
+    company_id                uuid not null,
+    tax_code_id               uuid not null,
+    valid_from                date not null,
+    valid_to                  date,
+    tax_code_version_id       uuid not null default gen_random_uuid(),   -- what a tax line stores (02, 7.1)
+    rate                      core.rate not null check (rate >= 0 and rate <= 100),
+    vat_account_id            uuid not null,
+    reverse_charge            boolean not null default false,
+    reverse_charge_account_id uuid,
+    en16931_vat_category      core.code check (en16931_vat_category in ('S', 'Z', 'E', 'AE', 'K', 'G', 'O', 'L', 'M')),
+    exemption_reason_code     core.code,
+    exemption_reason_text     varchar(200),
+    ec_list_category          core.code check (ec_list_category in ('GOODS', 'SERVICES', 'TRIANGULATION')),
+    supply_kind               core.code check (supply_kind in ('GOODS', 'SERVICES')),
+    evidence_required_type    core.code check (evidence_required_type in ('CUSTOMS_DECLARATION', 'PROOF_OF_EXPORT', 'TRANSPORT_DOCUMENT', 'PARTNER_VAT_CHECK', 'OTHER')),
+    deductible_pct            core.rate not null default 100 check (deductible_pct >= 0 and deductible_pct <= 100),
+    deduction_key             core.code,   -- no foreign key until the deduction keys exist (08, 8.6)
+    deduction_cap             core.code not null default 'NONE' check (deduction_cap in ('NONE', 'SUPPLIED_AMOUNT')),
+    created_at                timestamptz not null default now(),
+    created_by                varchar(100) not null,
+    primary key (tenant_id, company_id, tax_code_id, valid_from),
+    unique (tenant_id, tax_code_version_id),
+    foreign key (tenant_id, company_id, tax_code_id) references core.tax_code (tenant_id, company_id, tax_code_id),
+    foreign key (tenant_id, company_id, vat_account_id) references core.gl_account (tenant_id, company_id, account_id),
+    foreign key (tenant_id, company_id, reverse_charge_account_id) references core.gl_account (tenant_id, company_id, account_id),
+    check (valid_to is null or valid_to >= valid_from),
+    check (not reverse_charge or reverse_charge_account_id is not null),
+    check (reverse_charge or reverse_charge_account_id is null)
+);
+
+create table if not exists core.tax_code_version_box (
+    tenant_id    uuid not null,
+    company_id   uuid not null,
+    tax_code_id  uuid not null,
+    valid_from   date not null,
+    line_side    core.code not null check (line_side in ('PRIMARY', 'COUNTER')),
+    return_type  core.code not null check (return_type in ('STANDARD', 'EC_LIST', 'OSS', 'IOSS')),
+    box_code     core.code not null,
+    amount_kind  core.code not null check (amount_kind in ('BASE', 'TAX')),
+    sign         smallint not null check (sign in (1, -1)),
+    primary key (tenant_id, company_id, tax_code_id, valid_from, line_side, return_type, box_code),
+    foreign key (tenant_id, company_id, tax_code_id, valid_from) references core.tax_code_version (tenant_id, company_id, tax_code_id, valid_from)
+);
+
+-- ---------------------------------------------------------------------------------------------------------
+-- Security: forced RLS, read for the command roles, write for the configuration role only, never delete
+-- ---------------------------------------------------------------------------------------------------------
+do $$
+declare t text;
+begin
+    foreach t in array array['tax_class', 'tax_return_box', 'company_vat_registration', 'tax_code', 'tax_code_version', 'tax_code_version_box'] loop
+        execute format('alter table core.%I enable row level security', t);
+        execute format('alter table core.%I force row level security', t);
+        if not exists (select 1 from pg_policies where schemaname = 'core' and tablename = t and policyname = 'tenant_isolation') then
+            execute format('create policy tenant_isolation on core.%I using (tenant_id = core.current_tenant_id()) with check (tenant_id = core.current_tenant_id())', t);
+        end if;
+        execute format('revoke all on core.%I from public', t);
+        execute format('drop trigger if exists %I on core.%I', t || '_no_delete', t);
+        execute format('create trigger %I before delete on core.%I for each row execute function core.reject_delete()', t || '_no_delete', t);
+        execute format('drop trigger if exists %I on core.%I', t || '_no_truncate', t);
+        execute format('create trigger %I before truncate on core.%I for each statement execute function core.reject_delete()', t || '_no_truncate', t);
+    end loop;
+    -- versions and their boxes are insert-only (pattern V, 07, 2.1)
+    foreach t in array array['tax_code_version', 'tax_code_version_box'] loop
+        execute format('drop trigger if exists %I on core.%I', t || '_append_only', t);
+        execute format('create trigger %I before update on core.%I for each row execute function core.reject_change()', t || '_append_only', t);
+    end loop;
+end $$;
+grant select on core.tax_class, core.tax_return_box, core.company_vat_registration, core.tax_code, core.tax_code_version, core.tax_code_version_box
+      to cmd_read, cmd_config, cmd_period, cmd_post, cmd_clearing, cmd_retention;
+grant insert on core.tax_class, core.tax_return_box, core.company_vat_registration, core.tax_code, core.tax_code_version, core.tax_code_version_box to cmd_config;
+grant update (code, name, active, row_version, updated_at, updated_by) on core.tax_class to cmd_config;
+grant update (name, box_group, active, row_version, updated_at, updated_by) on core.tax_return_box to cmd_config;
+grant update (country_code, vat_id, scheme, filing_frequency, ec_list_frequency, correction_method, return_currency, vat_rate_type, valid_from, valid_to, active,
+              row_version, updated_at, updated_by) on core.company_vat_registration to cmd_config;
+grant update (code, description, tax_type, vat_registration_id, active, row_version, updated_at, updated_by) on core.tax_code to cmd_config;
+
+-- ---------------------------------------------------------------------------------------------------------
+-- Guards
+-- ---------------------------------------------------------------------------------------------------------
+-- the country and the scheme of a registration are IAP once a tax code uses it (07, 2.3)
+create or replace function core.guard_company_vat_registration() returns trigger language plpgsql as $$
+begin
+    if (new.country_code <> old.country_code or new.scheme <> old.scheme) and exists (
+        select 1 from core.tax_code c where c.tenant_id = old.tenant_id and c.company_id = old.company_id and c.vat_registration_id = old.registration_id) then
+        raise exception 'CONFIG.IMMUTABLE_AFTER_POSTING: the country and the scheme of a registration that a tax code uses cannot change' using errcode = '23000';
+    end if;
+    return new;
+end $$;
+drop trigger if exists company_vat_registration_guard on core.company_vat_registration;
+create trigger company_vat_registration_guard before update on core.company_vat_registration
+    for each row execute function core.guard_company_vat_registration();
+
+-- the type and the registration of a code are fixed once it has a version: what a version may hold depends on them
+create or replace function core.guard_tax_code() returns trigger language plpgsql as $$
+begin
+    if (new.tax_type <> old.tax_type or new.vat_registration_id <> old.vat_registration_id) and exists (
+        select 1 from core.tax_code_version v where v.tenant_id = old.tenant_id and v.company_id = old.company_id and v.tax_code_id = old.tax_code_id) then
+        raise exception 'CONFIG.IMMUTABLE_AFTER_POSTING: the type and the registration of a tax code that has a version cannot change' using errcode = '23000';
+    end if;
+    return new;
+end $$;
+drop trigger if exists tax_code_guard on core.tax_code;
+create trigger tax_code_guard before update on core.tax_code
+    for each row execute function core.guard_tax_code();
+
+-- what a version holds (07, 8.3, 19, 3.1): the rate of an exempt or zero-rated code is 0, a share of the deduction belongs to input codes, the accounts are
+-- balance sheet accounts, a version starts after the latest one. The system marks the accounts as tax accounts (07, 6.1, 08, 6.7): from then on only
+-- tax lines post to them. The trigger runs with the rights of the migration role, because no command role may update that column.
+create or replace function core.guard_tax_code_version() returns trigger language plpgsql security definer set search_path = pg_catalog, core as $$
+declare
+    v_type text;
+    v_latest date;
+    a uuid;
+begin
+    select tax_type into v_type from core.tax_code where tenant_id = new.tenant_id and company_id = new.company_id and tax_code_id = new.tax_code_id;
+    if v_type in ('EXEMPT', 'ZERO_RATED') and new.rate <> 0 then
+        raise exception 'SCHEMA.INVALID_VALUE: the rate of an exempt or zero-rated code is 0' using errcode = '23514';
+    end if;
+    if v_type <> 'INPUT' and (new.deductible_pct <> 100 or new.deduction_key is not null or new.deduction_cap <> 'NONE') then
+        raise exception 'CONFIG.DEDUCTION_ON_NON_INPUT_CODE: only an input code has a deductible share, a deduction key or a cap' using errcode = '23514';
+    end if;
+    select max(valid_from) into v_latest from core.tax_code_version
+     where tenant_id = new.tenant_id and company_id = new.company_id and tax_code_id = new.tax_code_id;
+    if v_latest is not null and new.valid_from <= v_latest then
+        raise exception 'CONFIG.VALID_FROM_NOT_LATER: a version starts after the latest one (%)', v_latest using errcode = '23514';
+    end if;
+    foreach a in array array[new.vat_account_id, new.reverse_charge_account_id] loop
+        continue when a is null;
+        if not exists (select 1 from core.gl_account g where g.tenant_id = new.tenant_id and g.company_id = new.company_id and g.account_id = a
+                          and g.account_type in ('ASSET', 'LIABILITY', 'EQUITY')) then
+            raise exception 'CONFIG.INVALID_REFERENCE: a VAT account is a balance sheet account' using errcode = '23514';
+        end if;
+        update core.gl_account set tax_account = true
+         where tenant_id = new.tenant_id and company_id = new.company_id and account_id = a and not tax_account;
+    end loop;
+    return new;
+end $$;
+drop trigger if exists tax_code_version_guard on core.tax_code_version;
+create trigger tax_code_version_guard before insert on core.tax_code_version
+    for each row execute function core.guard_tax_code_version();
+
+-- a box of a version: the box exists for the country of the registration, and the counter side belongs to a reverse-charge version (08, 6.2)
+create or replace function core.guard_tax_code_version_box() returns trigger language plpgsql as $$
+declare
+    v_country char(2);
+    v_type text;
+    v_reverse boolean;
+begin
+    select r.country_code, c.tax_type into v_country, v_type
+      from core.tax_code c join core.company_vat_registration r
+        on r.tenant_id = c.tenant_id and r.company_id = c.company_id and r.registration_id = c.vat_registration_id
+     where c.tenant_id = new.tenant_id and c.company_id = new.company_id and c.tax_code_id = new.tax_code_id;
+    select reverse_charge into v_reverse from core.tax_code_version
+     where tenant_id = new.tenant_id and company_id = new.company_id and tax_code_id = new.tax_code_id and valid_from = new.valid_from;
+    if not exists (select 1 from core.tax_return_box b where b.tenant_id = new.tenant_id and b.country_code = v_country
+                      and b.return_type = new.return_type and b.box_code = new.box_code) then
+        raise exception 'CONFIG.INVALID_REFERENCE: the box % does not exist for the country of the registration', new.box_code using errcode = '23514';
+    end if;
+    if new.line_side = 'COUNTER' and not (v_reverse and v_type = 'INPUT') then
+        raise exception 'CONFIG.INVALID_REFERENCE: the counter side belongs to a reverse-charge version of an input code' using errcode = '23514';
+    end if;
+    return new;
+end $$;
+drop trigger if exists tax_code_version_box_guard on core.tax_code_version_box;
+create trigger tax_code_version_box_guard before insert on core.tax_code_version_box
+    for each row execute function core.guard_tax_code_version_box();
+
+insert into platform.schema_migration (version, description)
+values ('0023', 'VAT configuration: EU membership, tax classes, return boxes, VAT registrations, tax codes with versions and boxes')
 on conflict (version) do nothing;

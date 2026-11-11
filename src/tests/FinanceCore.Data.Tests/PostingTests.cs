@@ -92,7 +92,7 @@ public class PostingTests
         var r = await new JournalDocumentPoster(t.App).PostAsync(t.TenantId, t.Context("unbal"), req);
 
         Assert.Equal(CommandStatus.Rejected, r.Status);
-        Assert.Contains("DOCUMENT.NOT_BALANCED", Codes(r));
+        Assert.Contains("BALANCE.UNBALANCED_TC", Codes(r));
         Assert.Equal(0L, await t.ScalarAsync<long>("select last_number from core.number_range_counter where tenant_id = @t and series_id = @s", ("s", t.SeriesId)));
         Assert.Equal(0L, await t.ScalarAsync<long>("select count(*) from core.command_log where tenant_id = @t"));
     }
@@ -112,7 +112,7 @@ public class PostingTests
         Assert.Contains("ACCOUNT.POSTING_BLOCKED", codes);
         Assert.Contains("ACCOUNT.NOT_FOUND", codes);
         Assert.Contains("PERIOD.NOT_FOUND", codes);
-        Assert.Contains("DOCUMENT.NOT_BALANCED", codes);
+        Assert.Contains("BALANCE.UNBALANCED_TC", codes);
         Assert.Contains("lines[1].account_id", r.Errors.Select(e => e.Path));
     }
 
@@ -123,7 +123,7 @@ public class PostingTests
         var poster = new JournalDocumentPoster(t.App);
 
         var denied = await poster.PostAsync(t.TenantId, t.Context("p", "read.ledger"), t.Journal());
-        Assert.Equal(["AUTH.PERMISSION_DENIED"], Codes(denied));
+        Assert.Equal(["AUTH.PERMISSION_MISSING"], Codes(denied));
 
         var payment = await poster.PostAsync(t.TenantId, t.Context("s"), t.Journal() with { DocumentType = "PAYMENT" });
         Assert.Contains("SERIES.NO_ASSIGNMENT", Codes(payment));
@@ -202,18 +202,75 @@ public class PostingTests
     }
 
     [Fact]
-    public async Task RoundingDifferenceIsReportedNotHidden()
+    public async Task RoundingDifferenceGoesToTheRoundingAccount()
     {
         var t = await TestTenant.CreateAsync();
-        // USD 0.03, 0.03 and -0.06 at 0.9 to EUR: 0.027, 0.027 and -0.054 round to 0.03, 0.03 and -0.05
-        var req = t.Journal(postingDate: "2026-01-02", currency: "USD") with
+        var r = await new JournalDocumentPoster(t.App).PostAsync(t.TenantId, t.Context("rnd"), RoundingRequest(t));
+        Assert.True(r.Status == CommandStatus.Ok, string.Join(", ", r.Errors.Select(e => e.Code)));
+
+        // USD 0.03, 0.03 and -0.06 at 0.9 to EUR: 0.027, 0.027 and -0.054 round to 0.03, 0.03 and -0.05, so GC and RC are 0.01 off
+        Assert.Equal(4, r.Value!.Lines.Count);
+        PostedLine line = r.Value.Lines[3];
+        Assert.Equal("ROUNDING", line.LineType);
+        Assert.Equal(t.Rounding, line.AccountId);
+        Assert.Equal(0m, line.AmountTc);
+        Assert.Equal(0m, line.AmountLc);
+        Assert.Equal(-0.01m, line.AmountGc);
+        Assert.Equal(-0.01m, line.AmountRc);
+        Assert.Equal((1m, 1m, 1m), (line.RateLc, line.RateGc, line.RateRc!.Value));
+        Assert.Equal("DERIVED", line.RateType);
+        Assert.Null(line.LineRef);
+
+        // the stored document balances and its hash chain verifies with the extra line
+        Assert.Equal(0m, await t.ScalarAsync<decimal>("select sum(amount_gc) from core.journal_line where tenant_id = @t"));
+        Assert.True((await new ChainVerifier(t.App).VerifyLedgerAsync(t.TenantId, t.CompanyId, t.LedgerId)).Ok);
+
+        // a document that balances in every currency gets no rounding line
+        var exact = await new JournalDocumentPoster(t.App).PostAsync(t.TenantId, t.Context("exact"), t.Journal());
+        Assert.Equal(2, exact.Value!.Lines.Count);
+    }
+
+    [Fact]
+    public async Task RoundingLineUsesTheCurrencyRowBeforeTheDefault()
+    {
+        var t = await TestTenant.CreateAsync();
+        Guid usd = Guid.NewGuid();
+        await t.ExecuteAsync("""
+            insert into core.gl_account (tenant_id, company_id, account_id, account_no, name, account_type, tax_code_rule)
+              values (@t, @c, @usd, '7950', 'Rounding USD', 'EXPENSE', 'FORBIDDEN');
+            insert into core.account_role_assignment (tenant_id, company_id, role_code, currency_code, account_id, effective_from)
+              values (@t, @c, 'ROUNDING', 'USD', @usd, timestamptz '2026-01-01 00:00:00+00');
+            """, ("usd", usd));
+        var r = await new JournalDocumentPoster(t.App).PostAsync(t.TenantId, t.Context("rnd"), RoundingRequest(t));
+        Assert.Equal(usd, r.Value!.Lines[3].AccountId);
+    }
+
+    [Fact]
+    public async Task RoundingWithoutARoleIsRejectedWithTheRoleCode()
+    {
+        var t = await TestTenant.CreateAsync(withRoles: false);
+        var r = await new JournalDocumentPoster(t.App).PostAsync(t.TenantId, t.Context("rnd"), RoundingRequest(t));
+        Assert.Equal(CommandStatus.Rejected, r.Status);
+        var error = r.Errors.Single(e => e.Code == "BALANCE.ROUNDING_ACCOUNT_MISSING");
+        Assert.Equal("ROUNDING", error.Params!["role_code"]);
+        Assert.Equal("USD", error.Params["currency"]);
+        Assert.Equal(0L, await t.ScalarAsync<long>("select count(*) from core.journal_document where tenant_id = @t"));
+    }
+
+    [Fact]
+    public async Task RoundingAccountThatCannotBePostedToIsRejected()
+    {
+        var t = await TestTenant.CreateAsync();
+        await t.ExecuteAsync("update core.gl_account set posting_blocked = true where tenant_id = @t and account_id = @r", ("r", t.Rounding));
+        var r = await new JournalDocumentPoster(t.App).PostAsync(t.TenantId, t.Context("rnd"), RoundingRequest(t));
+        Assert.Contains("ACCOUNT.ROLE_ACCOUNT_NOT_USABLE", Codes(r));
+    }
+
+    private static PostJournalDocumentRequest RoundingRequest(TestTenant t) =>
+        t.Journal(postingDate: "2026-01-02", currency: "USD") with
         {
             Lines = [new RequestLine("1", t.Bank, 0.03m), new RequestLine("2", t.Expense, 0.03m), new RequestLine("3", t.Revenue, -0.06m)]
         };
-        var r = await new JournalDocumentPoster(t.App).PostAsync(t.TenantId, t.Context("rnd"), req);
-        Assert.Equal(CommandStatus.Rejected, r.Status);
-        Assert.Contains("LIMIT.ROUNDING_DIFFERENCE", Codes(r));
-    }
 
     [Fact]
     public async Task TamperingWithAStoredLineIsDetected()

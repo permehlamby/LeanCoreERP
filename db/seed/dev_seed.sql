@@ -14,6 +14,12 @@ insert into platform.ref_country (country_code, alpha3, name) values
     ('FR', 'FRA', 'France'), ('NL', 'NLD', 'Netherlands')
 on conflict (country_code) do nothing;
 
+-- EU membership for VAT rules (07, 4), maintained by platform releases. These rows cover the countries above and are UNVERIFIED against the
+-- Official Journal. VAT territories that lie outside the VAT area (parts of a member state) are not modelled.
+insert into platform.ref_country_eu_membership (country_code, valid_from)
+values ('DK', date '1973-01-01'), ('DE', date '1958-01-01'), ('SE', date '1995-01-01'), ('FR', date '1958-01-01'), ('NL', date '1958-01-01')
+on conflict (country_code, valid_from) do nothing;
+
 insert into platform.tenant (tenant_id, tenant_code, name, status, purpose)
 values ('11111111-1111-4111-8111-111111111111', 'DEV', 'Development tenant', 'ACTIVE', 'TEST')
 on conflict (tenant_id) do nothing;
@@ -65,7 +71,27 @@ values
  ('11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222201', '55555555-5555-4555-8555-555555555501', '1000', 'Bank', 'ASSET', 'NONE', 'FORBIDDEN'),
  ('11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222201', '55555555-5555-4555-8555-555555555502', '3000', 'Revenue', 'REVENUE', 'NONE', 'FORBIDDEN'),
  ('11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222201', '55555555-5555-4555-8555-555555555503', '4000', 'Operating expenses', 'EXPENSE', 'NONE', 'FORBIDDEN'),
- ('11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222201', '55555555-5555-4555-8555-555555555504', '8000', 'Equity', 'EQUITY', 'NONE', 'FORBIDDEN')
+ ('11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222201', '55555555-5555-4555-8555-555555555504', '8000', 'Equity', 'EQUITY', 'NONE', 'FORBIDDEN'),
+ ('11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222201', '55555555-5555-4555-8555-555555555505', '8100', 'Retained earnings', 'EQUITY', 'NONE', 'FORBIDDEN'),
+ ('11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222201', '55555555-5555-4555-8555-555555555511', '7900', 'Rounding differences', 'EXPENSE', 'NONE', 'FORBIDDEN'),
+ ('11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222201', '55555555-5555-4555-8555-555555555512', '7910', 'Tax rounding differences', 'EXPENSE', 'NONE', 'FORBIDDEN'),
+ ('11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222201', '55555555-5555-4555-8555-555555555513', '7920', 'Realised exchange differences', 'EXPENSE', 'NONE', 'FORBIDDEN'),
+ ('11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222201', '55555555-5555-4555-8555-555555555514', '7930', 'Unrealised exchange gains', 'REVENUE', 'NONE', 'FORBIDDEN'),
+ ('11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222201', '55555555-5555-4555-8555-555555555515', '7940', 'Unrealised exchange losses', 'EXPENSE', 'NONE', 'FORBIDDEN')
+on conflict do nothing;
+
+-- The roles a company needs before it can be activated (07, 6.3, 11.3), as default rows without currency
+insert into core.account_role_assignment (tenant_id, company_id, assignment_id, role_code, account_id, effective_from)
+select '11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222201', r.id::uuid, r.role, r.account::uuid,
+       timestamptz '2026-01-01 00:00:00+00'
+from (values
+    ('88888888-8888-4888-8888-888888888801', 'ROUNDING', '55555555-5555-4555-8555-555555555511'),
+    ('88888888-8888-4888-8888-888888888802', 'TAX_ROUNDING', '55555555-5555-4555-8555-555555555512'),
+    ('88888888-8888-4888-8888-888888888803', 'FX_REALISED', '55555555-5555-4555-8555-555555555513'),
+    ('88888888-8888-4888-8888-888888888804', 'FX_UNREALISED_GAIN', '55555555-5555-4555-8555-555555555514'),
+    ('88888888-8888-4888-8888-888888888805', 'FX_UNREALISED_LOSS', '55555555-5555-4555-8555-555555555515'),
+    ('88888888-8888-4888-8888-888888888806', 'RETAINED_EARNINGS', '55555555-5555-4555-8555-555555555505')
+) as r(id, role, account)
 on conflict do nothing;
 
 insert into core.number_series (tenant_id, company_id, series_id, series_code, description, prefix, include_fiscal_year, separator, number_length, is_legal)
@@ -91,3 +117,13 @@ on conflict do nothing;
 insert into platform.schema_migration (version, description)
 values ('seed-dev', 'development seed')
 on conflict (version) do nothing;
+
+-- Retention rules a company needs before it can be activated (12, 4.1, 07, 11.3): the ledger and the legal snapshot of a document
+insert into core.retention_rule (tenant_id, company_id, rule_id, effective_from, record_class, country_code, retention_years, start_event, legal_basis, created_by)
+select '11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222201', r.id::uuid, timestamptz '2026-01-01 00:00:00+00',
+       r.cls, 'DK', r.years, r.start, 'Dev seed', 'seed'
+from (values
+    ('99999999-9999-4999-8999-999999999901', 'LEDGER', 10, 'FISCAL_YEAR_END'),
+    ('99999999-9999-4999-8999-999999999902', 'LEGAL_SNAPSHOT', 5, 'RECORD_DATE')
+) as r(id, cls, years, start)
+on conflict do nothing;

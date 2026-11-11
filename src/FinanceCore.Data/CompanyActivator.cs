@@ -3,13 +3,14 @@ using System.Text.Json;
 using FinanceCore.Core.Commands;
 using FinanceCore.Core.Hashing;
 using FinanceCore.Core.Periods;
+using FinanceCore.Core.Roles;
 using Npgsql;
 
 namespace FinanceCore.Data;
 
 /// <summary>
 /// companies:check-readiness and companies:activate (07, 11.3). A company in DRAFT accepts configuration but no postings.
-/// The checks that the schema can answer today are done. The checks of the other rows of 11.3 (roles, account determination,
+/// The checks that the schema can answer today are done. The checks of the other rows of 11.3 (account determination,
 /// VAT registration, migration roles, retention, e-invoicing, consolidation) need tables that do not exist yet. They are
 /// returned as the warning LIMIT.READINESS_CHECKS_NOT_IMPLEMENTED, never as passed.
 /// </summary>
@@ -22,8 +23,8 @@ public sealed class CompanyActivator(NpgsqlDataSource source)
     /// <summary>The rows of 11.3 that are not checked yet.</summary>
     public static readonly string[] NotChecked =
     [
-        "ORDER_SETTING_VERSION", "ROLES", "ROLE_ACCOUNT_RULES", "ACCOUNT_DETERMINATION", "VAT_REGISTRATION", "MIGRATION_ROLES",
-        "GR_IR_WRITE_OFF", "RETENTION_RULES", "TAX_DETERMINATION", "DEDUCTION_KEY_RATES", "EINVOICE_RULE_SET", "CONSOLIDATION"
+        "ORDER_SETTING_VERSION", "ACCOUNT_DETERMINATION", "VAT_REGISTRATION", "MIGRATION_ROLES",
+        "GR_IR_WRITE_OFF", "TAX_DETERMINATION", "DEDUCTION_KEY_RATES", "EINVOICE_RULE_SET", "CONSOLIDATION"
     ];
 
     public async Task<CommandResult<ReadinessReport>> CheckReadinessAsync(
@@ -113,6 +114,9 @@ public sealed class CompanyActivator(NpgsqlDataSource source)
         if (await CommandSupport.EnsureHeadAsync(tx, tenantId, companyId, PeriodEventHash2.ChainType, "",
                 LedgerHash2.Genesis(tenantId, companyId, PeriodEventHash2.ChainType, ""), ct))
             created.Add(PeriodEventHash2.ChainType);
+        if (await CommandSupport.EnsureHeadAsync(tx, tenantId, companyId, ClearingHash2.ChainType, "",
+                LedgerHash2.Genesis(tenantId, companyId, ClearingHash2.ChainType, ""), ct))
+            created.Add(ClearingHash2.ChainType);
 
         await using (var cmd = tx.Command(
             "update core.company set status = 'ACTIVE', row_version = row_version + 1 where tenant_id = @t and company_id = @c"))
@@ -184,7 +188,70 @@ public sealed class CompanyActivator(NpgsqlDataSource source)
         checks.Add(new("SERIES_ASSIGNED_JOURNAL", await Scalar<int?>(
             "select 1 from core.number_series_assignment where tenant_id = @t and company_id = @c and document_type = 'JOURNAL' limit 1") is not null, null));
 
+        // 12, 4.1: every document has a legal snapshot with a retention date, so the ledger and the snapshot need a rule that is in force now.
+        // The other record classes stay a warning for the commands that need them (F-IMPL-27).
+        var noRule = new List<string>();
+        foreach (string cls in new[] { "LEDGER", "LEGAL_SNAPSHOT" })
+            if (await Scalar<int?>("select 1 from core.retention_rule where tenant_id = @t and company_id = @c and record_class = @k and effective_from <= now() limit 1", ("k", cls)) is null)
+                noRule.Add(cls);
+        checks.Add(new("RETENTION_RULES", noRule.Count == 0, noRule.Count == 0 ? null : "no retention rule in force for: " + string.Join(", ", noRule)));
+
+        checks.AddRange(await RoleChecksAsync(tx, tenantId, companyId, needed.Select(c => c!).ToArray(), ct));
+
         return new ReadinessReport(companyId, status, checks.All(c => c.Passed), checks);
+    }
+
+    /// <summary>ROLES and ROLE_ACCOUNT_RULES of 11.3. A role is present when a row is effective now. A role that is per
+    /// currency (ROUNDING, FX_UNREALISED_*) needs a default row or a row for each currency of the company (local, group, reporting).</summary>
+    private static async Task<List<ReadinessCheck>> RoleChecksAsync(
+        TenantTransaction tx, Guid tenantId, Guid companyId, string[] currencies, CancellationToken ct)
+    {
+        var rows = new List<(string Role, string? Currency, Guid? Counterpart, Guid? Vat, Guid AccountId, bool Current, RoleAccount Account, bool Usable)>();
+        await using (var cmd = tx.Command(
+            "select r.role_code, r.currency_code, r.counterpart_company_id, r.vat_registration_id, r.account_id, r.effective_from <= now(), " +
+            "a.account_type, a.open_item_mode, a.currency_code, a.revalue_flag, a.tax_account, a.active, a.posting_blocked " +
+            "from core.account_role_assignment r join core.gl_account a " +
+            "on a.tenant_id = r.tenant_id and a.company_id = r.company_id and a.account_id = r.account_id " +
+            "where r.tenant_id = @t and r.company_id = @c order by r.effective_from"))
+        {
+            cmd.Parameters.AddWithValue("t", tenantId);
+            cmd.Parameters.AddWithValue("c", companyId);
+            await using var r = await cmd.ExecuteReaderAsync(ct);
+            while (await r.ReadAsync(ct))
+                rows.Add((r.GetString(0), r.IsDBNull(1) ? null : r.GetString(1), r.IsDBNull(2) ? null : r.GetGuid(2),
+                    r.IsDBNull(3) ? null : r.GetGuid(3), r.GetGuid(4), r.GetBoolean(5),
+                    new RoleAccount(r.GetString(6), r.GetString(7), r.IsDBNull(8) ? null : r.GetString(8), r.GetBoolean(9), r.GetBoolean(10)),
+                    r.GetBoolean(11) && !r.GetBoolean(12)));
+        }
+
+        var current = rows.Where(r => r.Current).ToList();
+        var missing = new List<string>();
+        foreach (string code in AccountRoles.RequiredForActivation)
+        {
+            var ofRole = current.Where(r => r.Role == code).ToList();
+            bool present = AccountRoles.Find(code)!.PerCurrency
+                ? ofRole.Any(r => r.Currency is null) || currencies.All(c => ofRole.Any(r => r.Currency == c))
+                : ofRole.Count > 0;
+            if (!present) missing.Add(code);
+        }
+
+        // Every key counts with its newest row that is effective now
+        var violations = new List<string>();
+        foreach (var key in current.GroupBy(r => (r.Role, r.Currency, r.Counterpart, r.Vat)))
+        {
+            var row = key.Last();
+            RoleDefinition definition = AccountRoles.Find(row.Role)!;
+            IEnumerable<string> others = rows.Where(r => r.AccountId == row.AccountId).Select(r => r.Role);
+            foreach (RoleViolation v in AccountRoles.CheckAccount(definition, row.Currency, row.Account, others))
+                violations.Add($"{row.Role}: {v.Rule ?? v.Code}");
+            if (!row.Usable) violations.Add($"{row.Role}: ACCOUNT_USABLE");
+        }
+
+        return
+        [
+            new("ROLES", missing.Count == 0, missing.Count == 0 ? null : "not assigned: " + string.Join(", ", missing)),
+            new("ROLE_ACCOUNT_RULES", violations.Count == 0, violations.Count == 0 ? null : string.Join("; ", violations.Distinct()))
+        ];
     }
 
     private static List<CommandError> FailedChecks(ReadinessReport report) =>
@@ -203,5 +270,5 @@ public sealed class CompanyActivator(NpgsqlDataSource source)
             : CommandResult<ReadinessReport>.Rejected(FailedChecks(report)) with { Value = report };
 
     private static CommandError Permission(string permission) =>
-        new("AUTH.PERMISSION_DENIED", "P0", "", new Dictionary<string, object?> { ["permission"] = permission });
+        new("AUTH.PERMISSION_MISSING", "P0", "", new Dictionary<string, object?> { ["permission"] = permission });
 }

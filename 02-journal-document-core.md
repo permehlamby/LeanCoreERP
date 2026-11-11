@@ -112,6 +112,10 @@ PK: (`tenant_id`, `company_id`, `document_id`)  1:1 with `journal_document`. Not
 
 \* L1 for all users and commands. Only the retention job may overwrite. This is a legal L1 exception (ADR-008) and is recorded in `change_log` with entity type LEGAL_SNAPSHOT and reason `SYSTEM` (8). The one defined exception to L1. `order_address_snapshot` (11) is not covered by this table and has its own spec. Its SYSTEM log entries (retention overwrite) go to `order_change_log` with entity type ORDER_ADDRESS_SNAPSHOT (11, 4.7), not to `change_log`: `change_log` uses reason `SYSTEM` only for LEGAL_SNAPSHOT.
 
+**Built choices (F-IMPL-27, 2026-10-26).** (a) Every command that writes a journal document writes its snapshot in the same transaction: `journal-documents:post`, `journal-documents:reverse` (the mirror), the difference document of `clearings:post` and the mirror of `clearings:reset`. A deferred constraint trigger (migration 0020) rejects a document without a snapshot at commit, so no other writer can leave one out. (b) Until the header partner exists (06, 5.2, `partner_id` of the header) the snapshot carries only `retention_until`: `partner_id` and every L1* column are null. (c) `retention_until` is the later of the `LEGAL_SNAPSHOT` rule and the `LEDGER` rule (12, 4.1), counted from the end of the fiscal year of the document and from its posting date, with the versions in force at the moment the command writes the row. For a reversal, a difference document and a mirror that is the posting date of the new document, not of the original. (d) If one of the two classes has no rule in force, the command answers `RETENTION.NO_RULE` with the missing classes in `record_classes` and writes nothing. (e) The table is insert-only for now: the retention job (overwrite of the L1* columns and `anonymised_at`) and `retention:extend` (`retention_until`) are separate commands and loosen the guard when they are built.
+
+**Built choices for the header partner (F-IMPL-28, 2026-10-26).** (a) The header partner is stored only in the snapshot (`partner_id`), as this table says: `journal_document` has no partner column and the row hash does not change. (b) With a `partner_id` the command copies `legal_name`, the address, `country_code`, `electronic_address`, its scheme and `legal_registration_id` from `business_partner_pii` as they are when the command runs. The master has no versions, so "as of the posting date" (06, 5.2) means "now": a document with a back-dated posting date takes today's master data (decided 2026-10-26, until the master has versions). `partner_vat_id` stays null until the partner has a tax registration (out of scope). (c) A change of the master later does not reach the snapshot, and the snapshot is not in the hash, so `chains:verify` is unaffected. (d) The mirror of a reversal takes the snapshot data of the document it reverses, not the master, because it is the same legal event. Its `retention_until` is dated by its own posting date (F-IMPL-27). (e) The posting role reads the snapshot columns of `business_partner_pii` only (column grant, migration 0021): not the email, phone or contact person.
+
 ## 5. `journal_line`
 
 PK: (`tenant_id`, `company_id`, `document_id`, `line_no`)
@@ -153,7 +157,7 @@ All L1. Signed (A1).
 | currency_gc | CODE | N | |
 | rate_gc | RATE | N | |
 | rate_gc_table | RATE | Y | |
-| amount_rc | AMT | Y | Reporting currency. Null if not configured for the company |
+| amount_rc | AMT | Y | Reporting currency. Null if not configured for the company. **All or none (F-IMPL-4, 2026-10-26):** `amount_rc`, `currency_rc` and `rate_rc` are all present or all absent on a line, and a document has them on all lines or on none. A company with a `reporting_currency` (07, 5.4) posts them on every line, a company without posts none. The deferred balance check of the reporting currency applies to documents that have them |
 | currency_rc | CODE | Y | |
 | rate_rc | RATE | Y | |
 | rate_rc_table | RATE | Y | |
@@ -164,13 +168,16 @@ All L1. Signed (A1).
 
 | Line type | Situation | `rate_lc` | `rate_gc`, `rate_rc` | `rate_type` |
 |---|---|---|---|---|
-| BASE, TAX, TAX_NONDEDUCTIBLE, ROUNDING, TAX_ROUNDING | TC non-zero | Rate of ADR-019 (1 if TC = LC) | Rate of ADR-019 | SPOT or CLOSING as posted |
+| BASE, TAX, TAX_NONDEDUCTIBLE, TAX_ROUNDING | TC non-zero | Rate of ADR-019 (1 if TC = LC) | Rate of ADR-019 | SPOT or CLOSING as posted |
+| ROUNDING (ADR-230, F-IMPL-16a) | Always `amount_tc` = 0. The line exists because TC balances and LC, GC or RC do not | 1 | 1 | DERIVED |
 | FX_REALISED, CLEARING_DIFF (03, 3.1) | Always `amount_tc` = 0 | 1 | 1 | DERIVED |
 | FX_UNREALISED, REVAL_ADJUSTMENT (05, 3.3) | Always `amount_tc` = 0 | 1 | 1 | DERIVED |
 | CLOSING (YEAR_END document, 05, 5.2) | `amount_tc` = `amount_lc`, non-zero | 1 | Implied ratio `amount_x / amount_lc` | DERIVED |
 | CLOSING, OPENING, HISTORY_PL (migration, 13) | `amount_tc` = 0 or `amount_lc` = 0 (D9, 17, section 5) | 1 | Let A be the **first non-zero amount in the order LC, GC, RC**. `rate_x` = `amount_x` / A for each other currency, and 1 for the currency of A itself. A currency whose own amount is 0 gets rate 1 | DERIVED |
 
 General rules: a rate is never null and never 0. When the ratio to LC cannot be formed because `amount_lc` is 0 (LC = 0 and GC or RC not 0), the rates are the ratio to the first non-zero amount as in the last row (D9, final). The amounts are authoritative and the rates are derived from them: the rates on `DERIVED` lines are informational and are not used to recompute amounts. A document whose lines are non-zero only in GC or RC (LC = 0 on all lines) is valid, because "non-zero" means non-zero in at least one currency.
+
+**Rounding of derived amounts (ADR-229, ADR-230, F-IMPL-6 and F-IMPL-16, 2026-10-26).** Every amount derived from another by a rate or a ratio is rounded to the scale of its currency, half away from zero, so that a value and its mirror round to opposite amounts. If LC, GC or RC of a document then do not sum to 0 while TC does, the posting command adds **one** `ROUNDING` line, after the base lines. Its `amount_tc` is 0, its LC, GC and RC amounts are the three differences (one line for all three currencies, where earlier text said "per currency"), its rates are 1 and its `rate_type` is DERIVED, it has no `line_ref`, and its account is the role `ROUNDING` (07, 6.3 item 1). A document whose TC amounts do not sum to 0 is rejected (`BALANCE.UNBALANCED_TC`), a rounding line never closes a transaction-currency difference.
 
 ### 5.3 Dimensions (ADR-010, P11)
 
@@ -181,7 +188,7 @@ General rules: a rate is never null and never 0. When the ratio to LC cannot be 
 | profit_center_id | ID | Y | L2 | Profit center/segment |
 | business_unit_id | ID | Y | L2 | Branch/business unit as dimension (ADR-014) |
 
-Free dimensions: see `journal_line_dimension`. Any L2 change is validated as a posting against account rules and dimension validity periods (P3).
+Free dimensions: see `journal_line_dimension`. Any L2 change is validated as a posting against account rules and dimension validity periods (P3). Built choices (F-IMPL-33): posting writes the typed columns and the free rows, the database checks that a typed value belongs to a type of the matching standard role and that a value restricted to a company is used by that company, and the typed columns and `journal_line_dimension.dimension_value_id` can change with a `change_log` row of the same transaction (migration 0022). 06, 13.9 has the errors.
 
 ### 5.4 Intercompany marker
 
@@ -223,6 +230,8 @@ Account is not repeated here. Aging queries join `journal_line` for `account_id`
 | last_clearing_id | ID | Y | S | FK to `clearing` (03-clearing), the most recent clearing touching this line |
 
 The side table isolates all S columns of the line domain in one table with its own grant (section 10). `journal_line` itself holds only L1 and L2 columns.
+
+**Built in the first slice (2026-10-26).** The table exists for the accounts of mode GL_OPEN_ITEM. `bank_account_id` has no foreign key yet (the table does not exist). `partner_id` and `payment_terms_id` refer to their tables since migration 0018, `last_clearing_id` to the clearing since 0015. **Backstop at commit:** a deferred constraint trigger checks that a line on an open-item account has a row, a line on a NONE account has none, a CONTROL line has a partner **and a due date** (migration 0018, F-IMPL-24) and a GL_OPEN_ITEM line has no partner. The due date of such an item cannot be cleared later either (the guard of the table). The **mirror** of a CONTROL item (06, 5.3) carries the partner and the due date of the original and nothing else of the L2 attributes. The lines of REVAL_ADJUSTMENT, CLOSING, HISTORY_PL and OPENING are exempt, as above. **Lock classes in the trigger:** an L1 column never changes. An L2 column changes only with a `change_log` row of entity type LINE_OPEN_ITEM in the same transaction (the guard of 8) and never in a hard-closed period. The S columns cannot change at all until the clearing tables and the clearing command role exist. The posting role may INSERT and UPDATE the L2 columns, and nobody may DELETE. The line hash covers the row (9.3a): `test-vectors/hash-v2.json` has two cases for it, an open item without partner and a migrated one with legacy columns, produced by `verify-hash-v2.mjs` and reproduced by the C# library.
 
 ## 6. `journal_line_dimension`
 
@@ -331,6 +340,8 @@ Index: (`tenant_id`, `company_id`, `document_id`, `line_no`), (`tenant_id`, `com
 
 No UPDATE or DELETE grants for any role. L1 changes never appear here, because they are impossible.
 Dimension changes (L2) carry the validation result in the command response, not in this table.
+
+**The database guard of an L2 column (F-IMPL-3, F-IMPL-2, 2026-10-26).** The trigger accepts an UPDATE of an L2 column (`header_text`, `external_reference`, `line_text`) only if a `change_log` row of the same transaction matches by content: same document, line and field, `old_value` and `new_value` equal to the old and the new column value, `lock_class` L2, `period_status` equal to the real status of the governing period, and `changed_at` equal to the transaction timestamp. A comparison with the transaction id would break under savepoints, so time and content stand in for it, and the command writes `changed_at` with the database's `now()`. A hard-closed period rejects the change in the trigger as well (L3). The grants give the posting role UPDATE on these columns only.
 
 ## 9. Hash chain (document-level, proposed resolution of ADR-006)
 
@@ -542,4 +553,5 @@ Decisions from 14, sections 8 to 11, and the deltas of 15 (section 10) and 16 (s
 | Propagation pass (17, section 5, v0.6) | Document type GR_IR_WRITE_OFF: system generated, `origin` ORDER, owning command `gr-ir:reverse-write-off`, mirror keeps the type (3: type list, `is_system_generated`, origin, mirror and derived-document rules). D9 rate rule at LC = 0 final: ratio to the first non-zero amount, amounts authoritative (5.2). CLOSING and `origin` confirmed present (3). Open question list closed (12) |
 | ADR-200, ADR-203 to ADR-206 (2026-10-14) | `journal_line_tax`: `origin_eu`, `destination_eu` (7.1, ADR-200) and the deduction columns (7.1, ADR-203). `journal_line_tax_base`: `nondeductible_tax_tc`, `nondeductible_line_no` (7.2). New line type `TAX_NONDEDUCTIBLE` (5.1) with its rate rule (5.2). `hash_version` 2 (9.3) |
 | ADR-226 (2026-10-19, spec 23) | 5.4: the lines that carry `ic_counterpart_company_id` (IC account lines, control lines and BASE lines of an IC document pair, never tax or rounding lines). No hash change |
+| ADR-228 to ADR-230 (2026-10-26, first implementation slice) | 5.2: `amount_rc`, `currency_rc` and `rate_rc` all or none per line and per document (F-IMPL-4). The rate rule of ROUNDING has its own row in D9 (F-IMPL-16a). New paragraph "Rounding of derived amounts": half away from zero and one ROUNDING line per document (ADR-229, ADR-230). No hash change: the line type and the columns were already L1 |
 | Skipped | exemptions of CLOSING, HISTORY_PL and OPENING lines from the partner and open-item rule (owned by 05 and 13). Number series fiscal year resolution is in 04 |

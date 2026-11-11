@@ -21,7 +21,7 @@ public class ConnectionTests
         Assert.True(await reader.ReadAsync());
         Assert.Equal("cmd_read", reader.GetString(0));
         Assert.Equal(DevTenant.ToString("D"), reader.GetString(1));
-        Assert.Equal(4L, reader.GetInt64(2));   // the four accounts of the dev seed
+        Assert.Equal(10L, reader.GetInt64(2));   // the four accounts of the dev seed and the six role accounts
     }
 
     [Fact]

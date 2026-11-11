@@ -13,7 +13,7 @@ public class CleanupTests
 
     private static readonly string[] Tables =
     [
-        "outbox_event", "command_log_result", "command_log", "journal_line", "journal_document", "number_range_counter", "fiscal_period",
+        "outbox_event", "command_log_result", "command_log", "journal_line", "document_legal_snapshot", "journal_document", "number_range_counter", "fiscal_period",
         "fiscal_year", "chain_head", "period_event", "posting_window", "number_series_assignment", "number_series", "gl_account",
         "exchange_rate", "company_setting_version", "group_membership", "ledger", "company", "company_group", "fiscal_calendar",
         "tenant_currency", "tenant_setting", "outbox_head"

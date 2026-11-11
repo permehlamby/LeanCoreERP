@@ -22,7 +22,14 @@ public static class LedgerReader
     /// <summary>A stored document: the hash input of the header (L1 columns) and the status, with its lines.</summary>
     public sealed record StoredDocument(
         Dictionary<string, object?> Header, string Status, long ChainSeq, byte[] PrevHash, byte[] RowHash,
-        List<Dictionary<string, object?>> Lines);
+        List<Dictionary<string, object?>> Lines)
+    {
+        /// <summary>The L1 columns of the open item rows that the hash sees (02, 5A), by line number.</summary>
+        public Dictionary<int, Dictionary<string, object?>> OpenItems { get; } = [];
+
+        /// <summary>The due date of each open item row (an L2 column, not in the hash): a mirror of a control account item carries it (02, 5A).</summary>
+        public Dictionary<int, DateOnly?> OpenItemDueDates { get; } = [];
+    }
 
     public static async Task<PostedDocument?> LoadDocumentAsync(TenantTransaction tx, Guid tenantId, Guid documentId, CancellationToken ct)
     {
@@ -129,6 +136,38 @@ public static class LedgerReader
                 };
                 // line_text (column 27) is L2 and not part of the hash
                 byKey[((Guid)l["company_id"]!, (Guid)l["document_id"]!)].Lines.Add(l);
+            }
+        }
+
+        await using (var cmd = tx.Command(
+            "select company_id, document_id, line_no, partner_id, legacy_document_date, legacy_posting_date, legacy_document_ref, due_date " +
+            "from core.journal_line_open_item where tenant_id = @t " +
+            (documentId is null
+                ? "and (company_id, document_id) in (select company_id, document_id from core.journal_document where tenant_id = @t and company_id = @c and ledger_id = @l) "
+                : "and document_id = @d ") +
+            "order by document_id, line_no"))
+        {
+            cmd.Parameters.AddWithValue("t", tenantId);
+            if (documentId is null)
+            {
+                cmd.Parameters.AddWithValue("c", companyId!.Value);
+                cmd.Parameters.AddWithValue("l", ledgerId!.Value);
+            }
+            else cmd.Parameters.AddWithValue("d", documentId.Value);
+
+            await using var r = await cmd.ExecuteReaderAsync(ct);
+            while (await r.ReadAsync(ct))
+            {
+                int lineNo = r.GetInt32(2);
+                byKey[(r.GetGuid(0), r.GetGuid(1))].OpenItemDueDates[lineNo] = r.IsDBNull(7) ? null : r.GetFieldValue<DateOnly>(7);
+                byKey[(r.GetGuid(0), r.GetGuid(1))].OpenItems[lineNo] = new Dictionary<string, object?>
+                {
+                    ["tenant_id"] = tenantId, ["company_id"] = r.GetGuid(0), ["document_id"] = r.GetGuid(1), ["line_no"] = lineNo,
+                    ["partner_id"] = r.IsDBNull(3) ? null : r.GetGuid(3),
+                    ["legacy_document_date"] = r.IsDBNull(4) ? null : r.GetFieldValue<DateOnly>(4),
+                    ["legacy_posting_date"] = r.IsDBNull(5) ? null : r.GetFieldValue<DateOnly>(5),
+                    ["legacy_document_ref"] = r.IsDBNull(6) ? null : r.GetString(6)
+                };
             }
         }
         return docs;

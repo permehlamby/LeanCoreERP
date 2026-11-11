@@ -55,6 +55,107 @@ public class CompanyActivationTests
         Assert.Contains("EUR", (string)r.Errors.Single(e => (string?)e.Params?["check"] == "CURRENCIES_ENABLED").Params!["detail"]!);
     }
 
+    private static Task<CommandResult<Core.Roles.AssignedAccountRole>> Assign(
+        TestTenant t, string key, string role, Guid account, string? currency = null) =>
+        new AccountRoleAssigner(t.App).AssignAsync(t.TenantId, t.Context(key, "write.config"),
+            new(t.CompanyId, role, account, currency, EffectiveFrom: new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc)));
+
+    private static async Task<Guid> Account(TestTenant t, string no, string type)
+    {
+        Guid id = Guid.NewGuid();
+        await t.ExecuteAsync(
+            "insert into core.gl_account (tenant_id, company_id, account_id, account_no, name, account_type, tax_code_rule) " +
+            "values (@t, @c, @id, @no, 'Test', @type, 'FORBIDDEN')", ("id", id), ("no", no), ("type", type));
+        return id;
+    }
+
+    [Fact]
+    public async Task CompanyWithoutRolesIsNotReadyAndTheRolesCanBeAssignedThroughTheCommand()
+    {
+        var t = await TestTenant.CreateAsync(bare: true, withRoles: false);
+        await OpenYear(t);
+        var activator = new CompanyActivator(t.App);
+
+        var r = await activator.ActivateAsync(t.TenantId, Activate(t, "a1"), t.CompanyId);
+        Assert.Equal(["ROLES"], FailedChecks(r));
+        string detail = (string)r.Errors.Single().Params!["detail"]!;
+        foreach (string role in new[] { "ROUNDING", "TAX_ROUNDING", "FX_REALISED", "FX_UNREALISED_GAIN", "FX_UNREALISED_LOSS", "RETAINED_EARNINGS" })
+            Assert.Contains(role, detail);
+
+        Guid rounding = await Account(t, "7900", "EXPENSE");
+        foreach (var (role, no, type) in new[]
+        {
+            ("ROUNDING", "7900", "EXPENSE"), ("TAX_ROUNDING", "7910", "EXPENSE"), ("FX_REALISED", "7920", "EXPENSE"),
+            ("FX_UNREALISED_GAIN", "7930", "REVENUE"), ("FX_UNREALISED_LOSS", "7940", "EXPENSE"), ("RETAINED_EARNINGS", "8100", "EQUITY")
+        })
+        {
+            Guid account = role == "ROUNDING" ? rounding : await Account(t, no, type);
+            var assigned = await Assign(t, "role-" + role, role, account);
+            Assert.True(assigned.Status == CommandStatus.Ok, string.Join(", ", assigned.Errors.Select(e => e.Code)));
+        }
+
+        var ready = await activator.ActivateAsync(t.TenantId, Activate(t, "a2"), t.CompanyId);
+        Assert.True(ready.Status == CommandStatus.Ok, Describe(ready));
+        Assert.DoesNotContain(ready.Warnings.SelectMany(w => (string[])w.Params!["checks"]!), c => c is "ROLES" or "ROLE_ACCOUNT_RULES");
+    }
+
+    [Fact]
+    public async Task APerCurrencyRoleNeedsADefaultOrARowForEveryCurrencyOfTheCompany()
+    {
+        var t = await TestTenant.CreateAsync(bare: true, withRoles: false);
+        await OpenYear(t);
+        foreach (var (role, no, type) in new[]
+        {
+            ("TAX_ROUNDING", "7910", "EXPENSE"), ("FX_REALISED", "7920", "EXPENSE"), ("FX_UNREALISED_GAIN", "7930", "REVENUE"),
+            ("FX_UNREALISED_LOSS", "7940", "EXPENSE"), ("RETAINED_EARNINGS", "8100", "EQUITY")
+        })
+            Assert.Equal(CommandStatus.Ok, (await Assign(t, "role-" + role, role, await Account(t, no, type))).Status);
+
+        // the company is DKK with EUR as group and reporting currency: ROUNDING in DKK alone is not enough
+        Guid rounding = await Account(t, "7900", "EXPENSE");
+        Assert.Equal(CommandStatus.Ok, (await Assign(t, "dkk", "ROUNDING", rounding, "DKK")).Status);
+        var activator = new CompanyActivator(t.App);
+        var missing = await activator.CheckReadinessAsync(t.TenantId, t.Context("r1", "read.config"), t.CompanyId);
+        Assert.Equal(["ROLES"], FailedChecks(missing));
+        Assert.Contains("ROUNDING", (string)missing.Errors.Single().Params!["detail"]!);
+
+        Assert.Equal(CommandStatus.Ok, (await Assign(t, "eur", "ROUNDING", rounding, "EUR")).Status);
+        var ready = await activator.CheckReadinessAsync(t.TenantId, t.Context("r2", "read.config"), t.CompanyId);
+        Assert.True(ready.Status == CommandStatus.Ok, Describe(ready));
+    }
+
+    [Fact]
+    public async Task ARoleAccountThatCannotBePostedToFailsTheRuleCheck()
+    {
+        var t = await TestTenant.CreateAsync(bare: true);
+        await OpenYear(t);
+        await t.ExecuteAsync("update core.gl_account set posting_blocked = true where tenant_id = @t and account_no = '7920'");
+
+        var r = await new CompanyActivator(t.App).ActivateAsync(t.TenantId, Activate(t, "a"), t.CompanyId);
+        Assert.Equal(["ROLE_ACCOUNT_RULES"], FailedChecks(r));
+        Assert.Equal("FX_REALISED: ACCOUNT_USABLE", (string)r.Errors.Single().Params!["detail"]!);
+    }
+
+    [Fact]
+    public async Task ARoleAccountThatBreaksTheRulesAfterwardsFailsTheRuleCheck()
+    {
+        var t = await TestTenant.CreateAsync(bare: true);
+        await OpenYear(t);
+        // revalue_flag on the retained earnings account and a tax account behind the roles: the triggers stop the first, so
+        // the migration role switches the guard off, as a repair or an old import might have left it
+        await t.ExecuteAsync("""
+            alter table core.gl_account disable trigger gl_account_guard;
+            update core.gl_account set revalue_flag = true where tenant_id = @t and account_no = '8100';
+            update core.gl_account set tax_account = true where tenant_id = @t and account_no = '7900';
+            alter table core.gl_account enable trigger gl_account_guard;
+            """);
+
+        var r = await new CompanyActivator(t.App).CheckReadinessAsync(t.TenantId, t.Context("r", "read.config"), t.CompanyId);
+        var detail = (string)r.Errors.Single(e => (string?)e.Params?["check"] == "ROLE_ACCOUNT_RULES").Params!["detail"]!;
+        Assert.Contains("RETAINED_EARNINGS: CONFIG.REVALUE_FLAG_ON_RETAINED_EARNINGS", detail);
+        Assert.Contains("ROUNDING: TAX_ACCOUNT", detail);
+    }
+
     [Fact]
     public async Task ReadyCompanyIsActivatedAndItsChainsStart()
     {
@@ -65,8 +166,8 @@ public class CompanyActivationTests
 
         Assert.True(r.Status == CommandStatus.Ok, Describe(r));
         Assert.Equal("ACTIVE", r.Value!.Status);
-        // the PERIOD_EVENT head exists from the year opening, the LEDGER head is new
-        Assert.Equal([$"LEDGER/{t.LedgerId:D}"], r.Value.CreatedChainHeads);
+        // the PERIOD_EVENT head exists from the year opening, the LEDGER and CLEARING heads are new
+        Assert.Equal([$"LEDGER/{t.LedgerId:D}", "CLEARING"], r.Value.CreatedChainHeads);
         Assert.Contains(r.Warnings, w => w.Code == "LIMIT.READINESS_CHECKS_NOT_IMPLEMENTED");
         Assert.Equal("ACTIVE", await t.ScalarAsync<string>("select status from core.company where tenant_id = @t"));
         Assert.Equal(2L, await t.ScalarAsync<long>("select row_version from core.company where tenant_id = @t"));
@@ -99,8 +200,8 @@ public class CompanyActivationTests
     {
         var t = await TestTenant.CreateAsync(bare: true);
         var activator = new CompanyActivator(t.App);
-        Assert.Equal(["AUTH.PERMISSION_DENIED"], (await activator.ActivateAsync(t.TenantId, t.Context("p", "read.config"), t.CompanyId)).Errors.Select(e => e.Code));
-        Assert.Equal(["AUTH.PERMISSION_DENIED"], (await activator.CheckReadinessAsync(t.TenantId, t.Context("q", "company.activate"), t.CompanyId)).Errors.Select(e => e.Code));
+        Assert.Equal(["AUTH.PERMISSION_MISSING"], (await activator.ActivateAsync(t.TenantId, t.Context("p", "read.config"), t.CompanyId)).Errors.Select(e => e.Code));
+        Assert.Equal(["AUTH.PERMISSION_MISSING"], (await activator.CheckReadinessAsync(t.TenantId, t.Context("q", "company.activate"), t.CompanyId)).Errors.Select(e => e.Code));
         Assert.Equal(["COMPANY.NOT_FOUND"], (await activator.ActivateAsync(t.TenantId, Activate(t, "u"), Guid.NewGuid())).Errors.Select(e => e.Code));
     }
 
