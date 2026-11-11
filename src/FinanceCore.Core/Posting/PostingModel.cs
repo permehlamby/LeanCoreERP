@@ -26,7 +26,15 @@ public sealed record OpenItemRequest(
     DateOnly? DiscountDueDate = null, decimal? DiscountAmountTc = null, string? PaymentBlock = null, string? DunningBlock = null,
     string? PaymentReference = null, Guid? BankAccountId = null);
 
-public sealed record RequestLine(string LineRef, Guid AccountId, decimal AmountTc, string? LineText = null, OpenItemRequest? OpenItem = null);
+/// <summary>One free dimension of a line (06, 5.2): the type and the value. A value is always given, a line without the dimension names no entry.</summary>
+public sealed record FreeDimension(Guid DimensionTypeId, Guid DimensionValueId);
+
+/// <summary>The dimensions of a base line (06, 5.2, 02, 5.3): the four standard types as typed columns and the free ones as a list. Every one is optional.</summary>
+public sealed record LineDimensions(
+    Guid? CostCenterId = null, Guid? ProjectId = null, Guid? ProfitCenterId = null, Guid? BusinessUnitId = null, IReadOnlyList<FreeDimension>? Free = null);
+
+public sealed record RequestLine(
+    string LineRef, Guid AccountId, decimal AmountTc, string? LineText = null, OpenItemRequest? OpenItem = null, LineDimensions? Dimensions = null);
 
 public sealed record PostedLine(
     int LineNo, string? LineRef, Guid AccountId, string LineType,
@@ -67,6 +75,12 @@ public static class RequestFingerprint
         new("bank_account_id", FieldType.Id, true)
     ];
 
+    private static readonly FieldSpec[] DimensionSpec =
+    [
+        new("cost_center_id", FieldType.Id, true), new("project_id", FieldType.Id, true), new("profit_center_id", FieldType.Id, true),
+        new("business_unit_id", FieldType.Id, true), new("free", FieldType.Text)
+    ];
+
     public static byte[] Compute(PostJournalDocumentRequest r)
     {
         var head = Canonical.EncodeFields(Header, new Dictionary<string, object?>
@@ -92,6 +106,15 @@ public static class RequestFingerprint
                 ["discount_due_date"] = o.DiscountDueDate, ["discount_amount_tc"] = o.DiscountAmountTc, ["payment_block"] = o.PaymentBlock,
                 ["dunning_block"] = o.DunningBlock, ["payment_reference"] = o.PaymentReference, ["bank_account_id"] = o.BankAccountId
             })));
+        // The dimensions follow only when a line has some, one field per line in request order: the fingerprint of a request without them is what it was
+        // before the dimensions existed. The free ones are sorted by type, so the order of the list does not matter.
+        if (r.Lines.Any(l => l.Dimensions is not null))
+            foreach (RequestLine l in r.Lines)
+                all.Write(l.Dimensions is not { } d ? Canonical.NullField() : Canonical.Block(Canonical.EncodeFields(DimensionSpec, new Dictionary<string, object?>
+                {
+                    ["cost_center_id"] = d.CostCenterId, ["project_id"] = d.ProjectId, ["profit_center_id"] = d.ProfitCenterId, ["business_unit_id"] = d.BusinessUnitId,
+                    ["free"] = string.Concat((d.Free ?? []).OrderBy(f => f.DimensionTypeId).Select(f => f.DimensionTypeId.ToString("D") + "=" + f.DimensionValueId.ToString("D") + ";"))
+                })));
         // The header partner follows only when there is one, so the fingerprint of a request without it is what it was before the invoice types
         if (r.PartnerId is { } partner)
             all.Write(Canonical.Block(Canonical.EncodeFields([new FieldSpec("header_partner_id", FieldType.Id)], new Dictionary<string, object?> { ["header_partner_id"] = partner })));

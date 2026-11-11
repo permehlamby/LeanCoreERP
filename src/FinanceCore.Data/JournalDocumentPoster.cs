@@ -93,6 +93,16 @@ public sealed class JournalDocumentPoster(NpgsqlDataSource source)
                 if (l.AccountId == Guid.Empty) Invalid($"lines[{i}].account_id", "required");
                 if (Math.Round(l.AmountTc, Canonical.AmountScale) != l.AmountTc) Invalid($"lines[{i}].amount_tc", $"at most {Canonical.AmountScale} fraction digits");
                 if (l.LineText?.Length > 200) Invalid($"lines[{i}].line_text", "at most 200 characters");
+                if (l.Dimensions is { } dims)
+                {
+                    foreach (var (column, _) in DimensionChecks.Typed)
+                        if (DimensionChecks.TypedValue(dims, column) == Guid.Empty) Invalid($"lines[{i}].dimensions.{column}", "an id, or absent");
+                    for (int j = 0; j < (dims.Free?.Count ?? 0); j++)
+                    {
+                        if (dims.Free![j].DimensionTypeId == Guid.Empty) Invalid($"lines[{i}].dimensions.free[{j}].dimension_type_id", "required");
+                        if (dims.Free![j].DimensionValueId == Guid.Empty) Invalid($"lines[{i}].dimensions.free[{j}].dimension_value_id", "required");
+                    }
+                }
             }
         }
         return errors;
@@ -183,6 +193,8 @@ public sealed class JournalDocumentPoster(NpgsqlDataSource source)
             if (a.TaxCodeRule == "MANDATORY") errors.Add(Error("LIMIT.TAX_CODE_MANDATORY", "P2", path, ("account_no", a.AccountNo)));
             if (a.CurrencyCode is not null) errors.Add(Error("LIMIT.ACCOUNT_CURRENCY", "P2", path, ("account_no", a.AccountNo)));
         }
+
+        errors.AddRange(await DimensionChecks.CheckPostingAsync(tx, tenantId, req.CompanyId, req.PostingDate, req.Lines, ct));
 
         Dictionary<int, RelationDefaults> openItemDefaults = await CheckOpenItemReferencesAsync(tx, tenantId, req, accounts, errors, ct);
 
@@ -358,7 +370,10 @@ public sealed class JournalDocumentPoster(NpgsqlDataSource source)
             return Reject(noSnapshot);
         foreach (PostedLine l in lines)
             await InsertLineAsync(tx, tenantId, req, documentId, ledgerId.Value, fiscalYear, recheck.PeriodNo!.Value,
-                l.LineType == "BASE" ? req.Lines[l.LineNo - 1].LineText : null, l, ct);
+                l.LineType == "BASE" ? req.Lines[l.LineNo - 1].LineText : null, l.LineType == "BASE" ? req.Lines[l.LineNo - 1].Dimensions : null, l, ct);
+        foreach (PostedLine l in lines.Where(l => l.LineType == "BASE" && req.Lines[l.LineNo - 1].Dimensions?.Free is { Count: > 0 }))
+            foreach (FreeDimension f in req.Lines[l.LineNo - 1].Dimensions!.Free!.OrderBy(f => f.DimensionTypeId))
+                await InsertFreeDimensionAsync(tx, tenantId, req.CompanyId, documentId, l.LineNo, f, ct);
         foreach (PostedLine l in lines.Where(l => l.LineType == "BASE" && req.Lines[l.LineNo - 1].OpenItem is not null))
             await InsertOpenItemAsync(tx, tenantId, req.CompanyId, documentId, l, req.Lines[l.LineNo - 1].OpenItem!, openItemDefaults.GetValueOrDefault(l.LineNo - 1), ct);
 
@@ -903,13 +918,17 @@ public sealed class JournalDocumentPoster(NpgsqlDataSource source)
 
     private static async Task InsertLineAsync(
         TenantTransaction tx, Guid tenantId, PostJournalDocumentRequest req, Guid documentId, Guid ledgerId,
-        int fiscalYear, int period, string? lineText, PostedLine l, CancellationToken ct)
+        int fiscalYear, int period, string? lineText, LineDimensions? dims, PostedLine l, CancellationToken ct)
     {
         await using var cmd = tx.Command(
             "insert into core.journal_line (tenant_id, company_id, document_id, line_no, ledger_id, line_type, account_id, posting_date, " +
             "fiscal_year, fiscal_period, line_text, amount_tc, amount_lc, currency_lc, rate_lc, amount_gc, currency_gc, rate_gc, " +
-            "amount_rc, currency_rc, rate_rc, rate_type, rate_date) " +
-            "values (@t, @c, @d, @n, @l, @lt, @a, @pd, @fy, @fp, @txt, @tc, @lc, @clc, @rlc, @gc, @cgc, @rgc, @rc, @crc, @rrc, @rt, @rd)");
+            "amount_rc, currency_rc, rate_rc, rate_type, rate_date, cost_center_id, project_id, profit_center_id, business_unit_id) " +
+            "values (@t, @c, @d, @n, @l, @lt, @a, @pd, @fy, @fp, @txt, @tc, @lc, @clc, @rlc, @gc, @cgc, @rgc, @rc, @crc, @rrc, @rt, @rd, @cc, @pr, @pc, @bu)");
+        cmd.Parameters.Add(new NpgsqlParameter("cc", NpgsqlDbType.Uuid) { Value = (object?)dims?.CostCenterId ?? DBNull.Value });
+        cmd.Parameters.Add(new NpgsqlParameter("pr", NpgsqlDbType.Uuid) { Value = (object?)dims?.ProjectId ?? DBNull.Value });
+        cmd.Parameters.Add(new NpgsqlParameter("pc", NpgsqlDbType.Uuid) { Value = (object?)dims?.ProfitCenterId ?? DBNull.Value });
+        cmd.Parameters.Add(new NpgsqlParameter("bu", NpgsqlDbType.Uuid) { Value = (object?)dims?.BusinessUnitId ?? DBNull.Value });
         cmd.Parameters.AddWithValue("t", tenantId);
         cmd.Parameters.AddWithValue("c", req.CompanyId);
         cmd.Parameters.AddWithValue("d", documentId);
@@ -933,6 +952,19 @@ public sealed class JournalDocumentPoster(NpgsqlDataSource source)
         cmd.Parameters.Add(new NpgsqlParameter("rrc", NpgsqlDbType.Numeric) { Value = (object?)l.RateRc ?? DBNull.Value });
         cmd.Parameters.AddWithValue("rt", l.RateType);
         cmd.Parameters.AddWithValue("rd", l.RateDate);
+        await cmd.ExecuteNonQueryAsync(ct);
+    }
+
+    private static async Task InsertFreeDimensionAsync(TenantTransaction tx, Guid tenantId, Guid companyId, Guid documentId, int lineNo, FreeDimension f, CancellationToken ct)
+    {
+        await using var cmd = tx.Command(
+            "insert into core.journal_line_dimension (tenant_id, company_id, document_id, line_no, dimension_type_id, dimension_value_id) values (@t, @c, @d, @n, @ty, @v)");
+        cmd.Parameters.AddWithValue("t", tenantId);
+        cmd.Parameters.AddWithValue("c", companyId);
+        cmd.Parameters.AddWithValue("d", documentId);
+        cmd.Parameters.AddWithValue("n", lineNo);
+        cmd.Parameters.AddWithValue("ty", f.DimensionTypeId);
+        cmd.Parameters.AddWithValue("v", f.DimensionValueId);
         await cmd.ExecuteNonQueryAsync(ct);
     }
 

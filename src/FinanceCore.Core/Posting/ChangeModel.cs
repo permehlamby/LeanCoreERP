@@ -5,14 +5,14 @@ using FinanceCore.Core.Periods;
 
 namespace FinanceCore.Core.Posting;
 
-/// <summary>One item of changes[] (06, 5.4). expected_old_value is the value the caller saw in canonical text form, null for an empty field.</summary>
-public sealed record FieldChange(string EntityType, int? LineNo, string FieldName, string? ExpectedOldValue, string? NewValue);
+/// <summary>One item of changes[] (06, 5.4). expected_old_value is the value the caller saw in canonical text form, null for an empty field. SubKey is the dimension type of a LINE_DIMENSION change.</summary>
+public sealed record FieldChange(string EntityType, int? LineNo, string FieldName, string? ExpectedOldValue, string? NewValue, string? SubKey = null);
 
 /// <summary>Payload of journal-documents:change-open-fields (06, 5.4).</summary>
 public sealed record ChangeOpenFieldsRequest(Guid DocumentId, IReadOnlyList<FieldChange> Changes, string ReasonCode, string? ReasonText);
 
 /// <summary>A field that changed: one change_log row (02, 8).</summary>
-public sealed record ChangedField(string EntityType, int? LineNo, string FieldName, string? OldValue, string? NewValue);
+public sealed record ChangedField(string EntityType, int? LineNo, string FieldName, string? OldValue, string? NewValue, string? SubKey = null);
 
 public sealed record ChangedDocument(Guid DocumentId, Guid ChangeSetId, string PeriodStatus, IReadOnlyList<ChangedField> Changed);
 
@@ -43,17 +43,24 @@ public static class OpenFieldRules
 
     /// <summary>L2 fields of the spec whose tables or validation do not exist yet: the typed dimensions of a line need the dimension
     /// tables to be validated like a posting (06, 5.4 P4), the payment terms and the bank account of an open item need their tables.</summary>
-    public static readonly IReadOnlySet<string> LineFieldsNotBuilt = new HashSet<string>
+    public static readonly IReadOnlySet<string> LineFieldsNotBuilt = new HashSet<string>();
+
+    /// <summary>The typed dimension columns of a line and the standard role of the type each one belongs to (02, 5.3). They change with the entity type LINE.</summary>
+    public static readonly IReadOnlyDictionary<string, string> TypedDimensionFields = new Dictionary<string, string>
     {
-        "cost_center_id", "project_id", "profit_center_id", "business_unit_id"
+        ["cost_center_id"] = "COST_CENTER", ["project_id"] = "PROJECT", ["profit_center_id"] = "PROFIT_CENTER", ["business_unit_id"] = "BUSINESS_UNIT"
     };
+
+    /// <summary>The one L2 field of the entity type LINE_DIMENSION (02, 6): the value of a free dimension. The type of the dimension is the sub_key.</summary>
+    public const string FreeDimensionField = "dimension_value_id";
 
     public static readonly IReadOnlySet<string> OpenItemFieldsNotBuilt = new HashSet<string> { "bank_account_id" };
 
     public static FieldKind? KindOf(string entityType, string field) => entityType switch
     {
         "DOCUMENT" => HeaderFields.TryGetValue(field, out int h) ? new(Kind.Text, h) : null,
-        "LINE" => LineFields.TryGetValue(field, out int l) ? new(Kind.Text, l) : null,
+        "LINE" => LineFields.TryGetValue(field, out int l) ? new(Kind.Text, l) : TypedDimensionFields.ContainsKey(field) ? new(Kind.Id, 0, "uuid") : null,
+        "LINE_DIMENSION" => field == FreeDimensionField ? new(Kind.Id, 0, "uuid") : null,
         "LINE_OPEN_ITEM" => OpenItemFields.GetValueOrDefault(field),
         _ => null
     };
@@ -85,10 +92,10 @@ public static class OpenFieldRules
     }
 
     /// <summary>Entity types of the spec that this slice does not build, with the reason.</summary>
-    public static readonly IReadOnlySet<string> EntityTypesNotBuilt = new HashSet<string> { "LINE_DIMENSION", "TAX_EVIDENCE" };
+    public static readonly IReadOnlySet<string> EntityTypesNotBuilt = new HashSet<string> { "TAX_EVIDENCE" };
 
     /// <summary>The entity types the command takes. LINE and LINE_OPEN_ITEM name a line.</summary>
-    public static readonly IReadOnlySet<string> EntityTypes = new HashSet<string> { "DOCUMENT", "LINE", "LINE_OPEN_ITEM" };
+    public static readonly IReadOnlySet<string> EntityTypes = new HashSet<string> { "DOCUMENT", "LINE", "LINE_OPEN_ITEM", "LINE_DIMENSION" };
 
     public const string ReservedReason = "SYSTEM";
 
@@ -104,16 +111,26 @@ public static class OpenFieldRules
         new("expected_old_value", FieldType.Text, true), new("new_value", FieldType.Text, true)
     ];
 
-    /// <summary>The fingerprint covers the items in the order given: the order is part of the request.</summary>
+    private static readonly FieldSpec[] ItemWithSubKey =
+    [
+        new("entity_type", FieldType.Text), new("line_no", FieldType.Int, true), new("field_name", FieldType.Text),
+        new("expected_old_value", FieldType.Text, true), new("new_value", FieldType.Text, true), new("sub_key", FieldType.Text)
+    ];
+
+    /// <summary>The fingerprint covers the items in the order given: the order is part of the request. The sub_key is part of an item only when it has one, so the fingerprint of a request without it is what it was.</summary>
     public static byte[] Fingerprint(ChangeOpenFieldsRequest r)
     {
         using var items = new MemoryStream();
         foreach (FieldChange c in r.Changes)
-            items.Write(CommandFingerprint.Compute("change-item", Item, new Dictionary<string, object?>
+        {
+            var values = new Dictionary<string, object?>
             {
                 ["entity_type"] = c.EntityType, ["line_no"] = c.LineNo is null ? null : (long)c.LineNo, ["field_name"] = c.FieldName,
                 ["expected_old_value"] = c.ExpectedOldValue, ["new_value"] = c.NewValue
-            }));
+            };
+            if (c.SubKey is not null) values["sub_key"] = c.SubKey;
+            items.Write(CommandFingerprint.Compute("change-item", c.SubKey is null ? Item : ItemWithSubKey, values));
+        }
         return CommandFingerprint.Compute("journal-documents:change-open-fields", Header, new Dictionary<string, object?>
         {
             ["document_id"] = r.DocumentId, ["reason_code"] = r.ReasonCode, ["reason_text"] = r.ReasonText,

@@ -118,6 +118,18 @@ public class MigrationRunnerTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task ARowThatIsNotANumberedVersionIsNotAMigration()
+    {
+        // the dev seed records the version seed-dev in the same table
+        await using (var c = await TestTenant.AdminSource.OpenConnectionAsync())
+        await using (var cmd = new NpgsqlCommand("insert into platform.schema_migration (version, description) values ('9000-seed-probe', 'probe') on conflict do nothing", c))
+            await cmd.ExecuteNonQueryAsync();
+        var status = await _runner.StatusAsync(RealDirectory);
+        Assert.DoesNotContain(status, s => s.Version == "9000-seed-probe");
+        Assert.Empty(await _runner.MigrateAsync(RealDirectory));
+    }
+
+    [Fact]
     public async Task AFileNameThatIsNotNumberedOrIsUsedTwiceIsRefused()
     {
         Assert.Equal("MIGRATION.NAME_INVALID", (await Assert.ThrowsAsync<ProvisioningException>(() => _runner.StatusAsync(Directory_(("add stuff.sql", "select 1;"))))).Code);

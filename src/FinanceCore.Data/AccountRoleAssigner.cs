@@ -117,6 +117,10 @@ public sealed class AccountRoleAssigner(NpgsqlDataSource source)
                 errors.Add(violation.Rule is null
                     ? Err(violation.Code, "account_id", ("role_code", role.Code), ("account_id", req.AccountId))
                     : Err(violation.Code, "account_id", ("role_code", role.Code), ("account_id", req.AccountId), ("rule", violation.Rule)));
+            // 07, 6.3: the account of RETAINED_EARNINGS and of the migration roles takes no mandatory dimension
+            if (role.NoMandatoryDimensions && await ExistsAsync(tx,
+                    "select 1 from core.account_dimension_rule where tenant_id = @t and company_id = " + "'" + req.CompanyId.ToString("D") + "'::uuid and account_id = @x and rule = 'MANDATORY'", tenantId, req.AccountId, ct))
+                errors.Add(Err(AccountRoles.RuleViolated, "account_id", ("role_code", role.Code), ("account_id", req.AccountId), ("rule", "MANDATORY_DIMENSION")));
         }
 
         DateTime now = DateTime.UtcNow;

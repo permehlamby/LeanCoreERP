@@ -6,6 +6,330 @@
     "description": "Commands as POST /v1/{resource}:{verb}. The tenant comes from the token. Every command needs an Idempotency-Key. Generated from the command catalog."
   },
   "paths": {
+    "/v1/account-dimension-rules:create": {
+      "post": {
+        "operationId": "accountDimensionRulesCreate",
+        "summary": "account-dimension-rules:create",
+        "tags": [
+          "account-dimension-rules"
+        ],
+        "x-permission": "write.config",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          },
+          {
+            "$ref": "#/components/parameters/CorrelationId"
+          },
+          {
+            "$ref": "#/components/parameters/SourceSystem"
+          },
+          {
+            "$ref": "#/components/parameters/TenantId"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateAccountDimensionRuleRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The command succeeded (06, 2.2). A replay of an earlier identical command has idempotent_replay true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "status",
+                    "idempotent_replay",
+                    "command_log_id",
+                    "result",
+                    "warnings"
+                  ],
+                  "properties": {
+                    "status": {
+                      "const": "OK"
+                    },
+                    "idempotent_replay": {
+                      "type": "boolean"
+                    },
+                    "command_log_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "format": "uuid"
+                    },
+                    "result": {
+                      "$ref": "#/components/schemas/MasterResult"
+                    },
+                    "warnings": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Error"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The envelope or the payload does not fit the contract (P0, P1)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid token (AUTH.TOKEN_INVALID)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "A permission or the tenant is missing (AUTH.*)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The command or something it names does not exist",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "An idempotency key was reused for another request, or a retryable conflict (SYSTEM.CONFLICT)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The command refused the request: business rules (P2 to P6)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The command failed (SYSTEM.*)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The service is unavailable (SYSTEM.UNAVAILABLE)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/account-dimension-rules:update": {
+      "post": {
+        "operationId": "accountDimensionRulesUpdate",
+        "summary": "account-dimension-rules:update",
+        "tags": [
+          "account-dimension-rules"
+        ],
+        "x-permission": "write.config",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          },
+          {
+            "$ref": "#/components/parameters/CorrelationId"
+          },
+          {
+            "$ref": "#/components/parameters/SourceSystem"
+          },
+          {
+            "$ref": "#/components/parameters/TenantId"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateAccountDimensionRuleRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The command succeeded (06, 2.2). A replay of an earlier identical command has idempotent_replay true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "status",
+                    "idempotent_replay",
+                    "command_log_id",
+                    "result",
+                    "warnings"
+                  ],
+                  "properties": {
+                    "status": {
+                      "const": "OK"
+                    },
+                    "idempotent_replay": {
+                      "type": "boolean"
+                    },
+                    "command_log_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "format": "uuid"
+                    },
+                    "result": {
+                      "$ref": "#/components/schemas/MasterResult"
+                    },
+                    "warnings": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Error"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The envelope or the payload does not fit the contract (P0, P1)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid token (AUTH.TOKEN_INVALID)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "A permission or the tenant is missing (AUTH.*)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The command or something it names does not exist",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "An idempotency key was reused for another request, or a retryable conflict (SYSTEM.CONFLICT)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The command refused the request: business rules (P2 to P6)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The command failed (SYSTEM.*)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The service is unavailable (SYSTEM.UNAVAILABLE)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/account-role-assignments:create": {
       "post": {
         "operationId": "accountRoleAssignmentsCreate",
@@ -1531,6 +1855,1302 @@
                     },
                     "result": {
                       "$ref": "#/components/schemas/ReadinessReport"
+                    },
+                    "warnings": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Error"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The envelope or the payload does not fit the contract (P0, P1)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid token (AUTH.TOKEN_INVALID)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "A permission or the tenant is missing (AUTH.*)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The command or something it names does not exist",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "An idempotency key was reused for another request, or a retryable conflict (SYSTEM.CONFLICT)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The command refused the request: business rules (P2 to P6)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The command failed (SYSTEM.*)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The service is unavailable (SYSTEM.UNAVAILABLE)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/dimension-types:create": {
+      "post": {
+        "operationId": "dimensionTypesCreate",
+        "summary": "dimension-types:create",
+        "tags": [
+          "dimension-types"
+        ],
+        "x-permission": "write.master",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          },
+          {
+            "$ref": "#/components/parameters/CorrelationId"
+          },
+          {
+            "$ref": "#/components/parameters/SourceSystem"
+          },
+          {
+            "$ref": "#/components/parameters/TenantId"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateDimensionTypeRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The command succeeded (06, 2.2). A replay of an earlier identical command has idempotent_replay true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "status",
+                    "idempotent_replay",
+                    "command_log_id",
+                    "result",
+                    "warnings"
+                  ],
+                  "properties": {
+                    "status": {
+                      "const": "OK"
+                    },
+                    "idempotent_replay": {
+                      "type": "boolean"
+                    },
+                    "command_log_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "format": "uuid"
+                    },
+                    "result": {
+                      "$ref": "#/components/schemas/MasterResult"
+                    },
+                    "warnings": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Error"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The envelope or the payload does not fit the contract (P0, P1)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid token (AUTH.TOKEN_INVALID)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "A permission or the tenant is missing (AUTH.*)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The command or something it names does not exist",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "An idempotency key was reused for another request, or a retryable conflict (SYSTEM.CONFLICT)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The command refused the request: business rules (P2 to P6)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The command failed (SYSTEM.*)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The service is unavailable (SYSTEM.UNAVAILABLE)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/dimension-types:deactivate": {
+      "post": {
+        "operationId": "dimensionTypesDeactivate",
+        "summary": "dimension-types:deactivate",
+        "tags": [
+          "dimension-types"
+        ],
+        "x-permission": "write.master",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          },
+          {
+            "$ref": "#/components/parameters/CorrelationId"
+          },
+          {
+            "$ref": "#/components/parameters/SourceSystem"
+          },
+          {
+            "$ref": "#/components/parameters/TenantId"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MasterStatusRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The command succeeded (06, 2.2). A replay of an earlier identical command has idempotent_replay true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "status",
+                    "idempotent_replay",
+                    "command_log_id",
+                    "result",
+                    "warnings"
+                  ],
+                  "properties": {
+                    "status": {
+                      "const": "OK"
+                    },
+                    "idempotent_replay": {
+                      "type": "boolean"
+                    },
+                    "command_log_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "format": "uuid"
+                    },
+                    "result": {
+                      "$ref": "#/components/schemas/MasterResult"
+                    },
+                    "warnings": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Error"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The envelope or the payload does not fit the contract (P0, P1)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid token (AUTH.TOKEN_INVALID)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "A permission or the tenant is missing (AUTH.*)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The command or something it names does not exist",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "An idempotency key was reused for another request, or a retryable conflict (SYSTEM.CONFLICT)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The command refused the request: business rules (P2 to P6)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The command failed (SYSTEM.*)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The service is unavailable (SYSTEM.UNAVAILABLE)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/dimension-types:reactivate": {
+      "post": {
+        "operationId": "dimensionTypesReactivate",
+        "summary": "dimension-types:reactivate",
+        "tags": [
+          "dimension-types"
+        ],
+        "x-permission": "write.master",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          },
+          {
+            "$ref": "#/components/parameters/CorrelationId"
+          },
+          {
+            "$ref": "#/components/parameters/SourceSystem"
+          },
+          {
+            "$ref": "#/components/parameters/TenantId"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MasterStatusRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The command succeeded (06, 2.2). A replay of an earlier identical command has idempotent_replay true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "status",
+                    "idempotent_replay",
+                    "command_log_id",
+                    "result",
+                    "warnings"
+                  ],
+                  "properties": {
+                    "status": {
+                      "const": "OK"
+                    },
+                    "idempotent_replay": {
+                      "type": "boolean"
+                    },
+                    "command_log_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "format": "uuid"
+                    },
+                    "result": {
+                      "$ref": "#/components/schemas/MasterResult"
+                    },
+                    "warnings": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Error"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The envelope or the payload does not fit the contract (P0, P1)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid token (AUTH.TOKEN_INVALID)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "A permission or the tenant is missing (AUTH.*)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The command or something it names does not exist",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "An idempotency key was reused for another request, or a retryable conflict (SYSTEM.CONFLICT)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The command refused the request: business rules (P2 to P6)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The command failed (SYSTEM.*)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The service is unavailable (SYSTEM.UNAVAILABLE)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/dimension-types:update": {
+      "post": {
+        "operationId": "dimensionTypesUpdate",
+        "summary": "dimension-types:update",
+        "tags": [
+          "dimension-types"
+        ],
+        "x-permission": "write.master",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          },
+          {
+            "$ref": "#/components/parameters/CorrelationId"
+          },
+          {
+            "$ref": "#/components/parameters/SourceSystem"
+          },
+          {
+            "$ref": "#/components/parameters/TenantId"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateDimensionTypeRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The command succeeded (06, 2.2). A replay of an earlier identical command has idempotent_replay true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "status",
+                    "idempotent_replay",
+                    "command_log_id",
+                    "result",
+                    "warnings"
+                  ],
+                  "properties": {
+                    "status": {
+                      "const": "OK"
+                    },
+                    "idempotent_replay": {
+                      "type": "boolean"
+                    },
+                    "command_log_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "format": "uuid"
+                    },
+                    "result": {
+                      "$ref": "#/components/schemas/MasterResult"
+                    },
+                    "warnings": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Error"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The envelope or the payload does not fit the contract (P0, P1)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid token (AUTH.TOKEN_INVALID)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "A permission or the tenant is missing (AUTH.*)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The command or something it names does not exist",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "An idempotency key was reused for another request, or a retryable conflict (SYSTEM.CONFLICT)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The command refused the request: business rules (P2 to P6)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The command failed (SYSTEM.*)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The service is unavailable (SYSTEM.UNAVAILABLE)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/dimension-values:create": {
+      "post": {
+        "operationId": "dimensionValuesCreate",
+        "summary": "dimension-values:create",
+        "tags": [
+          "dimension-values"
+        ],
+        "x-permission": "write.master",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          },
+          {
+            "$ref": "#/components/parameters/CorrelationId"
+          },
+          {
+            "$ref": "#/components/parameters/SourceSystem"
+          },
+          {
+            "$ref": "#/components/parameters/TenantId"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateDimensionValueRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The command succeeded (06, 2.2). A replay of an earlier identical command has idempotent_replay true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "status",
+                    "idempotent_replay",
+                    "command_log_id",
+                    "result",
+                    "warnings"
+                  ],
+                  "properties": {
+                    "status": {
+                      "const": "OK"
+                    },
+                    "idempotent_replay": {
+                      "type": "boolean"
+                    },
+                    "command_log_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "format": "uuid"
+                    },
+                    "result": {
+                      "$ref": "#/components/schemas/MasterResult"
+                    },
+                    "warnings": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Error"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The envelope or the payload does not fit the contract (P0, P1)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid token (AUTH.TOKEN_INVALID)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "A permission or the tenant is missing (AUTH.*)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The command or something it names does not exist",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "An idempotency key was reused for another request, or a retryable conflict (SYSTEM.CONFLICT)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The command refused the request: business rules (P2 to P6)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The command failed (SYSTEM.*)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The service is unavailable (SYSTEM.UNAVAILABLE)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/dimension-values:deactivate": {
+      "post": {
+        "operationId": "dimensionValuesDeactivate",
+        "summary": "dimension-values:deactivate",
+        "tags": [
+          "dimension-values"
+        ],
+        "x-permission": "write.master",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          },
+          {
+            "$ref": "#/components/parameters/CorrelationId"
+          },
+          {
+            "$ref": "#/components/parameters/SourceSystem"
+          },
+          {
+            "$ref": "#/components/parameters/TenantId"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MasterStatusRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The command succeeded (06, 2.2). A replay of an earlier identical command has idempotent_replay true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "status",
+                    "idempotent_replay",
+                    "command_log_id",
+                    "result",
+                    "warnings"
+                  ],
+                  "properties": {
+                    "status": {
+                      "const": "OK"
+                    },
+                    "idempotent_replay": {
+                      "type": "boolean"
+                    },
+                    "command_log_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "format": "uuid"
+                    },
+                    "result": {
+                      "$ref": "#/components/schemas/MasterResult"
+                    },
+                    "warnings": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Error"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The envelope or the payload does not fit the contract (P0, P1)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid token (AUTH.TOKEN_INVALID)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "A permission or the tenant is missing (AUTH.*)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The command or something it names does not exist",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "An idempotency key was reused for another request, or a retryable conflict (SYSTEM.CONFLICT)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The command refused the request: business rules (P2 to P6)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The command failed (SYSTEM.*)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The service is unavailable (SYSTEM.UNAVAILABLE)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/dimension-values:reactivate": {
+      "post": {
+        "operationId": "dimensionValuesReactivate",
+        "summary": "dimension-values:reactivate",
+        "tags": [
+          "dimension-values"
+        ],
+        "x-permission": "write.master",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          },
+          {
+            "$ref": "#/components/parameters/CorrelationId"
+          },
+          {
+            "$ref": "#/components/parameters/SourceSystem"
+          },
+          {
+            "$ref": "#/components/parameters/TenantId"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MasterStatusRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The command succeeded (06, 2.2). A replay of an earlier identical command has idempotent_replay true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "status",
+                    "idempotent_replay",
+                    "command_log_id",
+                    "result",
+                    "warnings"
+                  ],
+                  "properties": {
+                    "status": {
+                      "const": "OK"
+                    },
+                    "idempotent_replay": {
+                      "type": "boolean"
+                    },
+                    "command_log_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "format": "uuid"
+                    },
+                    "result": {
+                      "$ref": "#/components/schemas/MasterResult"
+                    },
+                    "warnings": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Error"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The envelope or the payload does not fit the contract (P0, P1)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid token (AUTH.TOKEN_INVALID)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "A permission or the tenant is missing (AUTH.*)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The command or something it names does not exist",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "An idempotency key was reused for another request, or a retryable conflict (SYSTEM.CONFLICT)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The command refused the request: business rules (P2 to P6)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The command failed (SYSTEM.*)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The service is unavailable (SYSTEM.UNAVAILABLE)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/dimension-values:update": {
+      "post": {
+        "operationId": "dimensionValuesUpdate",
+        "summary": "dimension-values:update",
+        "tags": [
+          "dimension-values"
+        ],
+        "x-permission": "write.master",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          },
+          {
+            "$ref": "#/components/parameters/CorrelationId"
+          },
+          {
+            "$ref": "#/components/parameters/SourceSystem"
+          },
+          {
+            "$ref": "#/components/parameters/TenantId"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateDimensionValueRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The command succeeded (06, 2.2). A replay of an earlier identical command has idempotent_replay true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "status",
+                    "idempotent_replay",
+                    "command_log_id",
+                    "result",
+                    "warnings"
+                  ],
+                  "properties": {
+                    "status": {
+                      "const": "OK"
+                    },
+                    "idempotent_replay": {
+                      "type": "boolean"
+                    },
+                    "command_log_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "format": "uuid"
+                    },
+                    "result": {
+                      "$ref": "#/components/schemas/MasterResult"
                     },
                     "warnings": {
                       "type": "array",
@@ -3851,6 +5471,12 @@
               "string",
               "null"
             ]
+          },
+          "sub_key": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -3952,6 +5578,61 @@
         },
         "required": [
           "company_id"
+        ]
+      },
+      "CreateAccountDimensionRuleRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "company_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "account_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "dimension_type_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "rule": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "company_id",
+          "account_id",
+          "dimension_type_id",
+          "rule"
+        ]
+      },
+      "CreateDimensionTypeRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "fields": {
+            "type": "object",
+            "additionalProperties": true,
+            "description": "A set of named fields. The fields the command knows are typed by their kind (07, 11.1)"
+          }
+        },
+        "required": [
+          "fields"
+        ]
+      },
+      "CreateDimensionValueRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "fields": {
+            "type": "object",
+            "additionalProperties": true,
+            "description": "A set of named fields. The fields the command knows are typed by their kind (07, 11.1)"
+          }
+        },
+        "required": [
+          "fields"
         ]
       },
       "CreatePartnerRequest": {
@@ -4078,6 +5759,9 @@
               "ACCOUNT.NOT_VALID_AT_DATE",
               "ACCOUNT.POSTING_BLOCKED",
               "ACCOUNT.ROLE_ACCOUNT_NOT_USABLE",
+              "ACCOUNT_RULE.DIMENSION_FORBIDDEN",
+              "ACCOUNT_RULE.DIMENSION_REQUIRED",
+              "ACCOUNT_RULE.DIMENSION_VALUE_INVALID",
               "ACCOUNT_RULE.DUE_DATE_REQUIRED",
               "ACCOUNT_RULE.OPEN_ITEM_FORBIDDEN",
               "ACCOUNT_RULE.OPEN_ITEM_REQUIRED",
@@ -4118,8 +5802,10 @@
               "COMPANY.NOT_FOUND",
               "CONFIG.COMPANY_NOT_READY",
               "CONFIG.CURRENCY_NOT_ENABLED",
+              "CONFIG.DIMENSION_COMPANY_MISMATCH",
               "CONFIG.DUPLICATE_CODE",
               "CONFIG.GROUP_MEMBERSHIP_MISSING",
+              "CONFIG.HIERARCHY_CYCLE",
               "CONFIG.IMMUTABLE_AFTER_POSTING",
               "CONFIG.INVALID_REFERENCE",
               "CONFIG.REFERENCED",
@@ -4269,12 +5955,79 @@
               "string",
               "null"
             ]
+          },
+          "sub_key": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
           "entity_type",
           "field_name"
         ]
+      },
+      "FreeDimension": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "dimension_type_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "dimension_value_id": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        "required": [
+          "dimension_type_id",
+          "dimension_value_id"
+        ]
+      },
+      "LineDimensions": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "cost_center_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "project_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "profit_center_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "business_unit_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "free": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/FreeDimension"
+            }
+          }
+        }
       },
       "MasterResult": {
         "type": "object",
@@ -5163,6 +6916,16 @@
                 "type": "null"
               }
             ]
+          },
+          "dimensions": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/LineDimensions"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -5232,6 +6995,86 @@
         "required": [
           "document_id",
           "reason_code"
+        ]
+      },
+      "UpdateAccountDimensionRuleRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "company_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "account_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "dimension_type_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "expected_version": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "rule": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "company_id",
+          "account_id",
+          "dimension_type_id",
+          "expected_version",
+          "rule"
+        ]
+      },
+      "UpdateDimensionTypeRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "dimension_type_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "expected_version": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "fields": {
+            "type": "object",
+            "additionalProperties": true,
+            "description": "A set of named fields. The fields the command knows are typed by their kind (07, 11.1)"
+          }
+        },
+        "required": [
+          "dimension_type_id",
+          "expected_version",
+          "fields"
+        ]
+      },
+      "UpdateDimensionValueRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "dimension_value_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "expected_version": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "fields": {
+            "type": "object",
+            "additionalProperties": true,
+            "description": "A set of named fields. The fields the command knows are typed by their kind (07, 11.1)"
+          }
+        },
+        "required": [
+          "dimension_value_id",
+          "expected_version",
+          "fields"
         ]
       },
       "UpdatePartnerRequest": {

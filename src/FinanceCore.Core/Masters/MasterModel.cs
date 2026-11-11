@@ -7,7 +7,7 @@ using FinanceCore.Core.Periods;
 namespace FinanceCore.Core.Masters;
 
 /// <summary>The kinds of value of a master data field. The text form of a value is canonical, so that old and new values of a change compare and log.</summary>
-public enum MasterKind { Code, Text, Bool, Amount, Percent, Id, Country, Currency, SmallInt }
+public enum MasterKind { Code, Text, Bool, Amount, Percent, Id, Country, Currency, SmallInt, Date }
 
 /// <summary>
 /// One field that a master command may set: the column, the kind, the length, whether it may be null, the allowed values of a code and whether
@@ -56,6 +56,11 @@ public static class MasterValues
                 if (f.Kind == MasterKind.Amount && d < 0) { reason = "not negative"; return null; }
                 if (f.Kind == MasterKind.Percent && (d <= 0 || d > 100)) { reason = "more than 0 and at most 100"; return null; }
                 return new ParsedValue(d, d.ToString("F" + scale, CultureInfo.InvariantCulture));
+            case MasterKind.Date:
+                if (v is DateOnly day) return new ParsedValue(day, day.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture));
+                if (v is string ds && DateOnly.TryParseExact(ds, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out DateOnly parsedDay))
+                    return new ParsedValue(parsedDay, ds);
+                reason = "a date as yyyy-MM-dd"; return null;
             default:   // Code and Text
                 if (v is not string s) { reason = "text"; return null; }
                 if (s.Length == 0 || s.Length > f.Max) { reason = $"1 to {f.Max} characters, or null to clear"; return null; }
@@ -106,6 +111,34 @@ public static class MasterFields
     ];
 }
 
+/// <summary>The fields of the dimension commands (07, 6.5). The kind of a type is FREE for every type a command creates: the four standard types exist in every tenant.</summary>
+public static class DimensionFields
+{
+    public static readonly IReadOnlyList<MasterField> Type =
+    [
+        new("type_code", MasterKind.Code, 50, false), new("name", MasterKind.Text, 100, false)
+    ];
+
+    public static readonly IReadOnlyList<MasterField> Value =
+    [
+        new("dimension_type_id", MasterKind.Id, 0, false), new("company_id", MasterKind.Id),
+        new("value_code", MasterKind.Code, 50, false), new("name", MasterKind.Text, 100, false),
+        new("parent_value_id", MasterKind.Id), new("valid_from", MasterKind.Date, 0, false), new("valid_to", MasterKind.Date)
+    ];
+
+    public static readonly string[] Rules = ["MANDATORY", "OPTIONAL", "FORBIDDEN"];
+    public static readonly string[] StandardRoles = ["COST_CENTER", "PROJECT", "PROFIT_CENTER", "BUSINESS_UNIT"];
+}
+
+public sealed record CreateDimensionTypeRequest(IReadOnlyDictionary<string, object?> Fields);
+public sealed record UpdateDimensionTypeRequest(Guid DimensionTypeId, long ExpectedVersion, IReadOnlyDictionary<string, object?> Fields);
+public sealed record CreateDimensionValueRequest(IReadOnlyDictionary<string, object?> Fields);
+public sealed record UpdateDimensionValueRequest(Guid DimensionValueId, long ExpectedVersion, IReadOnlyDictionary<string, object?> Fields);
+
+/// <summary>Payload of account-dimension-rules:create (07, 6.2). The row is keyed by company, account and type. Absence of a row means OPTIONAL.</summary>
+public sealed record CreateAccountDimensionRuleRequest(Guid CompanyId, Guid AccountId, Guid DimensionTypeId, string Rule);
+public sealed record UpdateAccountDimensionRuleRequest(Guid CompanyId, Guid AccountId, Guid DimensionTypeId, long ExpectedVersion, string Rule);
+
 /// <summary>One relation of a partner to a company, given as the fields to set. On create it is a new row, on update it creates the row or changes it.</summary>
 public sealed record PartnerRelationInput(Guid CompanyId, IReadOnlyDictionary<string, object?> Fields);
 
@@ -131,6 +164,7 @@ public static class MasterRules
 {
     public const string PartnerPermission = "write.master";
     public const string ConfigPermission = "write.config";
+    public const string DimensionPermission = PartnerPermission;
 
     private static readonly FieldSpec[] Payload = [new("payload", FieldType.Hex32)];
 
@@ -168,6 +202,17 @@ public static class MasterRules
 
     public static byte[] Fingerprint(string command, MasterStatusRequest r) =>
         Fingerprint(command, r.Id.ToString("D") + "|" + r.ExpectedVersion + "|" + r.ReasonCode);
+
+    public static byte[] Fingerprint(CreateDimensionTypeRequest r) => Fingerprint("dimension-types:create", Text(r.Fields));
+    public static byte[] Fingerprint(UpdateDimensionTypeRequest r) =>
+        Fingerprint("dimension-types:update", r.DimensionTypeId.ToString("D") + "|" + r.ExpectedVersion + "|" + Text(r.Fields));
+    public static byte[] Fingerprint(CreateDimensionValueRequest r) => Fingerprint("dimension-values:create", Text(r.Fields));
+    public static byte[] Fingerprint(UpdateDimensionValueRequest r) =>
+        Fingerprint("dimension-values:update", r.DimensionValueId.ToString("D") + "|" + r.ExpectedVersion + "|" + Text(r.Fields));
+    public static byte[] Fingerprint(CreateAccountDimensionRuleRequest r) =>
+        Fingerprint("account-dimension-rules:create", $"{r.CompanyId:D}|{r.AccountId:D}|{r.DimensionTypeId:D}|{r.Rule}");
+    public static byte[] Fingerprint(UpdateAccountDimensionRuleRequest r) =>
+        Fingerprint("account-dimension-rules:update", $"{r.CompanyId:D}|{r.AccountId:D}|{r.DimensionTypeId:D}|{r.ExpectedVersion}|{r.Rule}");
 
     public static byte[] Fingerprint(CreatePaymentTermsRequest r) => Fingerprint("payment-terms:create", Text(r.Fields));
 

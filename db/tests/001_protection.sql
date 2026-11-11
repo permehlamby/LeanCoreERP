@@ -266,7 +266,7 @@ select pg_temp.expect_ok('lock class: status posted to reversed is allowed',
 select pg_temp.expect_error('lock class: status cannot go back',
     $t$update core.journal_document set status = 'posted' where document_id = 'bbbbbbbb-0000-4000-8000-000000000001'$t$, '%only change from posted to reversed%');
 select pg_temp.expect_error('lock class: lines are never updated',
-    $t$update core.journal_line set amount_tc = 1$t$, '%only line_text can change%');
+    $t$update core.journal_line set amount_tc = 1$t$, '%only line_text and the typed dimensions can change%');
 select pg_temp.expect_error('no delete: documents', $t$delete from core.journal_document$t$, '%no hard delete%');
 select pg_temp.expect_error('no delete: lines', $t$delete from core.journal_line$t$, '%no hard delete%');
 select pg_temp.expect_error('no delete: accounts', $t$delete from core.gl_account$t$, '%no hard delete%');
@@ -471,8 +471,11 @@ select pg_temp.expect_error('l2 guard: the period status of the log row must be 
 select pg_temp.expect_error('l2 guard: a log row of another field does not count',
     format($t$set local role cmd_post; %s; update core.journal_document set header_text = 'Third' where document_id = 'bbbbbbbb-0000-4000-8000-000000000001'$t$,
         pg_temp.l2log('DOCUMENT', null, 'external_reference', 'PO-1', 'Third')), '%without a matching change_log row%');
-select pg_temp.expect_error('l2 guard: the posting role has no grant on a typed dimension of a line',
-    $t$set local role cmd_post; update core.journal_line set cost_center_id = gen_random_uuid() where document_id = 'bbbbbbbb-0000-4000-8000-000000000001' and line_no = 1$t$,
+select pg_temp.expect_error('l2 guard: a typed dimension must name a dimension value',
+    format($t$set local role cmd_post; %s; update core.journal_line set cost_center_id = 'dd000000-0000-4000-8000-0000000000ee' where document_id = 'bbbbbbbb-0000-4000-8000-000000000001' and line_no = 1$t$,
+        pg_temp.l2log('LINE', '1', 'cost_center_id', null, 'dd000000-0000-4000-8000-0000000000ee')), '%DIMENSION_VALUE_INVALID%');
+select pg_temp.expect_error('l2 guard: the posting role has no grant on an L1 column of a line',
+    $t$set local role cmd_post; update core.journal_line set account_id = gen_random_uuid() where document_id = 'bbbbbbbb-0000-4000-8000-000000000001' and line_no = 1$t$,
     '%permission denied%');
 select pg_temp.expect_error('l2 guard: the posting role has no grant on an L1 column of a document',
     format($t$set local role cmd_post; %s; update core.journal_document set header_text = 'Third', document_type = 'AR_INVOICE' where document_id = 'bbbbbbbb-0000-4000-8000-000000000001'$t$,
@@ -525,6 +528,123 @@ select pg_temp.expect_count('master_change_log: a command role reads the rows of
 select set_config('app.tenant_id', '99999999-9999-4999-8999-999999999999', false);
 select pg_temp.expect_count('master_change_log: tenant B sees none of A''s rows',
     $t$select pg_temp.count_as('cmd_read', 'select count(*) from core.master_change_log')$t$, 0);
+select set_config('app.tenant_id', '11111111-1111-4111-8111-111111111111', false);
+
+
+-- ---------------------------------------------------------------------------------------------------------
+-- Dimensions (0022, 02, 5.3 and 6, 07, 6.5)
+-- ---------------------------------------------------------------------------------------------------------
+select pg_temp.expect_count('dimension_type: every tenant has the four standard types',
+    $t$select count(*) from core.dimension_type where tenant_id = '11111111-1111-4111-8111-111111111111' and kind = 'STANDARD'$t$, 4);
+select pg_temp.expect_error('dimension_type: a standard type cannot be deactivated',
+    $t$update core.dimension_type set active = false where standard_role = 'PROJECT'$t$, '%violates check constraint%');
+select pg_temp.expect_error('dimension_type: the kind never changes',
+    $t$update core.dimension_type set kind = 'FREE', standard_role = null where standard_role = 'PROJECT'$t$, '%never change%');
+select pg_temp.expect_error('dimension_type: the code of a standard type never changes',
+    $t$update core.dimension_type set type_code = 'PRJ' where standard_role = 'PROJECT'$t$, '%never changes%');
+
+insert into core.dimension_type (tenant_id, dimension_type_id, type_code, name, kind, created_by, updated_by)
+values ('11111111-1111-4111-8111-111111111111', 'dd000000-0000-4000-8000-0000000000f1', 'REGION', 'Region', 'FREE', 't', 't');
+insert into core.dimension_value (tenant_id, dimension_value_id, dimension_type_id, value_code, name, valid_from, created_by, updated_by)
+select '11111111-1111-4111-8111-111111111111', v.id::uuid, t.dimension_type_id, v.code, v.code, date '2026-01-01', 't', 't'
+  from (values ('dd000000-0000-4000-8000-0000000000a1', 'CC1', 'COST_CENTER'), ('dd000000-0000-4000-8000-0000000000a2', 'PR1', 'PROJECT'),
+               ('dd000000-0000-4000-8000-0000000000a5', 'CC2', 'COST_CENTER')) v (id, code, role)
+  join core.dimension_type t on t.tenant_id = '11111111-1111-4111-8111-111111111111' and t.standard_role = v.role;
+insert into core.dimension_value (tenant_id, dimension_value_id, dimension_type_id, value_code, name, valid_from, created_by, updated_by)
+select '11111111-1111-4111-8111-111111111111', v.id::uuid, 'dd000000-0000-4000-8000-0000000000f1', v.code, v.code, date '2026-01-01', 't', 't'
+  from (values ('dd000000-0000-4000-8000-0000000000a3', 'NORTH'), ('dd000000-0000-4000-8000-0000000000a4', 'SOUTH')) v (id, code);
+
+select pg_temp.expect_error('dimension_value: a value is not its own parent',
+    $t$update core.dimension_value set parent_value_id = dimension_value_id where value_code = 'CC1'$t$, '%HIERARCHY_CYCLE%');
+select pg_temp.expect_ok('dimension_value: a parent of the same type',
+    $t$update core.dimension_value set parent_value_id = 'dd000000-0000-4000-8000-0000000000a1' where value_code = 'CC2'$t$);
+select pg_temp.expect_error('dimension_value: a cycle in the hierarchy is rejected',
+    $t$update core.dimension_value set parent_value_id = 'dd000000-0000-4000-8000-0000000000a5' where value_code = 'CC1'$t$, '%HIERARCHY_CYCLE%');
+select pg_temp.expect_error('dimension_value: a parent of another type is rejected',
+    $t$update core.dimension_value set parent_value_id = 'dd000000-0000-4000-8000-0000000000a2' where value_code = 'CC1'$t$, '%foreign key%');
+select pg_temp.expect_error('dimension_value: the end of validity is not before the start',
+    $t$update core.dimension_value set valid_to = date '2025-12-31' where value_code = 'CC1'$t$, '%violates check constraint%');
+select pg_temp.expect_error('dimension_value: the configuration role has no right to the posting tables',
+    $t$set local role cmd_config; insert into core.journal_line_dimension (tenant_id, company_id, document_id, line_no, dimension_type_id, dimension_value_id)
+       values ('11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222201', 'bbbbbbbb-0000-4000-8000-000000000001', 1,
+               'dd000000-0000-4000-8000-0000000000f1', 'dd000000-0000-4000-8000-0000000000a3')$t$, '%permission denied%');
+select pg_temp.expect_error('dimension_value: the posting role cannot create a value',
+    $t$set local role cmd_post; insert into core.dimension_value (tenant_id, dimension_type_id, value_code, name, valid_from, created_by, updated_by)
+       values ('11111111-1111-4111-8111-111111111111', 'dd000000-0000-4000-8000-0000000000f1', 'X', 'X', date '2026-01-01', 't', 't')$t$, '%permission denied%');
+select pg_temp.expect_ok('dimension_value: the configuration role creates a value',
+    $t$set local role cmd_config; insert into core.dimension_value (tenant_id, dimension_type_id, value_code, name, valid_from, created_by, updated_by)
+       values ('11111111-1111-4111-8111-111111111111', 'dd000000-0000-4000-8000-0000000000f1', 'EAST', 'East', date '2026-01-01', 't', 't')$t$);
+
+-- the typed columns of a line (L2, a log row of LINE with the field name)
+select pg_temp.expect_error('typed dimension: a value changes only with its log row',
+    $t$set local role cmd_post; update core.journal_line set cost_center_id = 'dd000000-0000-4000-8000-0000000000a1' where document_id = 'bbbbbbbb-0000-4000-8000-000000000001' and line_no = 1$t$,
+    '%without a matching change_log row%');
+select pg_temp.expect_ok('typed dimension: a cost center value in cost_center_id with its log row',
+    format($t$set local role cmd_post; %s; update core.journal_line set cost_center_id = 'dd000000-0000-4000-8000-0000000000a1' where document_id = 'bbbbbbbb-0000-4000-8000-000000000001' and line_no = 1$t$,
+        pg_temp.l2log('LINE', '1', 'cost_center_id', null, 'dd000000-0000-4000-8000-0000000000a1')));
+select pg_temp.expect_error('typed dimension: a project value in cost_center_id is rejected',
+    format($t$set local role cmd_post; %s; update core.journal_line set cost_center_id = 'dd000000-0000-4000-8000-0000000000a2' where document_id = 'bbbbbbbb-0000-4000-8000-000000000001' and line_no = 1$t$,
+        pg_temp.l2log('LINE', '1', 'cost_center_id', 'dd000000-0000-4000-8000-0000000000a1', 'dd000000-0000-4000-8000-0000000000a2')), '%DIMENSION_VALUE_INVALID%');
+select pg_temp.expect_error('typed dimension: a free value in a typed column is rejected',
+    format($t$set local role cmd_post; %s; update core.journal_line set project_id = 'dd000000-0000-4000-8000-0000000000a3' where document_id = 'bbbbbbbb-0000-4000-8000-000000000001' and line_no = 1$t$,
+        pg_temp.l2log('LINE', '1', 'project_id', null, 'dd000000-0000-4000-8000-0000000000a3')), '%DIMENSION_VALUE_INVALID%');
+select pg_temp.expect_error('typed dimension: a referenced value cannot change its type',
+    $t$update core.dimension_value set dimension_type_id = 'dd000000-0000-4000-8000-0000000000f1' where value_code = 'CC1'$t$, '%IMMUTABLE_AFTER_POSTING%');
+select pg_temp.expect_ok('typed dimension: a value that is not referenced can change its name',
+    $t$update core.dimension_value set name = 'Cost center two' where value_code = 'CC2'$t$);
+
+-- the free dimensions of a line
+create function pg_temp.dimlog(p_old text, p_new text) returns text language sql as $$
+    select format($q$insert into core.change_log (tenant_id, change_set_id, company_id, entity_type, document_id, line_no, sub_key, field_name, value_type,
+            old_value, new_value, lock_class, period_status, reason_code, changed_by, changed_at, correlation_id, idempotency_key)
+        values ('11111111-1111-4111-8111-111111111111', 'cccccccc-0000-4000-8000-000000000002', '22222222-2222-4222-8222-222222222201', 'LINE_DIMENSION',
+            'bbbbbbbb-0000-4000-8000-000000000001', 1, 'dd000000-0000-4000-8000-0000000000f1', 'dimension_value_id', 'ID', %L, %L, 'L2', %L, 'CORRECTION',
+            'tester', now(), 'corr-dim', 'idem-dim')$q$, p_old, p_new, pg_temp.real_status())
+$$;
+select pg_temp.expect_ok('free dimension: the posting role inserts a row for a FREE type',
+    $t$set local role cmd_post; insert into core.journal_line_dimension (tenant_id, company_id, document_id, line_no, dimension_type_id, dimension_value_id)
+       values ('11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222201', 'bbbbbbbb-0000-4000-8000-000000000001', 1,
+               'dd000000-0000-4000-8000-0000000000f1', 'dd000000-0000-4000-8000-0000000000a3')$t$);
+select pg_temp.expect_error('free dimension: one row per line and type',
+    $t$set local role cmd_post; insert into core.journal_line_dimension (tenant_id, company_id, document_id, line_no, dimension_type_id, dimension_value_id)
+       values ('11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222201', 'bbbbbbbb-0000-4000-8000-000000000001', 1,
+               'dd000000-0000-4000-8000-0000000000f1', 'dd000000-0000-4000-8000-0000000000a4')$t$, '%duplicate key%');
+select pg_temp.expect_error('free dimension: a value of another type is rejected',
+    $t$set local role cmd_post; insert into core.journal_line_dimension (tenant_id, company_id, document_id, line_no, dimension_type_id, dimension_value_id)
+       values ('11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222201', 'bbbbbbbb-0000-4000-8000-000000000001', 2,
+               'dd000000-0000-4000-8000-0000000000f1', 'dd000000-0000-4000-8000-0000000000a1')$t$, '%DIMENSION_VALUE_INVALID%');
+select pg_temp.expect_error('free dimension: a standard type is not a free dimension',
+    $t$set local role cmd_post; insert into core.journal_line_dimension (tenant_id, company_id, document_id, line_no, dimension_type_id, dimension_value_id)
+       select '11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222201', 'bbbbbbbb-0000-4000-8000-000000000001', 2, t.dimension_type_id, null
+         from core.dimension_type t where t.standard_role = 'PROJECT'$t$, '%must be of kind FREE%');
+select pg_temp.expect_error('free dimension: the value changes only with its log row',
+    $t$set local role cmd_post; update core.journal_line_dimension set dimension_value_id = 'dd000000-0000-4000-8000-0000000000a4'$t$, '%without a matching change_log row%');
+select pg_temp.expect_ok('free dimension: the value changes with its log row',
+    format($t$set local role cmd_post; %s; update core.journal_line_dimension set dimension_value_id = 'dd000000-0000-4000-8000-0000000000a4' where line_no = 1$t$,
+        pg_temp.dimlog('dd000000-0000-4000-8000-0000000000a3', 'dd000000-0000-4000-8000-0000000000a4')));
+select pg_temp.expect_ok('free dimension: a cleared value is a tombstone',
+    format($t$set local role cmd_post; %s; update core.journal_line_dimension set dimension_value_id = null where line_no = 1$t$,
+        pg_temp.dimlog('dd000000-0000-4000-8000-0000000000a4', null)));
+select pg_temp.expect_error('free dimension: the type of a row never changes',
+    $t$update core.journal_line_dimension set dimension_type_id = (select dimension_type_id from core.dimension_type where standard_role = 'PROJECT' and tenant_id = '11111111-1111-4111-8111-111111111111')$t$, '%L1 column%');
+select pg_temp.expect_error('free dimension: no delete', $t$delete from core.journal_line_dimension$t$, '%no hard delete%');
+select pg_temp.expect_error('dimension_value: no delete', $t$delete from core.dimension_value$t$, '%no hard delete%');
+select pg_temp.expect_error('dimension_type: no delete', $t$delete from core.dimension_type$t$, '%no hard delete%');
+
+-- account rules and tenant isolation
+select pg_temp.expect_ok('account_dimension_rule: the configuration role sets a rule',
+    $t$set local role cmd_config; insert into core.account_dimension_rule (tenant_id, company_id, account_id, dimension_type_id, rule, created_by, updated_by)
+       select '11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222201', '55555555-5555-4555-8555-555555555503', t.dimension_type_id, 'MANDATORY', 't', 't'
+         from core.dimension_type t where t.standard_role = 'COST_CENTER'$t$);
+select pg_temp.expect_error('account_dimension_rule: a rule is MANDATORY, OPTIONAL or FORBIDDEN',
+    $t$update core.account_dimension_rule set rule = 'SOMETIMES'$t$, '%violates check constraint%');
+select pg_temp.expect_error('account_dimension_rule: the posting role cannot set a rule',
+    $t$set local role cmd_post; update core.account_dimension_rule set rule = 'FORBIDDEN'$t$, '%permission denied%');
+select pg_temp.expect_count('dimensions: a command role reads the rows of its tenant',
+    $t$select pg_temp.count_as('cmd_post', 'select (select count(*) from core.dimension_value) + (select count(*) from core.journal_line_dimension) + (select count(*) from core.account_dimension_rule)')$t$, 8);
+select set_config('app.tenant_id', '99999999-9999-4999-8999-999999999999', false);
+select pg_temp.expect_count('dimensions: tenant B sees none of A''s rows',
+    $t$select pg_temp.count_as('cmd_post', 'select (select count(*) from core.dimension_value) + (select count(*) from core.journal_line_dimension) + (select count(*) from core.account_dimension_rule)')$t$, 0);
 select set_config('app.tenant_id', '11111111-1111-4111-8111-111111111111', false);
 
 -- ---------------------------------------------------------------------------------------------------------

@@ -47,6 +47,51 @@ public class ConfigApiTests(ApiFixture api) : IClassFixture<ApiFixture>
     }
 
     [Fact]
+    public async Task DimensionsAreCreatedRuledAndUsedInAPostingOverHttp()
+    {
+        var t = await TestTenant.CreateReadyAsync();
+        var type = await Send(t, "dimension-types:create", D(("fields", D(("type_code", "REGION"), ("name", "Region")))), "dt1", "write.master");
+        Assert.Equal(HttpStatusCode.OK, type.Response.StatusCode);
+        string typeId = type.Body.GetProperty("result").GetProperty("entity_id").GetString()!;
+
+        // a date is text in JSON, an id is a string, a bad date is a field error with its path
+        var badDate = await Send(t, "dimension-values:create",
+            D(("fields", D(("dimension_type_id", typeId), ("value_code", "N"), ("name", "North"), ("valid_from", "15/03/2026")))), "dv0", "write.master");
+        Assert.Equal(HttpStatusCode.BadRequest, badDate.Response.StatusCode);
+        Assert.Equal("/fields/valid_from", badDate.Body.GetProperty("errors")[0].GetProperty("path").GetString());
+        var value = await Send(t, "dimension-values:create",
+            D(("fields", D(("dimension_type_id", typeId), ("value_code", "N"), ("name", "North"), ("valid_from", "2026-01-01")))), "dv1", "write.master");
+        Assert.Equal(HttpStatusCode.OK, value.Response.StatusCode);
+        string valueId = value.Body.GetProperty("result").GetProperty("entity_id").GetString()!;
+
+        var rule = await Send(t, "account-dimension-rules:create", D(("company_id", t.CompanyId), ("account_id", t.Revenue), ("dimension_type_id", typeId), ("rule", "MANDATORY")), "ar1", "write.config");
+        Assert.Equal(HttpStatusCode.OK, rule.Response.StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await Send(t, "account-dimension-rules:create", D(("company_id", t.CompanyId), ("account_id", t.Revenue), ("dimension_type_id", typeId), ("rule", "FORBIDDEN")), "ar2", "write.master")).Response.StatusCode);
+
+        object Lines(object? revenueDimensions) => new object[]
+        {
+            D(("line_ref", "1"), ("account_id", t.Bank), ("amount_tc", "100.00")),
+            D(("line_ref", "2"), ("account_id", t.Revenue), ("amount_tc", "-100.00"), ("dimensions", revenueDimensions))
+        };
+        object Post(object? dimensions) => D(("company_id", t.CompanyId), ("document_type", "JOURNAL"), ("document_date", "2026-03-15"), ("posting_date", "2026-03-15"),
+            ("transaction_currency", "DKK"), ("lines", Lines(dimensions)));
+
+        var missing = await Send(t, "journal-documents:post", Post(null), "p1", "journal.post");
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, missing.Response.StatusCode);
+        Assert.Equal("ACCOUNT_RULE.DIMENSION_REQUIRED", Code(missing.Body));
+        Assert.Equal("lines[1].dimensions", missing.Body.GetProperty("errors")[0].GetProperty("path").GetString());
+
+        var posted = await Send(t, "journal-documents:post", Post(D(("free", new object[] { D(("dimension_type_id", typeId), ("dimension_value_id", valueId)) }))), "p2", "journal.post");
+        Assert.Equal(HttpStatusCode.OK, posted.Response.StatusCode);
+        string documentId = posted.Body.GetProperty("result").GetProperty("document_id").GetString()!;
+
+        var change = await Send(t, "journal-documents:change-open-fields", D(("document_id", documentId), ("reason_code", "CORRECTION"),
+            ("changes", new object[] { D(("entity_type", "LINE_DIMENSION"), ("line_no", 2), ("field_name", "dimension_value_id"), ("sub_key", typeId), ("expected_old_value", valueId), ("new_value", null)) })), "c1", "journal.change");
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, change.Response.StatusCode);
+        Assert.Equal("ACCOUNT_RULE.DIMENSION_REQUIRED", Code(change.Body));
+    }
+
+    [Fact]
     public async Task APartnerIsCreatedUpdatedWithTypedFieldsAndDeactivated()
     {
         var t = await TestTenant.CreateReadyAsync();

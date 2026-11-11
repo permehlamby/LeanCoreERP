@@ -30,6 +30,17 @@ public sealed class ConfigModule : ICommandModule
         catalog.Add<MasterStatusRequest, MasterResult>("payment-terms:deactivate", MasterRules.ConfigPermission, (sp, t, c, r, ct) => sp.GetRequiredService<PaymentTermsCommands>().DeactivateAsync(t, c, r, ct));
         catalog.Add<MasterStatusRequest, MasterResult>("payment-terms:reactivate", MasterRules.ConfigPermission, (sp, t, c, r, ct) => sp.GetRequiredService<PaymentTermsCommands>().ReactivateAsync(t, c, r, ct));
 
+        catalog.Add<CreateDimensionTypeRequest, MasterResult>("dimension-types:create", MasterRules.DimensionPermission, (sp, t, c, r, ct) => sp.GetRequiredService<DimensionCommands>().CreateTypeAsync(t, c, r, ct));
+        catalog.Add<UpdateDimensionTypeRequest, MasterResult>("dimension-types:update", MasterRules.DimensionPermission, (sp, t, c, r, ct) => sp.GetRequiredService<DimensionCommands>().UpdateTypeAsync(t, c, r, ct));
+        catalog.Add<MasterStatusRequest, MasterResult>("dimension-types:deactivate", MasterRules.DimensionPermission, (sp, t, c, r, ct) => sp.GetRequiredService<DimensionCommands>().DeactivateTypeAsync(t, c, r, ct));
+        catalog.Add<MasterStatusRequest, MasterResult>("dimension-types:reactivate", MasterRules.DimensionPermission, (sp, t, c, r, ct) => sp.GetRequiredService<DimensionCommands>().ReactivateTypeAsync(t, c, r, ct));
+        catalog.Add<CreateDimensionValueRequest, MasterResult>("dimension-values:create", MasterRules.DimensionPermission, (sp, t, c, r, ct) => sp.GetRequiredService<DimensionCommands>().CreateValueAsync(t, c, r, ct));
+        catalog.Add<UpdateDimensionValueRequest, MasterResult>("dimension-values:update", MasterRules.DimensionPermission, (sp, t, c, r, ct) => sp.GetRequiredService<DimensionCommands>().UpdateValueAsync(t, c, r, ct));
+        catalog.Add<MasterStatusRequest, MasterResult>("dimension-values:deactivate", MasterRules.DimensionPermission, (sp, t, c, r, ct) => sp.GetRequiredService<DimensionCommands>().DeactivateValueAsync(t, c, r, ct));
+        catalog.Add<MasterStatusRequest, MasterResult>("dimension-values:reactivate", MasterRules.DimensionPermission, (sp, t, c, r, ct) => sp.GetRequiredService<DimensionCommands>().ReactivateValueAsync(t, c, r, ct));
+        catalog.Add<CreateAccountDimensionRuleRequest, MasterResult>("account-dimension-rules:create", DimensionCommands.RulePermission, (sp, t, c, r, ct) => sp.GetRequiredService<DimensionCommands>().CreateRuleAsync(t, c, r, ct));
+        catalog.Add<UpdateAccountDimensionRuleRequest, MasterResult>("account-dimension-rules:update", DimensionCommands.RulePermission, (sp, t, c, r, ct) => sp.GetRequiredService<DimensionCommands>().UpdateRuleAsync(t, c, r, ct));
+
         catalog.Add<AssignAccountRoleRequest, AssignedAccountRole>("account-role-assignments:create", AccountRoleAssigner.Permission, (sp, t, c, r, ct) => sp.GetRequiredService<AccountRoleAssigner>().AssignAsync(t, c, r, ct));
         catalog.Add<CreateRetentionRuleVersionRequest, CreatedRetentionRule>("retention-rules:create-version", RetentionRules.Permission, (sp, t, c, r, ct) => sp.GetRequiredService<RetentionRuleCommands>().CreateVersionAsync(t, c, r, ct));
 

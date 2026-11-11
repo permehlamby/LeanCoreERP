@@ -52,7 +52,7 @@ internal static class MasterSupport
     private static NpgsqlDbType DbType(MasterKind k) => k switch
     {
         MasterKind.Bool => NpgsqlDbType.Boolean, MasterKind.Amount or MasterKind.Percent => NpgsqlDbType.Numeric, MasterKind.Id => NpgsqlDbType.Uuid,
-        MasterKind.SmallInt => NpgsqlDbType.Smallint, _ => NpgsqlDbType.Text
+        MasterKind.SmallInt => NpgsqlDbType.Smallint, MasterKind.Date => NpgsqlDbType.Date, _ => NpgsqlDbType.Text
     };
 
     internal static void AddParam(NpgsqlCommand cmd, string name, Patch p) =>

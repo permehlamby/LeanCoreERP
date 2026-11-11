@@ -272,7 +272,8 @@ public sealed class DocumentReverser(NpgsqlDataSource source)
             number, recheck.SoftCloseOverride, postedAt, currency, reversalDate, chainSeq, headHash, rowHash, ct);
         if (await LegalSnapshots.WriteAsync(tx, tenantId, companyId, mirrorId, fiscalYear, reversalDate, postedAt, ct, copyFromDocumentId: req.DocumentId) is { } noSnapshot)
             return Reject(noSnapshot);
-        foreach (var m in mirrorLines) await InsertLineAsync(tx, m, ct);
+        foreach (var m in mirrorLines) await InsertLineAsync(tx, m, req.DocumentId, ct);
+        await CopyFreeDimensionsAsync(tx, tenantId, companyId, req.DocumentId, mirrorId, ct);
         // The mirror's open items start OPEN with nothing cleared. The automatic clearing below clears them (03, 5.7, B3).
         foreach (var m in mirrorLines.Where(m => original.OpenItems.ContainsKey((int)m["line_no"]!)))
         {
@@ -475,15 +476,34 @@ public sealed class DocumentReverser(NpgsqlDataSource source)
         await cmd.ExecuteNonQueryAsync(ct);
     }
 
-    private static async Task InsertLineAsync(TenantTransaction tx, Dictionary<string, object?> m, CancellationToken ct)
+    /// <summary>The mirror carries the dimensions of the lines it reverses as they stand now (02, 5.3): the typed ones come with the line insert, the free ones are copied here.
+    /// Nothing is checked again: a value may have been closed since the original was posted, and a reversal must still go through.</summary>
+    private static async Task CopyFreeDimensionsAsync(TenantTransaction tx, Guid tenantId, Guid companyId, Guid originalId, Guid mirrorId, CancellationToken ct)
+    {
+        await using var cmd = tx.Command(
+            "insert into core.journal_line_dimension (tenant_id, company_id, document_id, line_no, dimension_type_id, dimension_value_id) " +
+            "select d.tenant_id, d.company_id, @m, ml.line_no, d.dimension_type_id, d.dimension_value_id " +
+            "from core.journal_line_dimension d join core.journal_line ml on ml.tenant_id = d.tenant_id and ml.company_id = d.company_id " +
+            "and ml.document_id = @m and ml.reversed_line_no = d.line_no " +
+            "where d.tenant_id = @t and d.company_id = @c and d.document_id = @o");
+        cmd.Parameters.AddWithValue("t", tenantId);
+        cmd.Parameters.AddWithValue("c", companyId);
+        cmd.Parameters.AddWithValue("o", originalId);
+        cmd.Parameters.AddWithValue("m", mirrorId);
+        await cmd.ExecuteNonQueryAsync(ct);
+    }
+
+    private static async Task InsertLineAsync(TenantTransaction tx, Dictionary<string, object?> m, Guid originalId, CancellationToken ct)
     {
         await using var cmd = tx.Command(
             "insert into core.journal_line (tenant_id, company_id, document_id, line_no, ledger_id, line_type, account_id, posting_date, " +
             "fiscal_year, fiscal_period, reversed_line_no, tax_code_id, amount_tc, amount_lc, currency_lc, rate_lc, rate_lc_table, " +
             "amount_gc, currency_gc, rate_gc, rate_gc_table, amount_rc, currency_rc, rate_rc, rate_rc_table, rate_type, rate_date, " +
-            "ic_counterpart_company_id) " +
+            "ic_counterpart_company_id, cost_center_id, project_id, profit_center_id, business_unit_id) " +
             "values (@t, @c, @d, @n, @l, @lt, @a, @pd, @fy, @fp, @rev, @tax, @tc, @lc, @clc, @rlc, @rlct, @gc, @cgc, @rgc, @rgct, @rc, @crc, @rrc, @rrct, " +
-            "@rt, @rd, @ic)");
+            "@rt, @rd, @ic, " + string.Join(", ", new[] { "cost_center_id", "project_id", "profit_center_id", "business_unit_id" }.Select(c =>
+                $"(select o.{c} from core.journal_line o where o.tenant_id = @t and o.company_id = @c and o.document_id = @orig and o.line_no = @rev)")) + ")");
+        cmd.Parameters.AddWithValue("orig", originalId);
         void Add(string name, string key, NpgsqlDbType type) =>
             cmd.Parameters.Add(new NpgsqlParameter(name, type) { Value = m[key] ?? DBNull.Value });
         Add("t", "tenant_id", NpgsqlDbType.Uuid); Add("c", "company_id", NpgsqlDbType.Uuid); Add("d", "document_id", NpgsqlDbType.Uuid);

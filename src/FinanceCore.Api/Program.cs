@@ -17,6 +17,7 @@ builder.Services.AddSingleton(sp => new DocumentChanger(sp.GetRequiredService<Np
 builder.Services.AddSingleton(sp => new ClearingPoster(sp.GetRequiredService<NpgsqlDataSource>()));
 builder.Services.AddSingleton(sp => new PartnerCommands(sp.GetRequiredService<NpgsqlDataSource>()));
 builder.Services.AddSingleton(sp => new PaymentTermsCommands(sp.GetRequiredService<NpgsqlDataSource>()));
+builder.Services.AddSingleton(sp => new DimensionCommands(sp.GetRequiredService<NpgsqlDataSource>()));
 builder.Services.AddSingleton(sp => new AccountRoleAssigner(sp.GetRequiredService<NpgsqlDataSource>()));
 builder.Services.AddSingleton(sp => new RetentionRuleCommands(sp.GetRequiredService<NpgsqlDataSource>()));
 builder.Services.AddSingleton(sp => new FiscalYearOpener(sp.GetRequiredService<NpgsqlDataSource>()));

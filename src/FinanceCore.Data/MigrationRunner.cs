@@ -136,7 +136,8 @@ public sealed partial class MigrationRunner(NpgsqlDataSource admin)
             else if (checksum is not null && checksum != f.Checksum) result.Add(new(f.Version, f.Name, MigrationState.Changed, true));
             else result.Add(new(f.Version, f.Name, MigrationState.Applied, checksum is not null));
         }
-        foreach (string v in recorded.Keys.Where(v => files.All(f => f.Version != v)).Order(StringComparer.Ordinal))
+        // a row whose version is not a number is not a migration (the dev seed records `seed-dev`): the runner leaves it alone
+        foreach (string v in recorded.Keys.Where(v => v.All(char.IsAsciiDigit) && files.All(f => f.Version != v)).Order(StringComparer.Ordinal))
             result.Add(new(v, "(no file)", MigrationState.FileMissing, recorded[v] is not null));
         return result;
     }

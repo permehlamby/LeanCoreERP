@@ -151,16 +151,16 @@ public class ChangeOpenFieldsTests
             Header("nope", null, "x"),                           // not a column
             Header("line_text", null, "x"),                      // a line field on the header
             Line(1, "amount_lc", "1", "2"),                      // L1
-            Line(1, "cost_center_id", null, Guid.NewGuid().ToString()),   // L2, needs the dimension tables
+            Line(1, "cost_center_id", null, Guid.NewGuid().ToString()),   // L2, but the value must exist
             Line(9, "line_text", null, "x"));                    // no such line
         Assert.Equal(CommandStatus.Rejected, r.Status);
         Assert.Equal(
             ["LOCK.FIELD_LOCKED_L1", "LOCK.FIELD_LOCKED_L1", "LOCK.FIELD_UNKNOWN", "LOCK.FIELD_UNKNOWN", "LOCK.FIELD_LOCKED_L1",
-             "LIMIT.FIELD_NOT_BUILT", "DOCUMENT.LINE_NOT_FOUND"], Codes(r));
+             "DOCUMENT.LINE_NOT_FOUND", "ACCOUNT_RULE.DIMENSION_VALUE_INVALID"], Codes(r));
         Assert.Equal(0L, await t.ScalarAsync<long>("select count(*) from core.change_log where tenant_id = @t"));
         Assert.Equal("JOURNAL", await t.ScalarAsync<string>("select document_type from core.journal_document where tenant_id = @t and document_id = @d", ("d", doc.DocumentId)));
 
-        var dim = await Run(t, Change(t, "c2"), doc.DocumentId, "CORRECTION", new FieldChange("LINE_DIMENSION", 1, "dimension_value_id", null, "x"));
+        var dim = await Run(t, Change(t, "c2"), doc.DocumentId, "CORRECTION", new FieldChange("TAX_EVIDENCE", 1, "evidence_no", null, "x"));
         Assert.Equal(["LIMIT.ENTITY_TYPE_NOT_BUILT"], Codes(dim));
     }
 

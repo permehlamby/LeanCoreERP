@@ -188,7 +188,7 @@ General rules: a rate is never null and never 0. When the ratio to LC cannot be 
 | profit_center_id | ID | Y | L2 | Profit center/segment |
 | business_unit_id | ID | Y | L2 | Branch/business unit as dimension (ADR-014) |
 
-Free dimensions: see `journal_line_dimension`. Any L2 change is validated as a posting against account rules and dimension validity periods (P3).
+Free dimensions: see `journal_line_dimension`. Any L2 change is validated as a posting against account rules and dimension validity periods (P3). Built choices (F-IMPL-33): posting writes the typed columns and the free rows, the database checks that a typed value belongs to a type of the matching standard role and that a value restricted to a company is used by that company, and the typed columns and `journal_line_dimension.dimension_value_id` can change with a `change_log` row of the same transaction (migration 0022). 06, 13.9 has the errors.
 
 ### 5.4 Intercompany marker
 

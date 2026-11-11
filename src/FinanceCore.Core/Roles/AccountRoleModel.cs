@@ -19,7 +19,7 @@ public enum RoleAccountKind { ProfitAndLoss, Equity, BalanceSheet }
 
 /// <summary>One row of the role table of 07, 6.3 for the roles resolved by account_role_assignment.</summary>
 public sealed record RoleDefinition(
-    string Code, RoleAccountKind Kind, bool PerCurrency = false, bool PerCounterpart = false, bool PerVatRegistration = false);
+    string Code, RoleAccountKind Kind, bool PerCurrency = false, bool PerCounterpart = false, bool PerVatRegistration = false, bool NoMandatoryDimensions = false);
 
 /// <summary>A rule an account does not satisfy: the code of 11.2 and, for CONFIG.ROLE_ACCOUNT_RULE_VIOLATED, the rule name.</summary>
 public sealed record RoleViolation(string Code, string? Rule);
@@ -27,7 +27,7 @@ public sealed record RoleViolation(string Code, string? Rule);
 /// <summary>
 /// The role table of 07, 6.3 (D5, ADR-149) as far as account_role_assignment goes, and the rules of an account for a role.
 /// The required open-item mode of all these roles is NONE. "No mandatory dimension rules" (RETAINED_EARNINGS, the migration
-/// roles) is not checked: account_dimension_rule (6.2) does not exist yet.
+/// roles) is checked by the role assignment and by account-dimension-rules (rule MANDATORY_DIMENSION).
 /// </summary>
 public static class AccountRoles
 {
@@ -41,12 +41,12 @@ public static class AccountRoles
         new("FX_REALISED", RoleAccountKind.ProfitAndLoss),
         new("FX_UNREALISED_GAIN", RoleAccountKind.ProfitAndLoss, PerCurrency: true),
         new("FX_UNREALISED_LOSS", RoleAccountKind.ProfitAndLoss, PerCurrency: true),
-        new("RETAINED_EARNINGS", RoleAccountKind.Equity),
+        new("RETAINED_EARNINGS", RoleAccountKind.Equity, NoMandatoryDimensions: true),
         new("IC_RECEIVABLE", RoleAccountKind.BalanceSheet, PerCounterpart: true),
         new("IC_PAYABLE", RoleAccountKind.BalanceSheet, PerCounterpart: true),
         new("VAT_SETTLEMENT", RoleAccountKind.BalanceSheet, PerVatRegistration: true),
-        new("MIGRATION_CLEARING", RoleAccountKind.BalanceSheet),
-        new("HISTORY_RESULT", RoleAccountKind.BalanceSheet)
+        new("MIGRATION_CLEARING", RoleAccountKind.BalanceSheet, NoMandatoryDimensions: true),
+        new("HISTORY_RESULT", RoleAccountKind.BalanceSheet, NoMandatoryDimensions: true)
     ];
 
     /// <summary>The roles every company needs before it can post (11.3). ROUNDING is needed for each currency in use or as a default.</summary>
