@@ -23,6 +23,25 @@ for (let pass = 1; pass <= 2; pass++) {
   }
   console.log(`pass ${pass}: migrations and seed applied`);
 }
+// A neighbour: a second tenant with its own company, fiscal year, periods and counter, as the tests of the application leave
+// them in a shared database. The tests below run as the migration role, which row-level security never restricts (in Supabase
+// `postgres` has BYPASSRLS), so a statement that does not name its tenant changes the neighbour too. Running next to one finds them.
+{
+  const map = new Map();
+  const remap = (text) => text
+    .replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g, (u) => { if (!map.has(u)) map.set(u, 'c0de' + u.slice(4)); return map.get(u); })
+    .replace("'DEV'", "'NEIGHBOUR'");
+  const seed = readFileSync(join(root, 'seed', 'dev_seed.sql'), 'utf8');
+  const tests = readFileSync(join(root, 'tests', '001_protection.sql'), 'utf8');
+  const setup = tests.match(/insert into core\.fiscal_year[\s\S]*?last_number\)\s*values \([^;]*;/);
+  if (!setup) throw new Error('the setup block of the tests was not found');
+  await db.exec(remap(seed));
+  await db.exec(remap(setup[0]));
+  const neighbour = remap('11111111-1111-4111-8111-111111111111');
+  for (const n of [1, 2]) await db.exec(`update core.number_range_counter set last_number = ${n} where tenant_id = '${neighbour}'`);
+  await db.exec("select set_config('app.tenant_id', '', false)");
+  console.log('a neighbour tenant is in place:', neighbour);
+}
 const applied = await db.query('select version from platform.schema_migration order by version');
 console.log('applied versions:', applied.rows.map((r) => r.version).join(', '));
 

@@ -127,32 +127,32 @@ values ('11111111-1111-4111-8111-111111111111', 'aaaaaaaa-0000-4000-8000-0000000
         1, 2026, 10, 'PERIOD_SOFT_CLOSE', 'OPEN', 'SOFT_CLOSED', now(), 'tester', 'c1', 'pe-1', sha256('a'), sha256('b'), 2);
 
 select pg_temp.expect_error('append-only: period_event cannot be updated',
-    $t$update core.period_event set event_by = 'x'$t$, '%append-only%');
+    $t$update core.period_event set event_by = 'x' where tenant_id = '11111111-1111-4111-8111-111111111111'$t$, '%append-only%');
 select pg_temp.expect_error('append-only: period_event cannot be deleted', $t$delete from core.period_event$t$, '%append-only%');
 select pg_temp.expect_error('append-only: outbox_event cannot be truncated', $t$truncate core.outbox_event$t$, '%append-only%');
 
 select pg_temp.expect_error('period status: change without an event is rejected',
-    $t$update core.fiscal_period set status = 'SOFT_CLOSED' where period_no = 9$t$, '%without a period_event%');
+    $t$update core.fiscal_period set status = 'SOFT_CLOSED' where tenant_id = '11111111-1111-4111-8111-111111111111' and period_no = 9$t$, '%without a period_event%');
 select pg_temp.expect_error('period status: an event for another period is rejected',
-    $t$update core.fiscal_period set status = 'SOFT_CLOSED', last_event_id = 'aaaaaaaa-0000-4000-8000-000000000001' where period_no = 9$t$,
+    $t$update core.fiscal_period set status = 'SOFT_CLOSED', last_event_id = 'aaaaaaaa-0000-4000-8000-000000000001' where tenant_id = '11111111-1111-4111-8111-111111111111' and period_no = 9$t$,
     '%does not match%');
 select pg_temp.expect_error('period status: the wrong target status is rejected',
-    $t$update core.fiscal_period set status = 'HARD_CLOSED', last_event_id = 'aaaaaaaa-0000-4000-8000-000000000001' where period_no = 10$t$,
+    $t$update core.fiscal_period set status = 'HARD_CLOSED', last_event_id = 'aaaaaaaa-0000-4000-8000-000000000001' where tenant_id = '11111111-1111-4111-8111-111111111111' and period_no = 10$t$,
     '%does not match%');
 select pg_temp.expect_ok('period status: the matching latest event allows the change',
-    $t$update core.fiscal_period set status = 'SOFT_CLOSED', last_event_id = 'aaaaaaaa-0000-4000-8000-000000000001' where period_no = 10$t$);
+    $t$update core.fiscal_period set status = 'SOFT_CLOSED', last_event_id = 'aaaaaaaa-0000-4000-8000-000000000001' where tenant_id = '11111111-1111-4111-8111-111111111111' and period_no = 10$t$);
 select pg_temp.expect_error('period status: an L1 column cannot change',
-    $t$update core.fiscal_period set start_date = date '2026-10-02' where period_no = 10$t$, '%L1 column%');
+    $t$update core.fiscal_period set start_date = date '2026-10-02' where tenant_id = '11111111-1111-4111-8111-111111111111' and period_no = 10$t$, '%L1 column%');
 
 -- ---------------------------------------------------------------------------------------------------------
 -- 3. Counters and chain heads move by exactly one
 -- ---------------------------------------------------------------------------------------------------------
 select pg_temp.expect_error('counter: a jump of 2 is rejected',
-    $t$update core.number_range_counter set last_number = 2$t$, '%exactly 1%');
+    $t$update core.number_range_counter set last_number = 2 where tenant_id = '11111111-1111-4111-8111-111111111111'$t$, '%exactly 1%');
 select pg_temp.expect_error('counter: a step back is rejected',
-    $t$update core.number_range_counter set last_number = 0$t$, '%exactly 1%');
+    $t$update core.number_range_counter set last_number = 0 where tenant_id = '11111111-1111-4111-8111-111111111111'$t$, '%exactly 1%');
 select pg_temp.expect_error('chain head: a jump of 2 is rejected',
-    $t$update core.chain_head set last_seq = 2, last_hash = sha256('x') where chain_type = 'LEDGER'$t$, '%exactly 1%');
+    $t$update core.chain_head set last_seq = 2, last_hash = sha256('x') where tenant_id = '11111111-1111-4111-8111-111111111111' and chain_type = 'LEDGER'$t$, '%exactly 1%');
 select pg_temp.expect_error('chain head: a new head must start at 0',
     $t$insert into core.chain_head (tenant_id, company_id, chain_type, scope_key, last_seq, last_hash, hash_version)
        values ('11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222201', 'STOCK', '', 5, sha256('x'), 2)$t$,
@@ -166,15 +166,15 @@ create function pg_temp.post_doc1() returns void language plpgsql as $$
 declare genesis bytea := sha256(convert_to('genesis|11111111-1111-4111-8111-111111111111|22222222-2222-4222-8222-222222222201|LEDGER|44444444-4444-4444-8444-444444444401', 'UTF8'));
 begin
     perform pg_temp.insert_doc(1, genesis, sha256('doc1'), 'bbbbbbbb-0000-4000-8000-000000000001', 'GL-2026-000001', 100, 'k1');
-    update core.number_range_counter set last_number = 1, updated_at = now();
-    update core.chain_head set last_seq = 1, last_hash = sha256('doc1'), updated_at = now() where chain_type = 'LEDGER';
+    update core.number_range_counter set last_number = 1, updated_at = now() where tenant_id = '11111111-1111-4111-8111-111111111111';
+    update core.chain_head set last_seq = 1, last_hash = sha256('doc1'), updated_at = now() where tenant_id = '11111111-1111-4111-8111-111111111111' and chain_type = 'LEDGER';
     set constraints all immediate;
     set constraints all deferred;
 end $$;
 select pg_temp.expect_ok('document: the first document, counter and head in step, commits', $t$select pg_temp.post_doc1()$t$);
 
 select pg_temp.expect_count('document: the head follows the document',
-    $t$select last_seq from core.chain_head where chain_type = 'LEDGER'$t$, 1);
+    $t$select last_seq from core.chain_head where tenant_id = '11111111-1111-4111-8111-111111111111' and chain_type = 'LEDGER'$t$, 1);
 
 -- An unbalanced document
 create function pg_temp.post_unbalanced() returns void language plpgsql as $$
@@ -186,8 +186,8 @@ begin
     values ('11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222201', 'bbbbbbbb-0000-4000-8000-000000000002', 3,
         '44444444-4444-4444-8444-444444444401', 'BASE', '55555555-5555-4555-8555-555555555503', date '2026-10-21', 2026, 10,
         1, 1, 'DKK', 1, 0.134, 'EUR', 0.134, 'SPOT', date '2026-10-21');
-    update core.number_range_counter set last_number = 2, updated_at = now();
-    update core.chain_head set last_seq = 2, last_hash = sha256('doc2'), updated_at = now() where chain_type = 'LEDGER';
+    update core.number_range_counter set last_number = 2, updated_at = now() where tenant_id = '11111111-1111-4111-8111-111111111111';
+    update core.chain_head set last_seq = 2, last_hash = sha256('doc2'), updated_at = now() where tenant_id = '11111111-1111-4111-8111-111111111111' and chain_type = 'LEDGER';
     set constraints all immediate;
 end $$;
 select pg_temp.expect_error('document: an unbalanced document is rejected at commit', $t$select pg_temp.post_unbalanced()$t$, '%does not balance%');
@@ -203,7 +203,7 @@ begin
         date '2026-10-21', date '2026-10-21', now(), 'DKK', 'EXTERNAL', 'TEST', 'k3', 'journal-documents:post', 'tester', 'c', 2,
         sha256('doc1'), sha256('doc3'), 2);
     perform pg_temp.insert_snapshot('bbbbbbbb-0000-4000-8000-000000000003');
-    update core.chain_head set last_seq = 2, last_hash = sha256('doc3'), updated_at = now() where chain_type = 'LEDGER';
+    update core.chain_head set last_seq = 2, last_hash = sha256('doc3'), updated_at = now() where tenant_id = '11111111-1111-4111-8111-111111111111' and chain_type = 'LEDGER';
     set constraints all immediate;
 end $$;
 select pg_temp.expect_error('document: a document without lines is rejected', $t$select pg_temp.post_no_lines()$t$, '%has no lines%');
@@ -211,21 +211,21 @@ select pg_temp.expect_error('document: a document without lines is rejected', $t
 create function pg_temp.post_no_snapshot() returns void language plpgsql as $$
 begin
     perform pg_temp.insert_doc(2, sha256('doc1'), sha256('doc2'), 'bbbbbbbb-0000-4000-8000-000000000006', 'GL-2026-000002', 50, 'k6', false);
-    update core.number_range_counter set last_number = 2, updated_at = now();
-    update core.chain_head set last_seq = 2, last_hash = sha256('doc2'), updated_at = now() where chain_type = 'LEDGER';
+    update core.number_range_counter set last_number = 2, updated_at = now() where tenant_id = '11111111-1111-4111-8111-111111111111';
+    update core.chain_head set last_seq = 2, last_hash = sha256('doc2'), updated_at = now() where tenant_id = '11111111-1111-4111-8111-111111111111' and chain_type = 'LEDGER';
     set constraints all immediate;
 end $$;
 select pg_temp.expect_error('snapshot: a document without a legal snapshot is rejected at commit', $t$select pg_temp.post_no_snapshot()$t$, '%has no legal snapshot%');
-select pg_temp.expect_error('snapshot: a snapshot cannot be updated', $t$update core.document_legal_snapshot set retention_until = date '2099-01-01'$t$, '%append-only%');
+select pg_temp.expect_error('snapshot: a snapshot cannot be updated', $t$update core.document_legal_snapshot set retention_until = date '2099-01-01' where tenant_id = '11111111-1111-4111-8111-111111111111'$t$, '%append-only%');
 select pg_temp.expect_error('snapshot: a snapshot cannot be deleted', $t$delete from core.document_legal_snapshot$t$, '%append-only%');
-select pg_temp.expect_error('retention rule: a version cannot be updated', $t$update core.retention_rule set retention_years = 99$t$, '%append-only%');
+select pg_temp.expect_error('retention rule: a version cannot be updated', $t$update core.retention_rule set retention_years = 99 where tenant_id = '11111111-1111-4111-8111-111111111111'$t$, '%append-only%');
 select pg_temp.expect_error('retention rule: a version cannot be deleted', $t$delete from core.retention_rule$t$, '%append-only%');
 
 create function pg_temp.post_wrong_prev() returns void language plpgsql as $$
 begin
     perform pg_temp.insert_doc(2, sha256('not the predecessor'), sha256('doc2'), 'bbbbbbbb-0000-4000-8000-000000000004', 'GL-2026-000002', 50, 'k4');
-    update core.number_range_counter set last_number = 2, updated_at = now();
-    update core.chain_head set last_seq = 2, last_hash = sha256('doc2'), updated_at = now() where chain_type = 'LEDGER';
+    update core.number_range_counter set last_number = 2, updated_at = now() where tenant_id = '11111111-1111-4111-8111-111111111111';
+    update core.chain_head set last_seq = 2, last_hash = sha256('doc2'), updated_at = now() where tenant_id = '11111111-1111-4111-8111-111111111111' and chain_type = 'LEDGER';
     set constraints all immediate;
 end $$;
 select pg_temp.expect_error('chain: a wrong prev_hash is rejected', $t$select pg_temp.post_wrong_prev()$t$, '%does not link%');
@@ -240,8 +240,8 @@ select pg_temp.expect_error('chain: a document without moving the head is reject
 create function pg_temp.post_doc2() returns void language plpgsql as $$
 begin
     perform pg_temp.insert_doc(2, sha256('doc1'), sha256('doc2'), 'bbbbbbbb-0000-4000-8000-000000000006', 'GL-2026-000002', 50, 'k6');
-    update core.number_range_counter set last_number = 2, updated_at = now();
-    update core.chain_head set last_seq = 2, last_hash = sha256('doc2'), updated_at = now() where chain_type = 'LEDGER';
+    update core.number_range_counter set last_number = 2, updated_at = now() where tenant_id = '11111111-1111-4111-8111-111111111111';
+    update core.chain_head set last_seq = 2, last_hash = sha256('doc2'), updated_at = now() where tenant_id = '11111111-1111-4111-8111-111111111111' and chain_type = 'LEDGER';
     set constraints all immediate;
     set constraints all deferred;
 end $$;
@@ -258,32 +258,32 @@ select pg_temp.expect_error('document: the idempotency key is unique per tenant'
 -- 5. Lock classes: L1 never changes, S columns change in the allowed way
 -- ---------------------------------------------------------------------------------------------------------
 select pg_temp.expect_error('lock class: an L1 column of a document cannot change',
-    $t$update core.journal_document set document_type = 'AR_INVOICE' where document_id = 'bbbbbbbb-0000-4000-8000-000000000001'$t$, '%cannot change%');
+    $t$update core.journal_document set document_type = 'AR_INVOICE' where tenant_id = '11111111-1111-4111-8111-111111111111' and document_id = 'bbbbbbbb-0000-4000-8000-000000000001'$t$, '%cannot change%');
 select pg_temp.expect_error('lock class: an L2 column needs a change_log row of the same transaction',
-    $t$update core.journal_document set header_text = 'x' where document_id = 'bbbbbbbb-0000-4000-8000-000000000001'$t$, '%without a matching change_log row%');
+    $t$update core.journal_document set header_text = 'x' where tenant_id = '11111111-1111-4111-8111-111111111111' and document_id = 'bbbbbbbb-0000-4000-8000-000000000001'$t$, '%without a matching change_log row%');
 select pg_temp.expect_ok('lock class: status posted to reversed is allowed',
-    $t$update core.journal_document set status = 'reversed' where document_id = 'bbbbbbbb-0000-4000-8000-000000000001'$t$);
+    $t$update core.journal_document set status = 'reversed' where tenant_id = '11111111-1111-4111-8111-111111111111' and document_id = 'bbbbbbbb-0000-4000-8000-000000000001'$t$);
 select pg_temp.expect_error('lock class: status cannot go back',
-    $t$update core.journal_document set status = 'posted' where document_id = 'bbbbbbbb-0000-4000-8000-000000000001'$t$, '%only change from posted to reversed%');
+    $t$update core.journal_document set status = 'posted' where tenant_id = '11111111-1111-4111-8111-111111111111' and document_id = 'bbbbbbbb-0000-4000-8000-000000000001'$t$, '%only change from posted to reversed%');
 select pg_temp.expect_error('lock class: lines are never updated',
-    $t$update core.journal_line set amount_tc = 1$t$, '%only line_text and the typed dimensions can change%');
+    $t$update core.journal_line set amount_tc = 1 where tenant_id = '11111111-1111-4111-8111-111111111111'$t$, '%only line_text and the typed dimensions can change%');
 select pg_temp.expect_error('no delete: documents', $t$delete from core.journal_document$t$, '%no hard delete%');
 select pg_temp.expect_error('no delete: lines', $t$delete from core.journal_line$t$, '%no hard delete%');
 select pg_temp.expect_error('no delete: accounts', $t$delete from core.gl_account$t$, '%no hard delete%');
 
 select pg_temp.expect_error('account: type is fixed once the account has postings',
-    $t$update core.gl_account set account_type = 'LIABILITY' where account_no = '1000'$t$, '%fixed once the account has postings%');
+    $t$update core.gl_account set account_type = 'LIABILITY' where tenant_id = '11111111-1111-4111-8111-111111111111' and account_no = '1000'$t$, '%fixed once the account has postings%');
 select pg_temp.expect_ok('account: type may change before the first posting',
-    $t$update core.gl_account set account_type = 'LIABILITY' where account_no = '8000'$t$);
+    $t$update core.gl_account set account_type = 'LIABILITY' where tenant_id = '11111111-1111-4111-8111-111111111111' and account_no = '8000'$t$);
 select pg_temp.expect_error('account: tax_account is never reset',
-    $t$update core.gl_account set tax_account = true where account_no = '4000'; update core.gl_account set tax_account = false where account_no = '4000'$t$,
+    $t$update core.gl_account set tax_account = true where tenant_id = '11111111-1111-4111-8111-111111111111' and account_no = '4000'; update core.gl_account set tax_account = false where tenant_id = '11111111-1111-4111-8111-111111111111' and account_no = '4000'$t$,
     '%never reset%');
 select pg_temp.expect_error('company: currency is fixed once the company has postings',
-    $t$update core.company set local_currency = 'EUR'$t$, '%fixed once the company has postings%');
+    $t$update core.company set local_currency = 'EUR' where tenant_id = '11111111-1111-4111-8111-111111111111'$t$, '%fixed once the company has postings%');
 
 -- Account roles (07, 6.3): a role row is a version, never changed, and the account must satisfy the role table
 select pg_temp.expect_error('role: a role row is never updated',
-    $t$update core.account_role_assignment set effective_from = now() where role_code = 'ROUNDING'$t$, '%append-only%');
+    $t$update core.account_role_assignment set effective_from = now() where tenant_id = '11111111-1111-4111-8111-111111111111' and role_code = 'ROUNDING'$t$, '%append-only%');
 select pg_temp.expect_error('role: a role row is never deleted',
     $t$delete from core.account_role_assignment$t$, '%append-only%');
 select pg_temp.expect_error('role: ROUNDING needs a P&L account',
@@ -293,13 +293,13 @@ select pg_temp.expect_error('role: an account has one role only',
     $t$insert into core.account_role_assignment (tenant_id, company_id, role_code, account_id, effective_from)
        select tenant_id, company_id, 'FX_REALISED', account_id, now() from core.gl_account where account_no = '7900'$t$, '%ONE_ROLE_PER_ACCOUNT%');
 select pg_temp.expect_error('role: a currency row needs an account without another currency',
-    $t$update core.gl_account set currency_code = 'EUR' where account_no = '7930';
+    $t$update core.gl_account set currency_code = 'EUR' where tenant_id = '11111111-1111-4111-8111-111111111111' and account_no = '7930';
        insert into core.account_role_assignment (tenant_id, company_id, role_code, account_id, effective_from)
        select tenant_id, company_id, 'FX_UNREALISED_GAIN', account_id, now() + interval '1 day' from core.gl_account where account_no = '7930'$t$, '%(CURRENCY)%');
 select pg_temp.expect_error('role: type and open item mode of a role account are fixed',
-    $t$update core.gl_account set account_type = 'REVENUE' where account_no = '7900'$t$, '%CONFIG.REFERENCED%');
+    $t$update core.gl_account set account_type = 'REVENUE' where tenant_id = '11111111-1111-4111-8111-111111111111' and account_no = '7900'$t$, '%CONFIG.REFERENCED%');
 select pg_temp.expect_error('role: no revalue flag on the retained earnings account',
-    $t$update core.gl_account set revalue_flag = true where account_no = '8100'$t$, '%REVALUE_FLAG_ON_RETAINED_EARNINGS%');
+    $t$update core.gl_account set revalue_flag = true where tenant_id = '11111111-1111-4111-8111-111111111111' and account_no = '8100'$t$, '%REVALUE_FLAG_ON_RETAINED_EARNINGS%');
 
 -- ---------------------------------------------------------------------------------------------------------
 -- 6. Exchange rates are usage-locked
@@ -307,13 +307,13 @@ select pg_temp.expect_error('role: no revalue flag on the retained earnings acco
 insert into core.exchange_rate (tenant_id, rate_id, rate_type, from_currency, to_currency, valid_from, rate)
 values ('11111111-1111-4111-8111-111111111111', 'cccccccc-0000-4000-8000-000000000001', 'SPOT', 'DKK', 'EUR', date '2026-10-21', 0.1340000000);
 select pg_temp.expect_ok('rate: an unused rate can change',
-    $t$update core.exchange_rate set rate = 0.1341 where rate_id = 'cccccccc-0000-4000-8000-000000000001'$t$);
+    $t$update core.exchange_rate set rate = 0.1341 where tenant_id = '11111111-1111-4111-8111-111111111111' and rate_id = 'cccccccc-0000-4000-8000-000000000001'$t$);
 select pg_temp.expect_error('rate: the identity never changes',
-    $t$update core.exchange_rate set valid_from = date '2026-10-22'$t$, '%cannot change%');
+    $t$update core.exchange_rate set valid_from = date '2026-10-22' where tenant_id = '11111111-1111-4111-8111-111111111111'$t$, '%cannot change%');
 select pg_temp.expect_ok('rate: marking it used is allowed',
-    $t$update core.exchange_rate set first_used_at = now() where rate_id = 'cccccccc-0000-4000-8000-000000000001'$t$);
+    $t$update core.exchange_rate set first_used_at = now() where tenant_id = '11111111-1111-4111-8111-111111111111' and rate_id = 'cccccccc-0000-4000-8000-000000000001'$t$);
 select pg_temp.expect_error('rate: a used rate cannot change',
-    $t$update core.exchange_rate set rate = 0.2$t$, '%used rate cannot change%');
+    $t$update core.exchange_rate set rate = 0.2 where tenant_id = '11111111-1111-4111-8111-111111111111'$t$, '%used rate cannot change%');
 
 -- ---------------------------------------------------------------------------------------------------------
 -- 7. Command roles (they only work with the roles in place: the application uses SET LOCAL ROLE)
@@ -333,13 +333,13 @@ select pg_temp.expect_error('role: cmd_config cannot post documents',
     $t$set local role cmd_config; select pg_temp.insert_doc(3, sha256('doc2'), sha256('doc3'), 'bbbbbbbb-0000-4000-8000-000000000009', 'GL-2026-000003', 5, 'k9')$t$,
     '%permission denied%');
 select pg_temp.expect_error('role: cmd_post cannot update other columns of a counter',
-    $t$set local role cmd_post; update core.number_range_counter set fiscal_year = 2027$t$, '%permission denied%');
+    $t$set local role cmd_post; update core.number_range_counter set fiscal_year = 2027 where tenant_id = '11111111-1111-4111-8111-111111111111'$t$, '%permission denied%');
 
 create function pg_temp.head_update_count(p_role text, p_chain text) returns bigint language plpgsql as $$
 declare n bigint;
 begin
     execute format('set local role %I', p_role);
-    execute format('update core.chain_head set last_seq = last_seq + 1, last_hash = sha256(''x''), updated_at = now() where chain_type = %L', p_chain);
+    execute format('update core.chain_head set last_seq = last_seq + 1, last_hash = sha256(''x''), updated_at = now() where tenant_id = ''11111111-1111-4111-8111-111111111111'' and chain_type = %L', p_chain);
     get diagnostics n = row_count;
     reset role;
     return n;
@@ -357,7 +357,7 @@ select pg_temp.expect_count('role: cmd_period cannot move the LEDGER chain head 
 create function pg_temp.post_event(p_position bigint, p_move_head boolean) returns void language plpgsql as $$
 begin
     if p_move_head then
-        update core.outbox_head set last_position = p_position;
+        update core.outbox_head set last_position = p_position where tenant_id = '11111111-1111-4111-8111-111111111111';
     end if;
     insert into core.outbox_event (tenant_id, position, event_type, entity_type, entity_key, change, occurred_at, actor_ref, correlation_id)
     values ('11111111-1111-4111-8111-111111111111', p_position, 'ledger.document_posted', 'DOCUMENT', 'x', 'POSTED', now(), 'tester', 'c');
@@ -367,8 +367,8 @@ end $$;
 select pg_temp.expect_error('outbox: an event beyond the head is rejected', $t$select pg_temp.post_event(1, false)$t$, '%beyond outbox_head%');
 select pg_temp.expect_ok('outbox: an event within the head is accepted', $t$select pg_temp.post_event(1, true)$t$);
 select pg_temp.expect_error('outbox: the head only moves forward',
-    $t$update core.outbox_head set last_position = 1$t$, '%only moves forward%');
-select pg_temp.expect_error('outbox: events cannot be updated', $t$update core.outbox_event set summary = '{}'::jsonb$t$, '%append-only%');
+    $t$update core.outbox_head set last_position = 1 where tenant_id = '11111111-1111-4111-8111-111111111111'$t$, '%only moves forward%');
+select pg_temp.expect_error('outbox: events cannot be updated', $t$update core.outbox_event set summary = '{}'::jsonb where tenant_id = '11111111-1111-4111-8111-111111111111'$t$, '%append-only%');
 select pg_temp.expect_error('outbox: the posting role cannot purge',
     $t$set local role cmd_post; delete from core.outbox_event$t$, '%permission denied%');
 select pg_temp.expect_ok('outbox: the retention role can purge', $t$set local role cmd_retention; delete from core.outbox_event$t$);
@@ -426,7 +426,7 @@ select pg_temp.expect_error('change_log: a change that changes nothing is reject
 select pg_temp.expect_error('change_log: an unknown document is rejected',
     format($t$set local role cmd_post; %s$t$, pg_temp.cl_row('DOCUMENT', 'bbbbbbbb-0000-4000-8000-0000000000ff', null, null, 'a', 'b', 'L2', 'OPEN', 'CORRECTION')),
     '%foreign key%');
-select pg_temp.expect_error('change_log: rows cannot be updated', $t$update core.change_log set reason_text = 'x'$t$, '%append-only%');
+select pg_temp.expect_error('change_log: rows cannot be updated', $t$update core.change_log set reason_text = 'x' where tenant_id = '11111111-1111-4111-8111-111111111111'$t$, '%append-only%');
 select pg_temp.expect_error('change_log: rows cannot be deleted', $t$delete from core.change_log$t$, '%append-only%');
 select pg_temp.expect_error('change_log: the posting role has no delete', $t$set local role cmd_post; delete from core.change_log$t$, '%permission denied%');
 select pg_temp.expect_error('change_log: truncate is rejected', $t$truncate core.change_log$t$, '%append-only%');
@@ -448,40 +448,40 @@ create function pg_temp.l2log(p_entity text, p_line text, p_field text, p_old te
                           coalesce(p_status, pg_temp.real_status()), 'CORRECTION', p_field)
 $$;
 select pg_temp.expect_ok('l2 guard: header_text changes with its log row',
-    format($t$set local role cmd_post; %s; update core.journal_document set header_text = 'New' where document_id = 'bbbbbbbb-0000-4000-8000-000000000001'$t$,
+    format($t$set local role cmd_post; %s; update core.journal_document set header_text = 'New' where tenant_id = '11111111-1111-4111-8111-111111111111' and document_id = 'bbbbbbbb-0000-4000-8000-000000000001'$t$,
         pg_temp.l2log('DOCUMENT', null, 'header_text', null, 'New')));
 select pg_temp.expect_ok('l2 guard: external_reference changes with its log row',
-    format($t$set local role cmd_post; %s; update core.journal_document set external_reference = 'PO-1' where document_id = 'bbbbbbbb-0000-4000-8000-000000000001'$t$,
+    format($t$set local role cmd_post; %s; update core.journal_document set external_reference = 'PO-1' where tenant_id = '11111111-1111-4111-8111-111111111111' and document_id = 'bbbbbbbb-0000-4000-8000-000000000001'$t$,
         pg_temp.l2log('DOCUMENT', null, 'external_reference', null, 'PO-1')));
 select pg_temp.expect_ok('l2 guard: line_text changes with its log row',
-    format($t$set local role cmd_post; %s; update core.journal_line set line_text = 'Line' where document_id = 'bbbbbbbb-0000-4000-8000-000000000001' and line_no = 1$t$,
+    format($t$set local role cmd_post; %s; update core.journal_line set line_text = 'Line' where tenant_id = '11111111-1111-4111-8111-111111111111' and document_id = 'bbbbbbbb-0000-4000-8000-000000000001' and line_no = 1$t$,
         pg_temp.l2log('LINE', '1', 'line_text', null, 'Line')));
 select pg_temp.expect_error('l2 guard: the log row must carry the new value',
-    format($t$set local role cmd_post; %s; update core.journal_document set header_text = 'Other' where document_id = 'bbbbbbbb-0000-4000-8000-000000000001'$t$,
+    format($t$set local role cmd_post; %s; update core.journal_document set header_text = 'Other' where tenant_id = '11111111-1111-4111-8111-111111111111' and document_id = 'bbbbbbbb-0000-4000-8000-000000000001'$t$,
         pg_temp.l2log('DOCUMENT', null, 'header_text', 'New', 'Wrong')), '%without a matching change_log row%');
 select pg_temp.expect_error('l2 guard: the log row must carry the old value',
-    format($t$set local role cmd_post; %s; update core.journal_document set header_text = 'Third' where document_id = 'bbbbbbbb-0000-4000-8000-000000000001'$t$,
+    format($t$set local role cmd_post; %s; update core.journal_document set header_text = 'Third' where tenant_id = '11111111-1111-4111-8111-111111111111' and document_id = 'bbbbbbbb-0000-4000-8000-000000000001'$t$,
         pg_temp.l2log('DOCUMENT', null, 'header_text', 'Not the old one', 'Third')), '%without a matching change_log row%');
 select pg_temp.expect_error('l2 guard: a log row of an earlier transaction does not count',
-    format($t$set local role cmd_post; %s; update core.journal_document set header_text = 'Third' where document_id = 'bbbbbbbb-0000-4000-8000-000000000001'$t$,
+    format($t$set local role cmd_post; %s; update core.journal_document set header_text = 'Third' where tenant_id = '11111111-1111-4111-8111-111111111111' and document_id = 'bbbbbbbb-0000-4000-8000-000000000001'$t$,
         replace(pg_temp.l2log('DOCUMENT', null, 'header_text', 'New', 'Third'), 'now()', $q$now() - interval '1 day'$q$)), '%without a matching change_log row%');
 select pg_temp.expect_error('l2 guard: the period status of the log row must be the real one',
-    format($t$set local role cmd_post; %s; update core.journal_document set header_text = 'Third' where document_id = 'bbbbbbbb-0000-4000-8000-000000000001'$t$,
+    format($t$set local role cmd_post; %s; update core.journal_document set header_text = 'Third' where tenant_id = '11111111-1111-4111-8111-111111111111' and document_id = 'bbbbbbbb-0000-4000-8000-000000000001'$t$,
         pg_temp.l2log('DOCUMENT', null, 'header_text', 'New', 'Third', case pg_temp.real_status() when 'OPEN' then 'SOFT_CLOSED' else 'OPEN' end)), '%without a matching change_log row%');
 select pg_temp.expect_error('l2 guard: a log row of another field does not count',
-    format($t$set local role cmd_post; %s; update core.journal_document set header_text = 'Third' where document_id = 'bbbbbbbb-0000-4000-8000-000000000001'$t$,
+    format($t$set local role cmd_post; %s; update core.journal_document set header_text = 'Third' where tenant_id = '11111111-1111-4111-8111-111111111111' and document_id = 'bbbbbbbb-0000-4000-8000-000000000001'$t$,
         pg_temp.l2log('DOCUMENT', null, 'external_reference', 'PO-1', 'Third')), '%without a matching change_log row%');
 select pg_temp.expect_error('l2 guard: a typed dimension must name a dimension value',
-    format($t$set local role cmd_post; %s; update core.journal_line set cost_center_id = 'dd000000-0000-4000-8000-0000000000ee' where document_id = 'bbbbbbbb-0000-4000-8000-000000000001' and line_no = 1$t$,
+    format($t$set local role cmd_post; %s; update core.journal_line set cost_center_id = 'dd000000-0000-4000-8000-0000000000ee' where tenant_id = '11111111-1111-4111-8111-111111111111' and document_id = 'bbbbbbbb-0000-4000-8000-000000000001' and line_no = 1$t$,
         pg_temp.l2log('LINE', '1', 'cost_center_id', null, 'dd000000-0000-4000-8000-0000000000ee')), '%DIMENSION_VALUE_INVALID%');
 select pg_temp.expect_error('l2 guard: the posting role has no grant on an L1 column of a line',
-    $t$set local role cmd_post; update core.journal_line set account_id = gen_random_uuid() where document_id = 'bbbbbbbb-0000-4000-8000-000000000001' and line_no = 1$t$,
+    $t$set local role cmd_post; update core.journal_line set account_id = gen_random_uuid() where tenant_id = '11111111-1111-4111-8111-111111111111' and document_id = 'bbbbbbbb-0000-4000-8000-000000000001' and line_no = 1$t$,
     '%permission denied%');
 select pg_temp.expect_error('l2 guard: the posting role has no grant on an L1 column of a document',
-    format($t$set local role cmd_post; %s; update core.journal_document set header_text = 'Third', document_type = 'AR_INVOICE' where document_id = 'bbbbbbbb-0000-4000-8000-000000000001'$t$,
+    format($t$set local role cmd_post; %s; update core.journal_document set header_text = 'Third', document_type = 'AR_INVOICE' where tenant_id = '11111111-1111-4111-8111-111111111111' and document_id = 'bbbbbbbb-0000-4000-8000-000000000001'$t$,
         pg_temp.l2log('DOCUMENT', null, 'header_text', 'New', 'Third')), '%permission denied%');
 select pg_temp.expect_error('l2 guard: the configuration role cannot change an L2 column',
-    $t$set local role cmd_config; update core.journal_document set header_text = 'x' where document_id = 'bbbbbbbb-0000-4000-8000-000000000001'$t$,
+    $t$set local role cmd_config; update core.journal_document set header_text = 'x' where tenant_id = '11111111-1111-4111-8111-111111111111' and document_id = 'bbbbbbbb-0000-4000-8000-000000000001'$t$,
     '%permission denied%');
 
 insert into core.command_log (tenant_id, command_log_id, company_id, idempotency_key, command_name, request_fingerprint, actor, correlation_id)
@@ -520,7 +520,7 @@ select pg_temp.expect_error('master_change_log: an unknown action is rejected',
 select pg_temp.expect_error('master_change_log: a row needs the command log row of its command at commit',
     format($t$set local role cmd_config; %s$t$, pg_temp.mcl('UPDATE', 'name', false, 'Old', 'New', 'eeeeeeee-0000-4000-8000-0000000000ff')),
     '%foreign key%');
-select pg_temp.expect_error('master_change_log: rows cannot be updated', $t$update core.master_change_log set reason_code = 'X'$t$, '%append-only%');
+select pg_temp.expect_error('master_change_log: rows cannot be updated', $t$update core.master_change_log set reason_code = 'X' where tenant_id = '11111111-1111-4111-8111-111111111111'$t$, '%append-only%');
 select pg_temp.expect_error('master_change_log: rows cannot be deleted', $t$delete from core.master_change_log$t$, '%append-only%');
 select pg_temp.expect_error('master_change_log: truncate is rejected', $t$truncate core.master_change_log$t$, '%append-only%');
 select pg_temp.expect_count('master_change_log: a command role reads the rows of its tenant',
@@ -537,11 +537,11 @@ select set_config('app.tenant_id', '11111111-1111-4111-8111-111111111111', false
 select pg_temp.expect_count('dimension_type: every tenant has the four standard types',
     $t$select count(*) from core.dimension_type where tenant_id = '11111111-1111-4111-8111-111111111111' and kind = 'STANDARD'$t$, 4);
 select pg_temp.expect_error('dimension_type: a standard type cannot be deactivated',
-    $t$update core.dimension_type set active = false where standard_role = 'PROJECT'$t$, '%violates check constraint%');
+    $t$update core.dimension_type set active = false where tenant_id = '11111111-1111-4111-8111-111111111111' and standard_role = 'PROJECT'$t$, '%violates check constraint%');
 select pg_temp.expect_error('dimension_type: the kind never changes',
-    $t$update core.dimension_type set kind = 'FREE', standard_role = null where standard_role = 'PROJECT'$t$, '%never change%');
+    $t$update core.dimension_type set kind = 'FREE', standard_role = null where tenant_id = '11111111-1111-4111-8111-111111111111' and standard_role = 'PROJECT'$t$, '%never change%');
 select pg_temp.expect_error('dimension_type: the code of a standard type never changes',
-    $t$update core.dimension_type set type_code = 'PRJ' where standard_role = 'PROJECT'$t$, '%never changes%');
+    $t$update core.dimension_type set type_code = 'PRJ' where tenant_id = '11111111-1111-4111-8111-111111111111' and standard_role = 'PROJECT'$t$, '%never changes%');
 
 insert into core.dimension_type (tenant_id, dimension_type_id, type_code, name, kind, created_by, updated_by)
 values ('11111111-1111-4111-8111-111111111111', 'dd000000-0000-4000-8000-0000000000f1', 'REGION', 'Region', 'FREE', 't', 't');
@@ -555,15 +555,15 @@ select '11111111-1111-4111-8111-111111111111', v.id::uuid, 'dd000000-0000-4000-8
   from (values ('dd000000-0000-4000-8000-0000000000a3', 'NORTH'), ('dd000000-0000-4000-8000-0000000000a4', 'SOUTH')) v (id, code);
 
 select pg_temp.expect_error('dimension_value: a value is not its own parent',
-    $t$update core.dimension_value set parent_value_id = dimension_value_id where value_code = 'CC1'$t$, '%HIERARCHY_CYCLE%');
+    $t$update core.dimension_value set parent_value_id = dimension_value_id where tenant_id = '11111111-1111-4111-8111-111111111111' and value_code = 'CC1'$t$, '%HIERARCHY_CYCLE%');
 select pg_temp.expect_ok('dimension_value: a parent of the same type',
-    $t$update core.dimension_value set parent_value_id = 'dd000000-0000-4000-8000-0000000000a1' where value_code = 'CC2'$t$);
+    $t$update core.dimension_value set parent_value_id = 'dd000000-0000-4000-8000-0000000000a1' where tenant_id = '11111111-1111-4111-8111-111111111111' and value_code = 'CC2'$t$);
 select pg_temp.expect_error('dimension_value: a cycle in the hierarchy is rejected',
-    $t$update core.dimension_value set parent_value_id = 'dd000000-0000-4000-8000-0000000000a5' where value_code = 'CC1'$t$, '%HIERARCHY_CYCLE%');
+    $t$update core.dimension_value set parent_value_id = 'dd000000-0000-4000-8000-0000000000a5' where tenant_id = '11111111-1111-4111-8111-111111111111' and value_code = 'CC1'$t$, '%HIERARCHY_CYCLE%');
 select pg_temp.expect_error('dimension_value: a parent of another type is rejected',
-    $t$update core.dimension_value set parent_value_id = 'dd000000-0000-4000-8000-0000000000a2' where value_code = 'CC1'$t$, '%foreign key%');
+    $t$update core.dimension_value set parent_value_id = 'dd000000-0000-4000-8000-0000000000a2' where tenant_id = '11111111-1111-4111-8111-111111111111' and value_code = 'CC1'$t$, '%foreign key%');
 select pg_temp.expect_error('dimension_value: the end of validity is not before the start',
-    $t$update core.dimension_value set valid_to = date '2025-12-31' where value_code = 'CC1'$t$, '%violates check constraint%');
+    $t$update core.dimension_value set valid_to = date '2025-12-31' where tenant_id = '11111111-1111-4111-8111-111111111111' and value_code = 'CC1'$t$, '%violates check constraint%');
 select pg_temp.expect_error('dimension_value: the configuration role has no right to the posting tables',
     $t$set local role cmd_config; insert into core.journal_line_dimension (tenant_id, company_id, document_id, line_no, dimension_type_id, dimension_value_id)
        values ('11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222201', 'bbbbbbbb-0000-4000-8000-000000000001', 1,
@@ -577,21 +577,21 @@ select pg_temp.expect_ok('dimension_value: the configuration role creates a valu
 
 -- the typed columns of a line (L2, a log row of LINE with the field name)
 select pg_temp.expect_error('typed dimension: a value changes only with its log row',
-    $t$set local role cmd_post; update core.journal_line set cost_center_id = 'dd000000-0000-4000-8000-0000000000a1' where document_id = 'bbbbbbbb-0000-4000-8000-000000000001' and line_no = 1$t$,
+    $t$set local role cmd_post; update core.journal_line set cost_center_id = 'dd000000-0000-4000-8000-0000000000a1' where tenant_id = '11111111-1111-4111-8111-111111111111' and document_id = 'bbbbbbbb-0000-4000-8000-000000000001' and line_no = 1$t$,
     '%without a matching change_log row%');
 select pg_temp.expect_ok('typed dimension: a cost center value in cost_center_id with its log row',
-    format($t$set local role cmd_post; %s; update core.journal_line set cost_center_id = 'dd000000-0000-4000-8000-0000000000a1' where document_id = 'bbbbbbbb-0000-4000-8000-000000000001' and line_no = 1$t$,
+    format($t$set local role cmd_post; %s; update core.journal_line set cost_center_id = 'dd000000-0000-4000-8000-0000000000a1' where tenant_id = '11111111-1111-4111-8111-111111111111' and document_id = 'bbbbbbbb-0000-4000-8000-000000000001' and line_no = 1$t$,
         pg_temp.l2log('LINE', '1', 'cost_center_id', null, 'dd000000-0000-4000-8000-0000000000a1')));
 select pg_temp.expect_error('typed dimension: a project value in cost_center_id is rejected',
-    format($t$set local role cmd_post; %s; update core.journal_line set cost_center_id = 'dd000000-0000-4000-8000-0000000000a2' where document_id = 'bbbbbbbb-0000-4000-8000-000000000001' and line_no = 1$t$,
+    format($t$set local role cmd_post; %s; update core.journal_line set cost_center_id = 'dd000000-0000-4000-8000-0000000000a2' where tenant_id = '11111111-1111-4111-8111-111111111111' and document_id = 'bbbbbbbb-0000-4000-8000-000000000001' and line_no = 1$t$,
         pg_temp.l2log('LINE', '1', 'cost_center_id', 'dd000000-0000-4000-8000-0000000000a1', 'dd000000-0000-4000-8000-0000000000a2')), '%DIMENSION_VALUE_INVALID%');
 select pg_temp.expect_error('typed dimension: a free value in a typed column is rejected',
-    format($t$set local role cmd_post; %s; update core.journal_line set project_id = 'dd000000-0000-4000-8000-0000000000a3' where document_id = 'bbbbbbbb-0000-4000-8000-000000000001' and line_no = 1$t$,
+    format($t$set local role cmd_post; %s; update core.journal_line set project_id = 'dd000000-0000-4000-8000-0000000000a3' where tenant_id = '11111111-1111-4111-8111-111111111111' and document_id = 'bbbbbbbb-0000-4000-8000-000000000001' and line_no = 1$t$,
         pg_temp.l2log('LINE', '1', 'project_id', null, 'dd000000-0000-4000-8000-0000000000a3')), '%DIMENSION_VALUE_INVALID%');
 select pg_temp.expect_error('typed dimension: a referenced value cannot change its type',
-    $t$update core.dimension_value set dimension_type_id = 'dd000000-0000-4000-8000-0000000000f1' where value_code = 'CC1'$t$, '%IMMUTABLE_AFTER_POSTING%');
+    $t$update core.dimension_value set dimension_type_id = 'dd000000-0000-4000-8000-0000000000f1' where tenant_id = '11111111-1111-4111-8111-111111111111' and value_code = 'CC1'$t$, '%IMMUTABLE_AFTER_POSTING%');
 select pg_temp.expect_ok('typed dimension: a value that is not referenced can change its name',
-    $t$update core.dimension_value set name = 'Cost center two' where value_code = 'CC2'$t$);
+    $t$update core.dimension_value set name = 'Cost center two' where tenant_id = '11111111-1111-4111-8111-111111111111' and value_code = 'CC2'$t$);
 
 -- the free dimensions of a line
 create function pg_temp.dimlog(p_old text, p_new text) returns text language sql as $$
@@ -618,12 +618,12 @@ select pg_temp.expect_error('free dimension: a standard type is not a free dimen
        select '11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222201', 'bbbbbbbb-0000-4000-8000-000000000001', 2, t.dimension_type_id, null
          from core.dimension_type t where t.standard_role = 'PROJECT'$t$, '%must be of kind FREE%');
 select pg_temp.expect_error('free dimension: the value changes only with its log row',
-    $t$set local role cmd_post; update core.journal_line_dimension set dimension_value_id = 'dd000000-0000-4000-8000-0000000000a4'$t$, '%without a matching change_log row%');
+    $t$set local role cmd_post; update core.journal_line_dimension set dimension_value_id = 'dd000000-0000-4000-8000-0000000000a4' where tenant_id = '11111111-1111-4111-8111-111111111111'$t$, '%without a matching change_log row%');
 select pg_temp.expect_ok('free dimension: the value changes with its log row',
-    format($t$set local role cmd_post; %s; update core.journal_line_dimension set dimension_value_id = 'dd000000-0000-4000-8000-0000000000a4' where line_no = 1$t$,
+    format($t$set local role cmd_post; %s; update core.journal_line_dimension set dimension_value_id = 'dd000000-0000-4000-8000-0000000000a4' where tenant_id = '11111111-1111-4111-8111-111111111111' and line_no = 1$t$,
         pg_temp.dimlog('dd000000-0000-4000-8000-0000000000a3', 'dd000000-0000-4000-8000-0000000000a4')));
 select pg_temp.expect_ok('free dimension: a cleared value is a tombstone',
-    format($t$set local role cmd_post; %s; update core.journal_line_dimension set dimension_value_id = null where line_no = 1$t$,
+    format($t$set local role cmd_post; %s; update core.journal_line_dimension set dimension_value_id = null where tenant_id = '11111111-1111-4111-8111-111111111111' and line_no = 1$t$,
         pg_temp.dimlog('dd000000-0000-4000-8000-0000000000a4', null)));
 select pg_temp.expect_error('free dimension: the type of a row never changes',
     $t$update core.journal_line_dimension set dimension_type_id = (select dimension_type_id from core.dimension_type where standard_role = 'PROJECT' and tenant_id = '11111111-1111-4111-8111-111111111111')$t$, '%L1 column%');
@@ -637,9 +637,9 @@ select pg_temp.expect_ok('account_dimension_rule: the configuration role sets a 
        select '11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222201', '55555555-5555-4555-8555-555555555503', t.dimension_type_id, 'MANDATORY', 't', 't'
          from core.dimension_type t where t.standard_role = 'COST_CENTER'$t$);
 select pg_temp.expect_error('account_dimension_rule: a rule is MANDATORY, OPTIONAL or FORBIDDEN',
-    $t$update core.account_dimension_rule set rule = 'SOMETIMES'$t$, '%violates check constraint%');
+    $t$update core.account_dimension_rule set rule = 'SOMETIMES' where tenant_id = '11111111-1111-4111-8111-111111111111'$t$, '%violates check constraint%');
 select pg_temp.expect_error('account_dimension_rule: the posting role cannot set a rule',
-    $t$set local role cmd_post; update core.account_dimension_rule set rule = 'FORBIDDEN'$t$, '%permission denied%');
+    $t$set local role cmd_post; update core.account_dimension_rule set rule = 'FORBIDDEN' where tenant_id = '11111111-1111-4111-8111-111111111111'$t$, '%permission denied%');
 select pg_temp.expect_count('dimensions: a command role reads the rows of its tenant',
     $t$select pg_temp.count_as('cmd_post', 'select (select count(*) from core.dimension_value) + (select count(*) from core.journal_line_dimension) + (select count(*) from core.account_dimension_rule)')$t$, 8);
 select set_config('app.tenant_id', '99999999-9999-4999-8999-999999999999', false);
