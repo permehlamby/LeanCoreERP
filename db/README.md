@@ -33,7 +33,7 @@ Status: DRAFT, 2026-10-21. Tested against PGlite (PostgreSQL in WebAssembly), no
 ## Run it in Supabase (or any PostgreSQL 15 or newer)
 
 1. Create a project in an EU region. Use the **direct** connection for the application, not the pooler.
-2. Open the SQL Editor and run `dist/finance-core-schema.sql` once. Then, for development only, `dist/finance-core-dev-seed.sql`.
+2. Open the SQL Editor and run `dist/finance-core-schema.sql` once, **in an empty database only** (F-IMPL-32). A database that exists is brought up to date with `financecore-platform db migrate` (see below), never by running the file again. Then, for development only, `dist/finance-core-dev-seed.sql`.
 3. Give the login roles a password and the right to log in. Choose the passwords yourself and keep them out of the repository:
    ```sql
    alter role core_app login password '<choose>';
@@ -118,8 +118,8 @@ The deltas are PROPOSED, not accepted: they write down what the slice does, so t
 | F-IMPL-15 (f: closed by the automatic clearing at reversal, F-IMPL-22) | 06, 5.3 ("Points settled while implementing"), 07, 11.3 | The readiness check does not yet ask for a number series of type `REVERSAL` (11.3 now requires it) |
 | F-IMPL-16 | 02, 5.2 (D9 row of ROUNDING), 07, 6.3 items 1 to 5 and 11.3, ADR-230. A limit for the size of a rounding line is open (ADR-230) | Nothing: the readiness check already covers the three currencies and usable role accounts |
 | F-IMPL-17 | 03, 6.1 (the canonical form of the clearing row hash and `items_digest`), `test-vectors/clearing-hash-v2.json`, `verify-clearing-hash-v2.mjs`, `ClearingHash2` | Nothing |
-| F-IMPL-32 | Nothing in the specs. Decide whether every migration must be safe to run again (then the all-tables grants need the same treatment) or the file is for an empty database only and the README says so |
-| F-IMPL-31 | 06, 13.9 (API layer, `chains:verify`), 20, 7 (built), `api/openapi.json` | The index of 06, 2.4 lacks `SYSTEM.FISCAL_YEAR_MISSING`, the four codes of the API layer, and the check names `NUMBER.GAP` and `CHAIN.DOCUMENT_WITHOUT_LINES`. **Needs a decision:** that a P1 payload error comes before the P0 permission check (06, 3) |
+| F-IMPL-32 | Nothing in the specs. **Decided 2026-11-11 and built:** the schema file is for an empty database only, an existing database is updated with `financecore-platform db migrate` (`MigrationRunner`, checksums in `platform.schema_migration`). The apply-twice test of `run-pglite.mjs` stays as a safety net |
+| F-IMPL-31 | 06, 13.9 (API layer, `chains:verify`), 20, 7 (built), `api/openapi.json` | The index of 06, 2.4 lacks `SYSTEM.FISCAL_YEAR_MISSING`, the four codes of the API layer, and the check names `NUMBER.GAP` and `CHAIN.DOCUMENT_WITHOUT_LINES`. **Decided 2026-11-11 and built:** P0 is split. The endpoint checks the permission of the command (P0a) before the idempotency header and the payload, the company access (P0b, not built) follows P1. 06, 3 and 13.9 are changed, `api/openapi.json` carries `x-permission` |
 | F-IMPL-30 | Nothing yet. 07 needs a delta for tenant and company provisioning, rates and the package format when they are specified | **Needs a decision:** the format and the signing of country packages (18) replace `CountryPackages.cs`; the legal basis of `dk-minimal` is UNVERIFIED |
 | F-IMPL-29 | 06, 13.9 (break kinds `SNAPSHOT.*`) | Nothing. The names of the breaks follow 06, 7.4 when that command is built |
 | F-IMPL-28 | 02, 4 (built choices), 06, 5.2 and 13.9 | Decided 2026-10-26: a CONTROL line's partner equals the header partner (`ACCOUNT_RULE.PARTNER_MISMATCH`), and the snapshot takes the master as of today. 06, 5.2 should say it in its own table when the next delta pass is made |
@@ -134,9 +134,20 @@ The deltas are PROPOSED, not accepted: they write down what the slice does, so t
 | F-IMPL-19 | 03, 5.2 (never more than remains), 06, 7.1 (points settled for the clean match) | Nothing |
 | F-IMPL-18 | 03, 4.3 (database rules of the clearing tables, the role `cmd_clearing`) | `clearings:post` and `clearings:reset` write through the role `CommandRole.Clearing` (exists) |
 
+## Migrating a database that exists (F-IMPL-32)
+
+`dist/finance-core-schema.sql` is for an empty database. Every later change is a new numbered file in `migrations/` (forward only, 20, 12), and `financecore-platform db migrate` applies the files the database has not recorded, once each and in order, each in its own transaction, with the migration role (`FINANCECORE_ADMIN_DB`):
+
+```
+financecore-platform db status  [--dir db/migrations]
+financecore-platform db migrate [--dir db/migrations] [--dry-run]
+```
+
+The state is `platform.schema_migration`, which every migration already writes its own row to. The runner adds a `checksum` column and stores the SHA-256 of each file (line endings ignored). A database that was set up before the runner takes the checksum of its files at the first `db migrate` and is held to it from then on. The runner refuses, with a stable code: `MIGRATION.CHANGED` (an applied file was edited: make it a new file), `MIGRATION.FILE_MISSING`, `MIGRATION.OUT_OF_ORDER` (a pending file numbered below an applied one), `MIGRATION.NAME_INVALID` (`<number>_<name>.sql`), `MIGRATION.VERSION_DUPLICATE`, `MIGRATION.DIRECTORY_MISSING` and `MIGRATION.FAILED` (the script failed, nothing of that file is kept). It does not apply the seed. `node tools/serve-pglite.mjs 5434 --empty` starts a local database without migrations to try it on.
+
 ## Re-running
 
-Every script uses `if not exists`, `on conflict do nothing` or `create or replace`, and the runner applies all of them twice. Changing a table that exists needs a new numbered migration (forward only, 20, 12), never an edit of an applied one.
+Every script uses `if not exists`, `on conflict do nothing` or `create or replace`, and `tools/run-pglite.mjs` applies all of them twice, so a script that is run again by hand does no harm. That is a safety net, not the way to update a database: use `db migrate`. Changing a table that exists needs a new numbered migration (forward only, 20, 12), never an edit of an applied one.
 
 ## The platform CLI
 

@@ -1,5 +1,6 @@
 -- Finance core schema, generated from db/migrations (0001_foundation.sql, 0002_platform_reference.sql, 0003_organisation.sql, 0004_calendar_and_numbers.sql, 0005_ledger.sql, 0006_security_and_integrity.sql, 0007_posting_period_lock.sql, 0008_migration_role_membership.sql, 0009_config_outbox_head.sql, 0010_document_lookup.sql, 0011_account_roles.sql, 0012_change_logs.sql, 0013_l2_guard.sql, 0014_open_items.sql, 0015_clearing.sql, 0016_open_item_status.sql, 0017_business_partner.sql, 0018_open_item_partner.sql, 0019_retention_rule.sql, 0020_document_legal_snapshot.sql, 0021_posting_reads_partner.sql).
--- Do not edit: change the numbered files and run db/tools/build-all.mjs. Safe to run again.
+-- Do not edit: change the numbered files and run db/tools/build-all.mjs.
+-- For an EMPTY database only. An existing database is brought up to date with financecore-platform db migrate (F-IMPL-32).
 
 -- ==================== 0001_foundation.sql ====================
 -- 0001 foundation: schemas, domains, roles, helper functions (spec 20, ADR-208, ADR-209)

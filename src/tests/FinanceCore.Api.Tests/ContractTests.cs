@@ -30,6 +30,16 @@ public class ContractTests
         return catalog;
     }
 
+    [Fact]
+    public void EveryCommandOfTheApiHasItsPermissionForTheEndpointAndTheOpenApiDocument()
+    {
+        CommandCatalog catalog = Production();
+        Assert.All(catalog.All, c => Assert.False(string.IsNullOrWhiteSpace(c.Permission), $"{c.Name} has no permission for P0a"));
+        JsonNode doc = OpenApiBuilder.Build(catalog);
+        foreach (CommandRegistration c in catalog.All)
+            Assert.Equal(c.Permission, doc["paths"]!["/v1/" + c.Name]!["post"]!["x-permission"]!.GetValue<string>());
+    }
+
     private static string SpecText() =>
         string.Join('\n', Directory.GetFiles(Root, "*.md").Concat(Directory.GetFiles(Root, "*.md.txt")).Select(File.ReadAllText));
 

@@ -13,6 +13,7 @@
         "tags": [
           "account-role-assignments"
         ],
+        "x-permission": "write.config",
         "security": [
           {
             "bearerAuth": []
@@ -174,6 +175,7 @@
         "tags": [
           "business-partners"
         ],
+        "x-permission": "write.master",
         "security": [
           {
             "bearerAuth": []
@@ -335,6 +337,7 @@
         "tags": [
           "business-partners"
         ],
+        "x-permission": "write.master",
         "security": [
           {
             "bearerAuth": []
@@ -496,6 +499,7 @@
         "tags": [
           "business-partners"
         ],
+        "x-permission": "write.master",
         "security": [
           {
             "bearerAuth": []
@@ -657,6 +661,7 @@
         "tags": [
           "business-partners"
         ],
+        "x-permission": "write.master",
         "security": [
           {
             "bearerAuth": []
@@ -818,6 +823,7 @@
         "tags": [
           "chains"
         ],
+        "x-permission": "chain.verify",
         "security": [
           {
             "bearerAuth": []
@@ -979,6 +985,7 @@
         "tags": [
           "clearings"
         ],
+        "x-permission": "clearing.post",
         "security": [
           {
             "bearerAuth": []
@@ -1140,6 +1147,7 @@
         "tags": [
           "clearings"
         ],
+        "x-permission": "clearing.reset",
         "security": [
           {
             "bearerAuth": []
@@ -1301,6 +1309,7 @@
         "tags": [
           "companies"
         ],
+        "x-permission": "company.activate",
         "security": [
           {
             "bearerAuth": []
@@ -1462,6 +1471,7 @@
         "tags": [
           "companies"
         ],
+        "x-permission": "read.config",
         "security": [
           {
             "bearerAuth": []
@@ -1623,6 +1633,7 @@
         "tags": [
           "fiscal-years"
         ],
+        "x-permission": "period.admin",
         "security": [
           {
             "bearerAuth": []
@@ -1784,6 +1795,7 @@
         "tags": [
           "journal-documents"
         ],
+        "x-permission": "journal.change",
         "security": [
           {
             "bearerAuth": []
@@ -1945,6 +1957,7 @@
         "tags": [
           "journal-documents"
         ],
+        "x-permission": "journal.post",
         "security": [
           {
             "bearerAuth": []
@@ -2106,6 +2119,7 @@
         "tags": [
           "journal-documents"
         ],
+        "x-permission": "journal.reverse",
         "security": [
           {
             "bearerAuth": []
@@ -2267,6 +2281,7 @@
         "tags": [
           "payment-terms"
         ],
+        "x-permission": "write.config",
         "security": [
           {
             "bearerAuth": []
@@ -2428,6 +2443,7 @@
         "tags": [
           "payment-terms"
         ],
+        "x-permission": "write.config",
         "security": [
           {
             "bearerAuth": []
@@ -2589,6 +2605,7 @@
         "tags": [
           "payment-terms"
         ],
+        "x-permission": "write.config",
         "security": [
           {
             "bearerAuth": []
@@ -2750,6 +2767,7 @@
         "tags": [
           "payment-terms"
         ],
+        "x-permission": "write.config",
         "security": [
           {
             "bearerAuth": []
@@ -2911,6 +2929,7 @@
         "tags": [
           "periods"
         ],
+        "x-permission": "period.hard_close",
         "security": [
           {
             "bearerAuth": []
@@ -3072,6 +3091,7 @@
         "tags": [
           "periods"
         ],
+        "x-permission": "period.reopen",
         "security": [
           {
             "bearerAuth": []
@@ -3233,6 +3253,7 @@
         "tags": [
           "periods"
         ],
+        "x-permission": "period.admin",
         "security": [
           {
             "bearerAuth": []
@@ -3394,6 +3415,7 @@
         "tags": [
           "retention-rules"
         ],
+        "x-permission": "retention.manage",
         "security": [
           {
             "bearerAuth": []

@@ -12,15 +12,15 @@ public sealed class PostingModule : ICommandModule
 {
     public void Register(CommandCatalog catalog)
     {
-        catalog.Add<PostJournalDocumentRequest, PostedDocument>("journal-documents:post",
+        catalog.Add<PostJournalDocumentRequest, PostedDocument>("journal-documents:post", JournalDocumentPoster.PostPermission,
             (sp, tenant, ctx, req, ct) => sp.GetRequiredService<JournalDocumentPoster>().PostAsync(tenant, ctx, req, ct));
-        catalog.Add<ReverseDocumentRequest, PostedDocument>("journal-documents:reverse",
+        catalog.Add<ReverseDocumentRequest, PostedDocument>("journal-documents:reverse", DocumentReverser.Permission,
             (sp, tenant, ctx, req, ct) => sp.GetRequiredService<DocumentReverser>().ReverseAsync(tenant, ctx, req, ct));
-        catalog.Add<ChangeOpenFieldsRequest, ChangedDocument>("journal-documents:change-open-fields",
+        catalog.Add<ChangeOpenFieldsRequest, ChangedDocument>("journal-documents:change-open-fields", DocumentChanger.Permission,
             (sp, tenant, ctx, req, ct) => sp.GetRequiredService<DocumentChanger>().ChangeAsync(tenant, ctx, req, ct));
-        catalog.Add<PostClearingRequest, PostedClearing>("clearings:post",
+        catalog.Add<PostClearingRequest, PostedClearing>("clearings:post", ClearingPoster.Permission,
             (sp, tenant, ctx, req, ct) => sp.GetRequiredService<ClearingPoster>().PostAsync(tenant, ctx, req, ct));
-        catalog.Add<ResetClearingRequest, PostedClearing>("clearings:reset",
+        catalog.Add<ResetClearingRequest, PostedClearing>("clearings:reset", ClearingPoster.ResetPermission,
             (sp, tenant, ctx, req, ct) => sp.GetRequiredService<ClearingPoster>().ResetAsync(tenant, ctx, req, ct));
     }
 }

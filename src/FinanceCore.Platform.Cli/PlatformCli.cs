@@ -9,7 +9,7 @@ namespace FinanceCore.Platform.Cli;
 /// works on the database with the migration role (FINANCECORE_ADMIN_DB) and is not part of the API (ADR-213, 12, 13). Exit code 0 is done, 1 is a
 /// refusal with a stable code, 2 is a usage error.
 /// </summary>
-public sealed class PlatformCli(PlatformProvisioner provisioner, TextWriter output)
+public sealed class PlatformCli(PlatformProvisioner provisioner, TextWriter output, MigrationRunner? migrations = null)
 {
     public const string Usage = """
         financecore-platform <command> [options]
@@ -23,8 +23,12 @@ public sealed class PlatformCli(PlatformProvisioner provisioner, TextWriter outp
           company activate --tenant <code> --company <code>
           rate add        --tenant <code> --from <DKK> --to <EUR> --date <yyyy-MM-dd> --rate <0.134> [--type SPOT|CLOSING]
           package list
+          db status       [--dir <db/migrations>]
+          db migrate      [--dir <db/migrations>] [--dry-run]
 
         The database comes from FINANCECORE_ADMIN_DB (a postgresql:// URI or an Npgsql connection string).
+        db migrate applies the numbered files of db/migrations that the database has not recorded, once each and in order. The file
+        db/dist/finance-core-schema.sql is for an empty database only.
         """;
 
     public async Task<int> RunAsync(string[] args, CancellationToken ct = default)
@@ -43,6 +47,8 @@ public sealed class PlatformCli(PlatformProvisioner provisioner, TextWriter outp
                 case "company activate": return await CompanyActivate(options, ct);
                 case "rate add": return await RateAdd(options, ct);
                 case "package list": return PackageList();
+                case "db status": return await DbStatus(options, ct);
+                case "db migrate": return await DbMigrate(options, flags, ct);
                 default:
                     output.WriteLine(Usage);
                     return 2;
@@ -143,6 +149,26 @@ public sealed class PlatformCli(PlatformProvisioner provisioner, TextWriter outp
         output.WriteLine($"rate {Req(o, "from").ToUpperInvariant()}/{Req(o, "to").ToUpperInvariant()} {rate.ToString(CultureInfo.InvariantCulture)} added for {Req(o, "date")}");
         return 0;
     }
+
+    private async Task<int> DbStatus(Dictionary<string, string> o, CancellationToken ct)
+    {
+        var status = await Runner().StatusAsync(Opt(o, "dir", "db/migrations"), ct);
+        foreach (var m in status) output.WriteLine($"{m.Version,-6} {m.State,-12} {m.File}");
+        int pending = status.Count(m => m.State == MigrationState.Pending);
+        output.WriteLine(pending == 0 ? "nothing pending" : $"{pending} pending");
+        return status.Any(m => m.State is MigrationState.Changed or MigrationState.FileMissing) ? 1 : 0;
+    }
+
+    private async Task<int> DbMigrate(Dictionary<string, string> o, HashSet<string> flags, CancellationToken ct)
+    {
+        bool dry = flags.Contains("dry-run");
+        var versions = await Runner().MigrateAsync(Opt(o, "dir", "db/migrations"), dry, ct);
+        if (versions.Count == 0) output.WriteLine("nothing to apply");
+        else output.WriteLine($"{(dry ? "would apply" : "applied")}: {string.Join(", ", versions)}");
+        return 0;
+    }
+
+    private MigrationRunner Runner() => migrations ?? throw new UsageException("this command needs a database");
 
     private int PackageList()
     {

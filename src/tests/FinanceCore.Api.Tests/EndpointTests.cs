@@ -118,6 +118,30 @@ public class EndpointTests(ApiFixture api) : IClassFixture<ApiFixture>
     }
 
     [Fact]
+    public async Task ThePermissionOfACommandIsCheckedBeforeTheIdempotencyKeyAndThePayload()
+    {
+        // P0a (06, 3): no permission, no key and a payload that is not even JSON: the caller learns only that the permission is missing
+        var denied = await Client.SendAsync(api.Post("guarded:run", "{ not json", ApiFixture.Token(permissions: ["read.ledger"]), idempotencyKey: null));
+        Assert.Equal(HttpStatusCode.Forbidden, denied.StatusCode);
+        var problem = await ApiFixture.Json(denied);
+        Assert.Equal("AUTH.PERMISSION_MISSING", Code(problem));
+        Assert.Equal("P0", problem.GetProperty("errors")[0].GetProperty("phase").GetString());
+        Assert.Equal(TestModule.GuardedPermission, problem.GetProperty("errors")[0].GetProperty("params").GetProperty("permission").GetString());
+
+        // with the permission, P1 speaks: the missing key first, then the payload
+        var noKey = await Client.SendAsync(api.Post("guarded:run", Echo(), ApiFixture.Token(permissions: [TestModule.GuardedPermission]), idempotencyKey: null));
+        Assert.Equal(HttpStatusCode.BadRequest, noKey.StatusCode);
+        Assert.Equal("SCHEMA.REQUIRED_FIELD_MISSING", Code(await ApiFixture.Json(noKey)));
+        var badBody = await Client.SendAsync(api.Post("guarded:run", "{ not json", ApiFixture.Token(permissions: [TestModule.GuardedPermission])));
+        Assert.Equal(HttpStatusCode.BadRequest, badBody.StatusCode);
+        Assert.Equal("SCHEMA.INVALID_TYPE", Code(await ApiFixture.Json(badBody)));
+
+        // the permission may come in the scope claim, as for every command
+        var viaScope = await Client.SendAsync(api.Post("guarded:run", Echo(), ApiFixture.Token(scope: "openid " + TestModule.GuardedPermission)));
+        Assert.Equal(HttpStatusCode.OK, viaScope.StatusCode);
+    }
+
+    [Fact]
     public async Task APayloadThatDoesNotFitItsTypeIsRejectedWithThePathOfTheField()
     {
         async Task<(HttpStatusCode, string, string)> Try(string raw)

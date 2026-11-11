@@ -47,6 +47,7 @@ public static class OpenApiBuilder
                     ["operationId"] = OperationId(c.Name),
                     ["summary"] = c.Name,
                     ["tags"] = new JsonArray(c.Name.Split(':')[0]),
+                    ["x-permission"] = c.Permission,
                     ["security"] = new JsonArray(new JsonObject { ["bearerAuth"] = new JsonArray() }),
                     ["parameters"] = new JsonArray(
                         new JsonObject { ["$ref"] = "#/components/parameters/IdempotencyKey" },

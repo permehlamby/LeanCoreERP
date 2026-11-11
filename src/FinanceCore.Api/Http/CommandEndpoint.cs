@@ -8,7 +8,7 @@ namespace FinanceCore.Api.Http;
 /// <summary>
 /// `POST /v1/{resource}:{verb}` (20, 7). The identity gives the tenant, the actor and the permissions, the headers give the idempotency key
 /// (`Idempotency-Key`), the correlation id (`X-Correlation-Id`) and the calling system (`X-Source-System`), the body is the payload of the command.
-/// The handler checks the permission in P0, as every command does. The response is the envelope of 06, 2.2, or problem+json.
+/// The endpoint checks the permission of the command in P0a before it reads the idempotency header and the payload, and the command checks it again in its own P0. The response is the envelope of 06, 2.2, or problem+json.
 /// </summary>
 public static class CommandEndpoint
 {
@@ -46,6 +46,15 @@ public static class CommandEndpoint
         if (http.Request.Headers["X-Tenant-Id"].FirstOrDefault() is { Length: > 0 } named && !Guid.TryParse(named, out Guid namedId) | namedId != tenantId)
         {
             await Problems.WriteAsync(http, 403, "FORBIDDEN", [new CommandError("AUTH.TENANT_MISMATCH", "P0", "")], ct);
+            return;
+        }
+
+        // P0a (06, 3): the permission that the command needs whatever the payload, from the token alone. A caller without it learns nothing about
+        // the payload, the idempotency header or the schema. P1 follows; the command checks the same permission again and the company access (P0b, which
+        // needs the company of the payload) in its own P0 after the payload is read.
+        if (registration.Permission is { } needed && !caller.Permissions.Contains(needed))
+        {
+            await Problems.WriteAsync(http, 403, "FORBIDDEN", [new CommandError("AUTH.PERMISSION_MISSING", "P0", "", new Dictionary<string, object?> { ["permission"] = needed })], ct);
             return;
         }
 

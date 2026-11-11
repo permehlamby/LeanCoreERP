@@ -6,7 +6,8 @@ import { fileURLToPath } from 'node:url';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const files = readdirSync(join(root, 'migrations')).filter((f) => f.endsWith('.sql')).sort();
-const header = `-- Finance core schema, generated from db/migrations (${files.join(', ')}).\n-- Do not edit: change the numbered files and run db/tools/build-all.mjs. Safe to run again.\n\n`;
+const header = `-- Finance core schema, generated from db/migrations (${files.join(', ')}).\n-- Do not edit: change the numbered files and run db/tools/build-all.mjs.
+-- For an EMPTY database only. An existing database is brought up to date with financecore-platform db migrate (F-IMPL-32).\n\n`;
 const body = files.map((f) => `-- ==================== ${f} ====================\n${readFileSync(join(root, 'migrations', f), 'utf8')}`).join('\n');
 mkdirSync(join(root, 'dist'), { recursive: true });
 writeFileSync(join(root, 'dist', 'finance-core-schema.sql'), header + body);

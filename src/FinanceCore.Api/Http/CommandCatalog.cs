@@ -14,8 +14,12 @@ public sealed record CommandOutcome(
 
 public delegate Task<CommandOutcome> CommandHandler(CommandInvocation invocation, CancellationToken ct);
 
-/// <summary>A command of the API: its name as in the contracts (`journal-documents:post`), the types of its payload and result, and its handler.</summary>
-public sealed record CommandRegistration(string Name, Type RequestType, Type ResultType, CommandHandler Handler);
+/// <summary>
+/// A command of the API: its name as in the contracts (`journal-documents:post`), the types of its payload and result, and its handler.
+/// `Permission` is the permission the command needs whatever the payload (06, 8). The endpoint checks it in P0a, from the token alone, before the
+/// idempotency header and the payload are read (06, 3). Null for a command that checks its permission itself.
+/// </summary>
+public sealed record CommandRegistration(string Name, Type RequestType, Type ResultType, CommandHandler Handler, string? Permission = null);
 
 /// <summary>
 /// The commands the API serves (20, 7: `POST /v1/{resource}:{verb}`). Modules add theirs at start-up. The name is the only routing key, and the
@@ -29,7 +33,20 @@ public sealed class CommandCatalog
 
     public CommandRegistration? Find(string name) => _commands.GetValueOrDefault(name);
 
-    /// <summary>Registers a command whose payload is a request record and whose handler is a command of the Data layer.</summary>
+    /// <summary>
+    /// Registers a command with the permission that the endpoint checks in P0a before it reads the payload. The command checks the same permission
+    /// again in its own P0.
+    /// </summary>
+    public void Add<TRequest, TResult>(
+        string name, string permission, Func<IServiceProvider, Guid, CommandContext, TRequest, CancellationToken, Task<CommandResult<TResult>>> handler)
+        where TRequest : class
+    {
+        if (string.IsNullOrWhiteSpace(permission)) throw new ArgumentException("A permission is required", nameof(permission));
+        Add(name, handler);
+        _commands[name] = _commands[name] with { Permission = permission };
+    }
+
+    /// <summary>Registers a command whose payload is a request record and whose handler is a command of the Data layer. The command alone checks its permission.</summary>
     public void Add<TRequest, TResult>(
         string name, Func<IServiceProvider, Guid, CommandContext, TRequest, CancellationToken, Task<CommandResult<TResult>>> handler)
         where TRequest : class

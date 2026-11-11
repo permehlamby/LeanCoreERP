@@ -20,12 +20,17 @@ public sealed record EchoResult(string Name, decimal Amount, DateOnly Date, stri
 /// <summary>Commands that exist only in the tests: they show what the endpoint hands to a handler and how every kind of result is answered.</summary>
 public sealed class TestModule : ICommandModule
 {
+    public const string GuardedPermission = "test.guarded";
+
     public void Register(CommandCatalog catalog)
     {
         catalog.Add<EchoRequest, EchoResult>("echo:run", (_, tenant, ctx, req, _) => Task.FromResult(
             CommandResult<EchoResult>.Ok(new EchoResult(req.Name, req.Amount, req.Date, ctx.Actor, ctx.Permissions.Order().ToArray(), ctx.IdempotencyKey,
                 ctx.CorrelationId, ctx.SourceSystem, tenant), Guid.Parse("00000000-0000-0000-0000-000000000001"),
                 [new CommandError("TEST.WARNED", "P4", "", null, false, "WARNING")], replay: req.Name == "replay")));
+        catalog.Add<EchoRequest, EchoResult>("guarded:run", GuardedPermission, (_, tenant, ctx, req, _) => Task.FromResult(
+            CommandResult<EchoResult>.Ok(new EchoResult(req.Name, req.Amount, req.Date, ctx.Actor, ctx.Permissions.Order().ToArray(), ctx.IdempotencyKey,
+                ctx.CorrelationId, ctx.SourceSystem, tenant), Guid.Parse("00000000-0000-0000-0000-000000000001"))));
         catalog.Add<EchoRequest, EchoResult>("reject:run", (_, _, ctx, req, _) => Task.FromResult(CommandResult<EchoResult>.Rejected(
             [new CommandError(req.Name, req.Name == "AUTH.PERMISSION_MISSING" ? "P0" : "P2", "lines[0]", new Dictionary<string, object?> { ["n"] = 1, ["when"] = new DateOnly(2026, 1, 2) })])));
         catalog.Add<EchoRequest, EchoResult>("fail:run", (_, _, _, req, _) => Task.FromResult(CommandResult<EchoResult>.Failed(
