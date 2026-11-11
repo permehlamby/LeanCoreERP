@@ -14,7 +14,10 @@ public sealed record PostJournalDocumentRequest(
     string? ExternalReference,
     string? SourceDocumentRef,
     IReadOnlyList<RequestLine> Lines,
-    Guid? PartnerId = null);
+    Guid? PartnerId = null,
+    DateOnly? TaxDate = null,
+    string? OriginCountry = null,
+    string? DestinationCountry = null);
 
 /// <summary>
 /// The open_item object of a line (06, 5.2). Required on a line of a GL_OPEN_ITEM account (it may be empty: every attribute is optional),
@@ -33,15 +36,18 @@ public sealed record FreeDimension(Guid DimensionTypeId, Guid DimensionValueId);
 public sealed record LineDimensions(
     Guid? CostCenterId = null, Guid? ProjectId = null, Guid? ProfitCenterId = null, Guid? BusinessUnitId = null, IReadOnlyList<FreeDimension>? Free = null);
 
+/// <summary>One base line of a request (06, 5.2). The tax fields (07, 8.4, 8.5): the tax class, the tax point, origin and destination, a tax code to use instead of the
+/// determined one, and the tax amount of the supplier document.</summary>
 public sealed record RequestLine(
-    string LineRef, Guid AccountId, decimal AmountTc, string? LineText = null, OpenItemRequest? OpenItem = null, LineDimensions? Dimensions = null);
+    string LineRef, Guid AccountId, decimal AmountTc, string? LineText = null, OpenItemRequest? OpenItem = null, LineDimensions? Dimensions = null,
+    Guid? TaxClassId = null, DateOnly? TaxDate = null, string? OriginCountry = null, string? DestinationCountry = null, Guid? TaxCodeId = null, decimal? TaxAmountTc = null);
 
 public sealed record PostedLine(
     int LineNo, string? LineRef, Guid AccountId, string LineType,
     decimal AmountTc, decimal AmountLc, string CurrencyLc, decimal RateLc,
     decimal AmountGc, string CurrencyGc, decimal RateGc,
     decimal? AmountRc, string? CurrencyRc, decimal? RateRc,
-    string RateType, DateOnly RateDate);
+    string RateType, DateOnly RateDate, Guid? TaxCodeId = null);
 
 public sealed record PostedDocument(
     Guid DocumentId, Guid CompanyId, Guid LedgerId, string DocumentType, string DocumentNumber, long SequenceNo,
@@ -81,6 +87,17 @@ public static class RequestFingerprint
         new("business_unit_id", FieldType.Id, true), new("free", FieldType.Text)
     ];
 
+    private static readonly FieldSpec[] TaxHeaderSpec =
+    [
+        new("tax_date", FieldType.Date, true), new("origin_country", FieldType.Text, true), new("destination_country", FieldType.Text, true)
+    ];
+
+    private static readonly FieldSpec[] TaxLineSpec =
+    [
+        new("tax_class_id", FieldType.Id, true), new("tax_date", FieldType.Date, true), new("origin_country", FieldType.Text, true),
+        new("destination_country", FieldType.Text, true), new("tax_code_id", FieldType.Id, true), new("tax_amount_tc", FieldType.Amount, true)
+    ];
+
     public static byte[] Compute(PostJournalDocumentRequest r)
     {
         var head = Canonical.EncodeFields(Header, new Dictionary<string, object?>
@@ -115,6 +132,19 @@ public static class RequestFingerprint
                     ["cost_center_id"] = d.CostCenterId, ["project_id"] = d.ProjectId, ["profit_center_id"] = d.ProfitCenterId, ["business_unit_id"] = d.BusinessUnitId,
                     ["free"] = string.Concat((d.Free ?? []).OrderBy(f => f.DimensionTypeId).Select(f => f.DimensionTypeId.ToString("D") + "=" + f.DimensionValueId.ToString("D") + ";"))
                 })));
+        // The tax fields follow only when the request has some: the fingerprint of a request without them is what it was before the tax lines
+        if (r.TaxDate is not null || r.OriginCountry is not null || r.DestinationCountry is not null || r.Lines.Any(l => l.TaxCodeId is not null || l.TaxAmountTc is not null || l.TaxClassId is not null
+                || l.TaxDate is not null || l.OriginCountry is not null || l.DestinationCountry is not null))
+        {
+            all.Write(Canonical.Block(Canonical.EncodeFields(TaxHeaderSpec, new Dictionary<string, object?>
+                { ["tax_date"] = r.TaxDate, ["origin_country"] = r.OriginCountry, ["destination_country"] = r.DestinationCountry })));
+            foreach (RequestLine l in r.Lines)
+                all.Write(Canonical.Block(Canonical.EncodeFields(TaxLineSpec, new Dictionary<string, object?>
+                {
+                    ["tax_class_id"] = l.TaxClassId, ["tax_date"] = l.TaxDate, ["origin_country"] = l.OriginCountry, ["destination_country"] = l.DestinationCountry,
+                    ["tax_code_id"] = l.TaxCodeId, ["tax_amount_tc"] = l.TaxAmountTc
+                })));
+        }
         // The header partner follows only when there is one, so the fingerprint of a request without it is what it was before the invoice types
         if (r.PartnerId is { } partner)
             all.Write(Canonical.Block(Canonical.EncodeFields([new FieldSpec("header_partner_id", FieldType.Id)], new Dictionary<string, object?> { ["header_partner_id"] = partner })));

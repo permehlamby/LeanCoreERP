@@ -199,7 +199,38 @@ public static class TaxFields
     [
         new("name", MasterKind.Text, 100, false), new("box_group", MasterKind.Code, 50)
     ];
+
+    public static readonly string[] VatStatuses = ["REGISTERED", "NOT_REGISTERED"];
+    private static readonly MasterField[] PartnerRegistrationShared =
+    [
+        new("vat_status", MasterKind.Code, 50, false, VatStatuses), new("vat_id", MasterKind.Text, 30), new("valid_to", MasterKind.Date)
+    ];
+    public static readonly IReadOnlyList<MasterField> PartnerRegistrationCreate =
+    [
+        new("partner_id", MasterKind.Id, 0, false), new("country_code", MasterKind.Country, 0, false), new("valid_from", MasterKind.Date, 0, false), .. PartnerRegistrationShared
+    ];
+    public static readonly IReadOnlyList<MasterField> PartnerRegistrationUpdate = PartnerRegistrationShared;
+
+    /// <summary>The fields of one version of a determination rule (07, 8.4). A key that is absent or null means any.</summary>
+    public static readonly IReadOnlyList<MasterField> RuleVersion =
+    [
+        new("valid_from", MasterKind.Date, 0, false), new("valid_to", MasterKind.Date),
+        new("transaction_type", MasterKind.Code, 50, true, ["SALES", "PURCHASE"]),
+        new("origin_country", MasterKind.Country), new("destination_country", MasterKind.Country),
+        new("origin_eu", MasterKind.Bool), new("destination_eu", MasterKind.Bool),
+        new("partner_vat_status", MasterKind.Code, 50, true, VatStatuses),
+        new("account_id", MasterKind.Id), new("tax_class_id", MasterKind.Id),
+        new("priority", MasterKind.SmallInt, 0, false), new("tax_code_id", MasterKind.Id, 0, false)
+    ];
 }
+
+public sealed record CreatePartnerTaxRegistrationRequest(IReadOnlyDictionary<string, object?> Fields);
+public sealed record UpdatePartnerTaxRegistrationRequest(Guid RegistrationId, long ExpectedVersion, IReadOnlyDictionary<string, object?> Fields);
+
+/// <summary>Payload of tax-determination-rules:create (07, 8.4): the first version of a new rule, with the codes a caller may supply instead of the determined one.</summary>
+public sealed record CreateTaxRuleRequest(Guid CompanyId, IReadOnlyDictionary<string, object?> Fields, IReadOnlyList<Guid> Alternatives);
+/// <summary>Payload of tax-determination-rules:create-version: a later version of an existing rule. A rule version is insert-only.</summary>
+public sealed record CreateTaxRuleVersionRequest(Guid RuleId, IReadOnlyDictionary<string, object?> Fields, IReadOnlyList<Guid> Alternatives);
 
 public sealed record CreateTaxClassRequest(IReadOnlyDictionary<string, object?> Fields);
 public sealed record UpdateTaxClassRequest(Guid TaxClassId, long ExpectedVersion, IReadOnlyDictionary<string, object?> Fields);
@@ -310,6 +341,15 @@ public static class MasterRules
         Fingerprint("tax-return-boxes:update", $"{r.CountryCode}|{r.ReturnType}|{r.BoxCode}|{r.ExpectedVersion}|" + Text(r.Fields));
     public static byte[] Fingerprint(string command, TaxReturnBoxStatusRequest r) =>
         Fingerprint(command, $"{r.CountryCode}|{r.ReturnType}|{r.BoxCode}|{r.ExpectedVersion}|{r.ReasonCode}");
+
+    public static byte[] Fingerprint(CreatePartnerTaxRegistrationRequest r) => Fingerprint("partner-tax-registrations:create", Text(r.Fields));
+    public static byte[] Fingerprint(UpdatePartnerTaxRegistrationRequest r) =>
+        Fingerprint("partner-tax-registrations:update", r.RegistrationId.ToString("D") + "|" + r.ExpectedVersion + "|" + Text(r.Fields));
+    private static string Alternatives(IReadOnlyList<Guid> a) => string.Join(",", a.Select(g => g.ToString("D")).Order(StringComparer.Ordinal));
+    public static byte[] Fingerprint(CreateTaxRuleRequest r) =>
+        Fingerprint("tax-determination-rules:create", r.CompanyId.ToString("D") + "|" + Text(r.Fields) + "|" + Alternatives(r.Alternatives));
+    public static byte[] Fingerprint(CreateTaxRuleVersionRequest r) =>
+        Fingerprint("tax-determination-rules:create-version", r.RuleId.ToString("D") + "|" + Text(r.Fields) + "|" + Alternatives(r.Alternatives));
 
     public static byte[] Fingerprint(CreatePaymentTermsRequest r) => Fingerprint("payment-terms:create", Text(r.Fields));
 

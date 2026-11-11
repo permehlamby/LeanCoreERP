@@ -11,8 +11,8 @@ namespace FinanceCore.Data;
 /// <summary>
 /// journal-documents:post of 06, 5.2 for the first slice: base lines on plain accounts, one transaction currency,
 /// derived local, group and reporting amounts, gapless number, hash chain, idempotency and outbox event.
-/// Not in the slice (answered with a LIMIT.* error, never silently ignored): tax, partners, open items, dimensions,
-/// special periods, rate overrides, the AP and AR document types. Rounding differences of the derived currencies go to one
+/// Tax lines (07, 8.4, 13.2l) are built without partial deduction and with a VAT rate type of BOOKING. Not in the slice (answered with a LIMIT.* error, never
+/// silently ignored): special periods, rate overrides. Rounding differences of the derived currencies go to one
 /// ROUNDING line on the account of the role ROUNDING (07, 6.3).
 /// One command is one transaction. Everything that can be checked is checked before the first lock (P1 to P6),
 /// the locks come in the order of 06, 9: number counter, ledger chain head, period rows, outbox head.
@@ -190,7 +190,7 @@ public sealed class JournalDocumentPoster(NpgsqlDataSource source)
             // the open item of a control account belongs to the partner of the document (F-IMPL-28)
             if (a.OpenItemMode == "CONTROL" && req.PartnerId is { } headerPartnerId && req.Lines[i].OpenItem?.PartnerId is { } linePartner && linePartner != headerPartnerId)
                 errors.Add(Error("ACCOUNT_RULE.PARTNER_MISMATCH", "P4", $"lines[{i}].open_item/partner_id", ("account_no", a.AccountNo), ("partner_id", linePartner), ("header_partner_id", headerPartnerId)));
-            if (a.TaxCodeRule == "MANDATORY") errors.Add(Error("LIMIT.TAX_CODE_MANDATORY", "P2", path, ("account_no", a.AccountNo)));
+            if (a.TaxAccount) errors.Add(Error("ACCOUNT_RULE.TAX_ACCOUNT_DIRECT_POSTING", "P4", path, ("account_no", a.AccountNo)));
             if (a.CurrencyCode is not null) errors.Add(Error("LIMIT.ACCOUNT_CURRENCY", "P2", path, ("account_no", a.AccountNo)));
         }
 
@@ -208,9 +208,32 @@ public sealed class JournalDocumentPoster(NpgsqlDataSource source)
         errors.AddRange(period.Errors);
         warnings.AddRange(period.Warnings);
 
+        // P4: the tax of the base lines (07, 8.4): the code of each, the version in force, the tax per line or per document, the reverse-charge pair
+        TaxPlan taxPlan = TaxPlan.None;
+        Guid? taxRoundingAccount = null;
+        bool taxFailed = false;
+        if (errors.Count == 0)
+        {
+            taxPlan = await TaxPlanner.PlanAsync(tx, tenantId, req, company, accounts, scales.GetValueOrDefault(req.TransactionCurrency, 4), company.ReportingCurrency, errors, warnings, ct);
+            if (errors.Count == 0 && taxPlan.RoundingTc != 0m)
+            {
+                taxRoundingAccount = await AccountRoleResolver.ResolveAsync(tx, tenantId, req.CompanyId, "TAX_ROUNDING", null, null, null, ct);
+                if (taxRoundingAccount is null)
+                    errors.Add(Error("BALANCE.ROUNDING_ACCOUNT_MISSING", "P6", "lines", ("role_code", "TAX_ROUNDING"), ("difference_tc", taxPlan.RoundingTc)));
+                else
+                {
+                    AccountRow? a = (await ReadAccountRowsAsync(tx, tenantId, req.CompanyId, [taxRoundingAccount.Value], ct)).GetValueOrDefault(taxRoundingAccount.Value);
+                    if (a is null || !a.Active || a.PostingBlocked || a.ValidFrom > req.PostingDate || (a.ValidTo is { } to && to < req.PostingDate))
+                        errors.Add(Error("ACCOUNT.ROLE_ACCOUNT_NOT_USABLE", "P6", "lines", ("role_code", "TAX_ROUNDING"), ("account_id", taxRoundingAccount)));
+                }
+            }
+            taxFailed = errors.Count > 0;
+        }
+
         // P6 (TC balance) is cheap and independent, so it is reported with the other errors.
-        decimal sumTc = req.Lines.Sum(l => l.AmountTc);
-        if (sumTc != 0m) errors.Add(Error("BALANCE.UNBALANCED_TC", "P6", "lines", ("currency", "TC"), ("difference", sumTc)));
+        decimal sumTc = req.Lines.Sum(l => l.AmountTc) + taxPlan.Lines.Sum(t => t.TaxTc) + taxPlan.RoundingTc;
+        // a document whose tax could not be worked out has no balance to speak of
+        if (sumTc != 0m && !taxFailed) errors.Add(Error("BALANCE.UNBALANCED_TC", "P6", "lines", ("currency", "TC"), ("difference", sumTc)));
 
         if (errors.Count > 0) return CommandResult<PostedDocument>.Rejected(errors.Take(100).ToList());
 
@@ -233,10 +256,22 @@ public sealed class JournalDocumentPoster(NpgsqlDataSource source)
                 PostingRules.Round(l.AmountTc * rateGc.Value, scales[groupCurrency!]),
                 rateRc is null ? null : PostingRules.Round(l.AmountTc * rateRc.Value, scales[company.ReportingCurrency!])));
 
+        // the generated tax lines and the tax rounding line are derived like the base lines, from their transaction currency amount
+        var extras = new List<(string Type, Guid Account, decimal Tc, Guid? Code, int? Seed, decimal Lc, decimal Gc, decimal? Rc)>();
+        for (int sd = 0; sd < taxPlan.Lines.Count; sd++)
+        {
+            TaxLineSeed t = taxPlan.Lines[sd];
+            extras.Add(("TAX", t.AccountId, t.TaxTc, t.CodeId, sd, PostingRules.Round(t.TaxTc * rateLc.Value, scales[company.LocalCurrency]),
+                PostingRules.Round(t.TaxTc * rateGc.Value, scales[groupCurrency!]), rateRc is null ? null : PostingRules.Round(t.TaxTc * rateRc.Value, scales[company.ReportingCurrency!])));
+        }
+        if (taxPlan.RoundingTc != 0m)
+            extras.Add(("TAX_ROUNDING", taxRoundingAccount!.Value, taxPlan.RoundingTc, null, null, PostingRules.Round(taxPlan.RoundingTc * rateLc.Value, scales[company.LocalCurrency]),
+                PostingRules.Round(taxPlan.RoundingTc * rateGc.Value, scales[groupCurrency!]), rateRc is null ? null : PostingRules.Round(taxPlan.RoundingTc * rateRc.Value, scales[company.ReportingCurrency!])));
+
         // P5/P6: the derived currencies balance with one ROUNDING line (design principle 4 of 00) on the account of the role
         // ROUNDING for the transaction currency, else the default row. Its amounts are the differences, TC is 0 (finding F-IMPL-16).
-        decimal diffLc = -derived.Sum(d => d.Lc), diffGc = -derived.Sum(d => d.Gc);
-        decimal? diffRc = rateRc is null ? null : -derived.Sum(d => d.Rc!.Value);
+        decimal diffLc = -(derived.Sum(d => d.Lc) + extras.Sum(e => e.Lc)), diffGc = -(derived.Sum(d => d.Gc) + extras.Sum(e => e.Gc));
+        decimal? diffRc = rateRc is null ? null : -(derived.Sum(d => d.Rc!.Value) + extras.Sum(e => e.Rc!.Value));
         Guid? roundingAccount = null;
         if (diffLc != 0m || diffGc != 0m || diffRc is not null and not 0m)
         {
@@ -337,7 +372,15 @@ public sealed class JournalDocumentPoster(NpgsqlDataSource source)
                 d.Line.AmountTc, d.Lc, company.LocalCurrency, rateLc.Value,
                 d.Gc, groupCurrency!, rateGc.Value,
                 d.Rc, company.ReportingCurrency, rateRc?.Value,
-                "SPOT", req.PostingDate));
+                "SPOT", req.PostingDate, taxPlan.BaseCodes.TryGetValue(i, out Guid baseCode) ? baseCode : null));
+        }
+        var taxLineNos = new int[taxPlan.Lines.Count];
+        foreach (var e in extras)
+        {
+            int lineNo = lines.Count + 1;
+            if (e.Seed is { } sd) taxLineNos[sd] = lineNo;
+            lines.Add(new PostedLine(lineNo, null, e.Account, e.Type, e.Tc, e.Lc, company.LocalCurrency, rateLc.Value, e.Gc, groupCurrency!, rateGc.Value,
+                e.Rc, company.ReportingCurrency, rateRc?.Value, "SPOT", req.PostingDate, e.Code));
         }
         if (roundingAccount is not null)
             // A DERIVED line (02, 5.2, D9): TC 0 and rate 1 in every currency, the amounts are authoritative
@@ -347,14 +390,47 @@ public sealed class JournalDocumentPoster(NpgsqlDataSource source)
                 diffRc, company.ReportingCurrency, rateRc is null ? null : 1m,
                 "DERIVED", req.PostingDate));
 
+        // the tax rows of the tax lines: the base amounts in the other currencies are the sums of the derived amounts of the base lines
+        var taxRows = new Dictionary<int, (Dictionary<string, object?> Row, List<Dictionary<string, object?>> Bases)>();
+        for (int sd = 0; sd < taxPlan.Lines.Count; sd++)
+        {
+            TaxLineSeed t = taxPlan.Lines[sd];
+            PostedLine tl = lines[taxLineNos[sd] - 1];
+            decimal baseLc = t.Bases.Sum(b => derived[b.Index].Lc), baseGc = t.Bases.Sum(b => derived[b.Index].Gc);
+            decimal? baseRc = rateRc is null ? null : t.Bases.Sum(b => derived[b.Index].Rc!.Value);
+            decimal baseTc = t.Bases.Sum(b => b.BaseTc);
+            bool inLocal = t.VatCurrency == company.LocalCurrency;
+            var row = new Dictionary<string, object?>
+            {
+                ["tenant_id"] = tenantId, ["company_id"] = req.CompanyId, ["document_id"] = documentId, ["line_no"] = tl.LineNo,
+                ["tax_code_id"] = t.CodeId, ["tax_code_version_id"] = t.VersionId, ["tax_type"] = t.TaxType, ["tax_rate"] = t.Rate,
+                ["base_amount_tc"] = baseTc, ["base_amount_lc"] = baseLc, ["base_amount_gc"] = baseGc, ["base_amount_rc"] = baseRc,
+                ["determined_tax_code_id"] = t.DeterminedCodeId, ["tax_class_id"] = t.ClassId, ["origin_country"] = t.Origin, ["destination_country"] = t.Destination,
+                ["partner_vat_status"] = t.PartnerVatStatus, ["tax_date"] = t.TaxDate, ["vat_currency"] = t.VatCurrency,
+                ["vat_base_amount"] = inLocal ? baseLc : baseRc!.Value, ["vat_tax_amount"] = inLocal ? tl.AmountLc : tl.AmountRc!.Value,
+                ["vat_rate"] = inLocal ? rateLc.Value : rateRc!.Value, ["vat_rate_date"] = null, ["is_override"] = t.IsOverride,
+                ["tax_amount_supplied_tc"] = t.SuppliedTc, ["rounding_mode"] = t.RoundingMode, ["origin_eu"] = t.OriginEu, ["destination_eu"] = t.DestinationEu,
+                ["deductible_pct"] = 100m, ["deduction_key"] = null, ["deduction_key_rate"] = null, ["deduction_share"] = 100m,
+                ["deduction_cap_amount_tc"] = null, ["gross_tax_amount_tc"] = tl.AmountTc
+            };
+            var bases = t.Bases.Select(b => new Dictionary<string, object?>
+            {
+                ["tenant_id"] = tenantId, ["company_id"] = req.CompanyId, ["document_id"] = documentId, ["tax_line_no"] = tl.LineNo, ["base_line_no"] = b.Index + 1,
+                ["base_amount_tc"] = b.BaseTc, ["nondeductible_tax_tc"] = 0m, ["nondeductible_line_no"] = null
+            }).ToList();
+            taxRows[tl.LineNo] = (row, bases);
+        }
+
         var lineHashes = new List<byte[]>();
         foreach (PostedLine line in lines)
-            lineHashes.Add(LedgerHash2.LineHash(new HashedLine(OpenItem: OpenItemHashRow(tenantId, req, documentId, line), Line: new Dictionary<string, object?>
+            lineHashes.Add(LedgerHash2.LineHash(new HashedLine(OpenItem: OpenItemHashRow(tenantId, req, documentId, line),
+                Tax: taxRows.TryGetValue(line.LineNo, out var taxRow) ? taxRow.Row : null, TaxBases: taxRows.TryGetValue(line.LineNo, out var taxBase) ? taxBase.Bases : null,
+                Line: new Dictionary<string, object?>
             {
                 ["tenant_id"] = tenantId, ["company_id"] = req.CompanyId, ["document_id"] = documentId, ["line_no"] = line.LineNo,
                 ["ledger_id"] = ledgerId.Value, ["line_type"] = line.LineType, ["account_id"] = line.AccountId,
                 ["posting_date"] = req.PostingDate, ["fiscal_year"] = fiscalYear, ["fiscal_period"] = recheck.PeriodNo!.Value,
-                ["reversed_line_no"] = null, ["tax_code_id"] = null,
+                ["reversed_line_no"] = null, ["tax_code_id"] = line.TaxCodeId,
                 ["amount_tc"] = line.AmountTc, ["amount_lc"] = line.AmountLc, ["currency_lc"] = line.CurrencyLc,
                 ["rate_lc"] = line.RateLc, ["rate_lc_table"] = null,
                 ["amount_gc"] = line.AmountGc, ["currency_gc"] = line.CurrencyGc, ["rate_gc"] = line.RateGc, ["rate_gc_table"] = null,
@@ -371,6 +447,11 @@ public sealed class JournalDocumentPoster(NpgsqlDataSource source)
         foreach (PostedLine l in lines)
             await InsertLineAsync(tx, tenantId, req, documentId, ledgerId.Value, fiscalYear, recheck.PeriodNo!.Value,
                 l.LineType == "BASE" ? req.Lines[l.LineNo - 1].LineText : null, l.LineType == "BASE" ? req.Lines[l.LineNo - 1].Dimensions : null, l, ct);
+        foreach (var (taxLineNo, tax) in taxRows.OrderBy(t => t.Key))
+        {
+            await TaxRows.InsertTaxAsync(tx, tax.Row, ct);
+            foreach (var b in tax.Bases) await TaxRows.InsertBaseAsync(tx, b, ct);
+        }
         foreach (PostedLine l in lines.Where(l => l.LineType == "BASE" && req.Lines[l.LineNo - 1].Dimensions?.Free is { Count: > 0 }))
             foreach (FreeDimension f in req.Lines[l.LineNo - 1].Dimensions!.Free!.OrderBy(f => f.DimensionTypeId))
                 await InsertFreeDimensionAsync(tx, tenantId, req.CompanyId, documentId, l.LineNo, f, ct);
@@ -480,9 +561,9 @@ public sealed class JournalDocumentPoster(NpgsqlDataSource source)
     // ---------------------------------------------------------------------------------------------------------
     // Reads
     // ---------------------------------------------------------------------------------------------------------
-    internal sealed record CompanyRow(string Status, string LocalCurrency, string? ReportingCurrency);
+    internal sealed record CompanyRow(string Status, string LocalCurrency, string? ReportingCurrency, string? Country = null);
     internal sealed record AccountRow(string AccountNo, bool Active, DateOnly ValidFrom, DateOnly? ValidTo, bool PostingBlocked,
-        string OpenItemMode, string TaxCodeRule, string? CurrencyCode);
+        string OpenItemMode, string TaxCodeRule, string? CurrencyCode, bool TaxAccount = false, Guid? DefaultTaxClassId = null);
     internal sealed record SeriesRow(Guid SeriesId, string SeriesCode, string? Prefix, bool IncludeFiscalYear, string? Separator, int NumberLength);
     internal sealed record Rate(decimal Value);
     internal sealed record PeriodCheck(int? FiscalYear, int? PeriodNo, bool SoftCloseOverride, List<CommandError> Errors, List<CommandError> Warnings);
@@ -490,12 +571,12 @@ public sealed class JournalDocumentPoster(NpgsqlDataSource source)
     internal static async Task<CompanyRow?> ReadCompanyAsync(TenantTransaction tx, Guid tenantId, Guid companyId, CancellationToken ct)
     {
         await using var cmd = tx.Command(
-            "select status, local_currency, reporting_currency from core.company where tenant_id = @t and company_id = @c");
+            "select status, local_currency, reporting_currency, country_code from core.company where tenant_id = @t and company_id = @c");
         cmd.Parameters.AddWithValue("t", tenantId);
         cmd.Parameters.AddWithValue("c", companyId);
         await using var r = await cmd.ExecuteReaderAsync(ct);
         return await r.ReadAsync(ct)
-            ? new CompanyRow(r.GetString(0), r.GetString(1), r.IsDBNull(2) ? null : r.GetString(2))
+            ? new CompanyRow(r.GetString(0), r.GetString(1), r.IsDBNull(2) ? null : r.GetString(2), r.GetString(3).Trim())
             : null;
     }
 
@@ -547,7 +628,7 @@ public sealed class JournalDocumentPoster(NpgsqlDataSource source)
         TenantTransaction tx, Guid tenantId, Guid companyId, Guid[] accountIds, CancellationToken ct)
     {
         await using var cmd = tx.Command(
-            "select account_id, account_no, active, valid_from, valid_to, posting_blocked, open_item_mode, tax_code_rule, currency_code " +
+            "select account_id, account_no, active, valid_from, valid_to, posting_blocked, open_item_mode, tax_code_rule, currency_code, tax_account, default_tax_class_id " +
             "from core.gl_account where tenant_id = @t and company_id = @c and account_id = any(@ids)");
         cmd.Parameters.AddWithValue("t", tenantId);
         cmd.Parameters.AddWithValue("c", companyId);
@@ -557,7 +638,7 @@ public sealed class JournalDocumentPoster(NpgsqlDataSource source)
         while (await r.ReadAsync(ct))
             result[r.GetGuid(0)] = new AccountRow(r.GetString(1), r.GetBoolean(2), r.GetFieldValue<DateOnly>(3),
                 r.IsDBNull(4) ? null : r.GetFieldValue<DateOnly>(4), r.GetBoolean(5), r.GetString(6), r.GetString(7),
-                r.IsDBNull(8) ? null : r.GetString(8));
+                r.IsDBNull(8) ? null : r.GetString(8), r.GetBoolean(9), r.IsDBNull(10) ? null : r.GetGuid(10));
         return result;
     }
 
@@ -923,8 +1004,9 @@ public sealed class JournalDocumentPoster(NpgsqlDataSource source)
         await using var cmd = tx.Command(
             "insert into core.journal_line (tenant_id, company_id, document_id, line_no, ledger_id, line_type, account_id, posting_date, " +
             "fiscal_year, fiscal_period, line_text, amount_tc, amount_lc, currency_lc, rate_lc, amount_gc, currency_gc, rate_gc, " +
-            "amount_rc, currency_rc, rate_rc, rate_type, rate_date, cost_center_id, project_id, profit_center_id, business_unit_id) " +
-            "values (@t, @c, @d, @n, @l, @lt, @a, @pd, @fy, @fp, @txt, @tc, @lc, @clc, @rlc, @gc, @cgc, @rgc, @rc, @crc, @rrc, @rt, @rd, @cc, @pr, @pc, @bu)");
+            "amount_rc, currency_rc, rate_rc, rate_type, rate_date, cost_center_id, project_id, profit_center_id, business_unit_id, tax_code_id) " +
+            "values (@t, @c, @d, @n, @l, @lt, @a, @pd, @fy, @fp, @txt, @tc, @lc, @clc, @rlc, @gc, @cgc, @rgc, @rc, @crc, @rrc, @rt, @rd, @cc, @pr, @pc, @bu, @tax)");
+        cmd.Parameters.Add(new NpgsqlParameter("tax", NpgsqlDbType.Uuid) { Value = (object?)l.TaxCodeId ?? DBNull.Value });
         cmd.Parameters.Add(new NpgsqlParameter("cc", NpgsqlDbType.Uuid) { Value = (object?)dims?.CostCenterId ?? DBNull.Value });
         cmd.Parameters.Add(new NpgsqlParameter("pr", NpgsqlDbType.Uuid) { Value = (object?)dims?.ProjectId ?? DBNull.Value });
         cmd.Parameters.Add(new NpgsqlParameter("pc", NpgsqlDbType.Uuid) { Value = (object?)dims?.ProfitCenterId ?? DBNull.Value });

@@ -59,6 +59,13 @@ public sealed class ConfigModule : ICommandModule
         catalog.Add<TaxReturnBoxStatusRequest, MasterResult>("tax-return-boxes:deactivate", TaxCommands.Permission, (sp, t, c, r, ct) => sp.GetRequiredService<TaxCommands>().DeactivateBoxAsync(t, c, r, ct));
         catalog.Add<TaxReturnBoxStatusRequest, MasterResult>("tax-return-boxes:reactivate", TaxCommands.Permission, (sp, t, c, r, ct) => sp.GetRequiredService<TaxCommands>().ReactivateBoxAsync(t, c, r, ct));
 
+        catalog.Add<CreatePartnerTaxRegistrationRequest, MasterResult>("partner-tax-registrations:create", TaxDeterminationCommands.RegistrationPermission, (sp, t, c, r, ct) => sp.GetRequiredService<TaxDeterminationCommands>().CreateRegistrationAsync(t, c, r, ct));
+        catalog.Add<UpdatePartnerTaxRegistrationRequest, MasterResult>("partner-tax-registrations:update", TaxDeterminationCommands.RegistrationPermission, (sp, t, c, r, ct) => sp.GetRequiredService<TaxDeterminationCommands>().UpdateRegistrationAsync(t, c, r, ct));
+        catalog.Add<MasterStatusRequest, MasterResult>("partner-tax-registrations:deactivate", TaxDeterminationCommands.RegistrationPermission, (sp, t, c, r, ct) => sp.GetRequiredService<TaxDeterminationCommands>().DeactivateRegistrationAsync(t, c, r, ct));
+        catalog.Add<MasterStatusRequest, MasterResult>("partner-tax-registrations:reactivate", TaxDeterminationCommands.RegistrationPermission, (sp, t, c, r, ct) => sp.GetRequiredService<TaxDeterminationCommands>().ReactivateRegistrationAsync(t, c, r, ct));
+        catalog.Add<CreateTaxRuleRequest, TaxRuleResult>("tax-determination-rules:create", TaxDeterminationCommands.RulePermission, (sp, t, c, r, ct) => sp.GetRequiredService<TaxDeterminationCommands>().CreateRuleAsync(t, c, r, ct));
+        catalog.Add<CreateTaxRuleVersionRequest, TaxRuleResult>("tax-determination-rules:create-version", TaxDeterminationCommands.RulePermission, (sp, t, c, r, ct) => sp.GetRequiredService<TaxDeterminationCommands>().CreateRuleVersionAsync(t, c, r, ct));
+
         catalog.Add<AssignAccountRoleRequest, AssignedAccountRole>("account-role-assignments:create", AccountRoleAssigner.Permission, (sp, t, c, r, ct) => sp.GetRequiredService<AccountRoleAssigner>().AssignAsync(t, c, r, ct));
         catalog.Add<CreateRetentionRuleVersionRequest, CreatedRetentionRule>("retention-rules:create-version", RetentionRules.Permission, (sp, t, c, r, ct) => sp.GetRequiredService<RetentionRuleCommands>().CreateVersionAsync(t, c, r, ct));
 

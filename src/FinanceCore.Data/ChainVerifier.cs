@@ -336,7 +336,8 @@ public sealed class ChainVerifier(NpgsqlDataSource source)
             else
             {
                 var lineHashes = doc.Lines.OrderBy(l => (int)l["line_no"]!)
-                    .Select(l => LedgerHash2.LineHash(new HashedLine(l, OpenItem: doc.OpenItems.GetValueOrDefault((int)l["line_no"]!)))).ToList();
+                    .Select(l => LedgerHash2.LineHash(new HashedLine(l, Tax: doc.Taxes.GetValueOrDefault((int)l["line_no"]!), TaxBases: doc.TaxBases.GetValueOrDefault((int)l["line_no"]!),
+                        OpenItem: doc.OpenItems.GetValueOrDefault((int)l["line_no"]!)))).ToList();
                 byte[] expected = LedgerHash2.RowHash(doc.Header, seq, doc.PrevHash, LedgerHash2.LineDigest(lineHashes));
                 if (!expected.AsSpan().SequenceEqual(doc.RowHash))
                     problems.Add(new("CHAIN.ROW_HASH_MISMATCH", seq, "recomputed row_hash differs from the stored one"));

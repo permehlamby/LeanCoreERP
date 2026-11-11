@@ -29,6 +29,10 @@ public static class LedgerReader
 
         /// <summary>The due date of each open item row (an L2 column, not in the hash): a mirror of a control account item carries it (02, 5A).</summary>
         public Dictionary<int, DateOnly?> OpenItemDueDates { get; } = [];
+
+        /// <summary>The tax rows of the tax lines (02, 7.1), by line number, and their base rows (02, 7.2), by tax line number.</summary>
+        public Dictionary<int, Dictionary<string, object?>> Taxes { get; } = [];
+        public Dictionary<int, List<Dictionary<string, object?>>> TaxBases { get; } = [];
     }
 
     public static async Task<PostedDocument?> LoadDocumentAsync(TenantTransaction tx, Guid tenantId, Guid documentId, CancellationToken ct)
@@ -41,7 +45,7 @@ public static class LedgerReader
             (decimal)l["amount_tc"]!, (decimal)l["amount_lc"]!, (string)l["currency_lc"]!, (decimal)l["rate_lc"]!,
             (decimal)l["amount_gc"]!, (string)l["currency_gc"]!, (decimal)l["rate_gc"]!,
             (decimal?)l["amount_rc"], (string?)l["currency_rc"], (decimal?)l["rate_rc"],
-            (string)l["rate_type"]!, (DateOnly)l["rate_date"]!)).ToList();
+            (string)l["rate_type"]!, (DateOnly)l["rate_date"]!, (Guid?)l["tax_code_id"])).ToList();
         return new PostedDocument(
             documentId, (Guid)h["company_id"]!, (Guid)h["ledger_id"]!, (string)h["document_type"]!, (string)h["document_number"]!,
             (long)h["sequence_no"]!, (int)h["fiscal_year"]!, (int)h["fiscal_period"]!, (DateOnly)h["document_date"]!,
@@ -170,6 +174,23 @@ public static class LedgerReader
                 };
             }
         }
+
+        await TaxRows.ReadAsync(tx, tenantId,
+            documentId is null
+                ? "(company_id, document_id) in (select company_id, document_id from core.journal_document where tenant_id = @t and company_id = @c and ledger_id = @l)"
+                : "document_id = @d",
+            cmd =>
+            {
+                if (documentId is null) { cmd.Parameters.AddWithValue("c", companyId!.Value); cmd.Parameters.AddWithValue("l", ledgerId!.Value); }
+                else cmd.Parameters.AddWithValue("d", documentId.Value);
+            },
+            (company, document, lineNo, row) => byKey[(company, document)].Taxes[lineNo] = row,
+            (company, document, taxLineNo, row) =>
+            {
+                var doc = byKey[(company, document)];
+                if (!doc.TaxBases.TryGetValue(taxLineNo, out var list)) doc.TaxBases[taxLineNo] = list = [];
+                list.Add(row);
+            }, ct);
         return docs;
     }
 }

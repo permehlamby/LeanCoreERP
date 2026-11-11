@@ -758,6 +758,74 @@ select pg_temp.expect_count('vat: tenant B sees none of A''s rows',
 select set_config('app.tenant_id', '11111111-1111-4111-8111-111111111111', false);
 
 -- ---------------------------------------------------------------------------------------------------------
+-- VAT determination rules and tax lines (0024, 07, 8.4, 02, 7, 08, 6.7)
+-- ---------------------------------------------------------------------------------------------------------
+select pg_temp.expect_ok('rule: a version of a new rule',
+    $t$set local role cmd_config; insert into core.tax_determination_rule (tenant_id, company_id, rule_id, valid_from, priority, tax_code_id, destination_country, created_by)
+       values ('11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222201', 'ee000000-0000-4000-8000-0000000000f1', date '2026-01-01', 10, 'ee000000-0000-4000-8000-0000000000e1', 'DK', 't')$t$);
+select pg_temp.expect_ok('rule alternative: a code a caller may supply instead',
+    $t$set local role cmd_config; insert into core.tax_determination_alternative (tenant_id, company_id, rule_id, valid_from, alt_tax_code_id)
+       values ('11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222201', 'ee000000-0000-4000-8000-0000000000f1', date '2026-01-01', 'ee000000-0000-4000-8000-0000000000e3')$t$);
+select pg_temp.expect_error('rule: a version starts after the latest one',
+    $t$insert into core.tax_determination_rule (tenant_id, company_id, rule_id, valid_from, priority, tax_code_id, created_by)
+       values ('11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222201', 'ee000000-0000-4000-8000-0000000000f1', date '2026-01-01', 10, 'ee000000-0000-4000-8000-0000000000e1', 't')$t$, '%VALID_FROM_NOT_LATER%');
+select pg_temp.expect_error('rule: an earlier version cannot be added',
+    $t$insert into core.tax_determination_rule (tenant_id, company_id, rule_id, valid_from, priority, tax_code_id, created_by)
+       values ('11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222201', 'ee000000-0000-4000-8000-0000000000f1', date '2025-12-01', 10, 'ee000000-0000-4000-8000-0000000000e1', 't')$t$, '%VALID_FROM_NOT_LATER%');
+select pg_temp.expect_error('rule: the EU key is a flag, the status one of two',
+    $t$insert into core.tax_determination_rule (tenant_id, company_id, rule_id, valid_from, priority, tax_code_id, partner_vat_status, created_by)
+       values ('11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222201', gen_random_uuid(), date '2026-01-01', 10, 'ee000000-0000-4000-8000-0000000000e1', 'MAYBE', 't')$t$, '%violates check constraint%');
+select pg_temp.expect_error('rule: the code is a code of the company',
+    $t$insert into core.tax_determination_rule (tenant_id, company_id, rule_id, valid_from, priority, tax_code_id, created_by)
+       values ('11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222201', gen_random_uuid(), date '2026-01-01', 10, gen_random_uuid(), 't')$t$, '%foreign key%');
+select pg_temp.expect_error('rule: a version cannot be updated', $t$update core.tax_determination_rule set priority = 5$t$, '%append-only%');
+select pg_temp.expect_error('rule alternative: a row cannot be updated', $t$update core.tax_determination_alternative set alt_tax_code_id = alt_tax_code_id$t$, '%append-only%');
+select pg_temp.expect_error('rule: no delete', $t$delete from core.tax_determination_rule$t$, '%no hard delete%');
+select pg_temp.expect_error('rule: the posting role cannot write a rule',
+    $t$set local role cmd_post; insert into core.tax_determination_rule (tenant_id, company_id, rule_id, valid_from, priority, tax_code_id, created_by)
+       values ('11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222201', gen_random_uuid(), date '2026-01-01', 10, 'ee000000-0000-4000-8000-0000000000e1', 't')$t$, '%permission denied%');
+select pg_temp.expect_error('partner registration: the status is one of two',
+    $t$insert into core.partner_tax_registration (tenant_id, partner_id, country_code, valid_from, vat_status, created_by, updated_by)
+       values ('11111111-1111-4111-8111-111111111111', gen_random_uuid(), 'DE', date '2026-01-01', 'MAYBE', 't', 't')$t$, '%violates check constraint%');
+
+-- a tax account accepts only tax lines (08, 6.7), whoever writes the line
+select pg_temp.expect_error('tax account: a base line cannot post on it',
+    $t$insert into core.journal_line (tenant_id, company_id, document_id, line_no, ledger_id, line_type, account_id, posting_date, fiscal_year, fiscal_period,
+           amount_tc, amount_lc, currency_lc, rate_lc, amount_gc, currency_gc, rate_gc, rate_type, rate_date)
+       values ('11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222201', 'bbbbbbbb-0000-4000-8000-000000000001', 7, '44444444-4444-4444-8444-444444444401', 'BASE', '55555555-5555-4555-8555-555555555501',
+           date '2026-10-21', 2026, 10, 0, 0, 'DKK', 1, 0, 'EUR', 0.134, 'SPOT', date '2026-10-21')$t$, '%TAX_ACCOUNT_DIRECT_POSTING%');
+select pg_temp.expect_ok('tax account: a tax line can',
+    $t$insert into core.journal_line (tenant_id, company_id, document_id, line_no, ledger_id, line_type, account_id, posting_date, fiscal_year, fiscal_period,
+           amount_tc, amount_lc, currency_lc, rate_lc, amount_gc, currency_gc, rate_gc, rate_type, rate_date)
+       values ('11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222201', 'bbbbbbbb-0000-4000-8000-000000000001', 7, '44444444-4444-4444-8444-444444444401', 'TAX', '55555555-5555-4555-8555-555555555501',
+           date '2026-10-21', 2026, 10, 0, 0, 'DKK', 1, 0, 'EUR', 0.134, 'SPOT', date '2026-10-21')$t$);
+select pg_temp.expect_error('tax line: a TAX line without its detail is refused at commit',
+    $t$set constraints all immediate$t$, '%has no tax detail%');
+select pg_temp.expect_error('tax detail: only a TAX line has it',
+    $t$insert into core.journal_line_tax (tenant_id, company_id, document_id, line_no, tax_code_id, tax_code_version_id, tax_type, tax_rate, base_amount_tc, base_amount_lc,
+           base_amount_gc, determined_tax_code_id, origin_country, destination_country, tax_date, vat_currency, vat_base_amount, vat_tax_amount, vat_rate, is_override,
+           rounding_mode, origin_eu, destination_eu, deductible_pct, deduction_share, gross_tax_amount_tc)
+       select '11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222201', 'bbbbbbbb-0000-4000-8000-000000000001', 1, tax_code_id, tax_code_version_id, 'OUTPUT', 25, 0, 0, 0, tax_code_id, 'DK', 'DK', date '2026-10-21', 'DKK',
+           0, 0, 1, false, 'PER_DOCUMENT', true, true, 100, 100, 0 from core.tax_code_version where tax_code_id = 'ee000000-0000-4000-8000-0000000000e1' limit 1$t$, '%is not a TAX line%');
+select pg_temp.expect_ok('tax detail: the detail of a TAX line, written by the posting role',
+    $t$set local role cmd_post; insert into core.journal_line_tax (tenant_id, company_id, document_id, line_no, tax_code_id, tax_code_version_id, tax_type, tax_rate, base_amount_tc, base_amount_lc,
+           base_amount_gc, determined_tax_code_id, origin_country, destination_country, tax_date, vat_currency, vat_base_amount, vat_tax_amount, vat_rate, is_override,
+           rounding_mode, origin_eu, destination_eu, deductible_pct, deduction_share, gross_tax_amount_tc)
+       select '11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222201', 'bbbbbbbb-0000-4000-8000-000000000001', 7, tax_code_id, tax_code_version_id, 'OUTPUT', 25, 0, 0, 0, tax_code_id, 'DK', 'DK', date '2026-10-21', 'DKK',
+           0, 0, 1, false, 'PER_DOCUMENT', true, true, 100, 100, 0 from core.tax_code_version where tax_code_id = 'ee000000-0000-4000-8000-0000000000e1' limit 1$t$);
+select pg_temp.expect_ok('tax line: the commit check finds the detail', $t$set constraints all immediate$t$);
+select pg_temp.expect_error('tax detail: it cannot be updated', $t$update core.journal_line_tax set tax_rate = 20$t$, '%append-only%');
+select pg_temp.expect_error('tax detail: no delete', $t$delete from core.journal_line_tax$t$, '%no hard delete%');
+select pg_temp.expect_error('tax detail: the configuration role cannot write it',
+    $t$set local role cmd_config; delete from core.journal_line_tax_base$t$, '%permission denied%');
+select pg_temp.expect_count('tax detail: a command role reads the rows of its tenant',
+    $t$select pg_temp.count_as('cmd_post', 'select (select count(*) from core.tax_determination_rule) + (select count(*) from core.tax_determination_alternative) + (select count(*) from core.journal_line_tax)')$t$, 3);
+select set_config('app.tenant_id', '99999999-9999-4999-8999-999999999999', false);
+select pg_temp.expect_count('tax detail: tenant B sees none of A''s rows',
+    $t$select pg_temp.count_as('cmd_post', 'select (select count(*) from core.tax_determination_rule) + (select count(*) from core.tax_determination_alternative) + (select count(*) from core.journal_line_tax) + (select count(*) from core.partner_tax_registration)')$t$, 0);
+select set_config('app.tenant_id', '11111111-1111-4111-8111-111111111111', false);
+
+-- ---------------------------------------------------------------------------------------------------------
 -- Result
 -- ---------------------------------------------------------------------------------------------------------
 select name, case when ok then 'PASS' else 'FAIL' end as result, detail from test_result order by seq;

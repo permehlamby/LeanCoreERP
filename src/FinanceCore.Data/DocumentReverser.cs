@@ -258,7 +258,10 @@ public sealed class DocumentReverser(NpgsqlDataSource source)
             };
             mirrorLines.Add(m);
             int lineNo = (int)o["line_no"]!;
-            lineHashes.Add(LedgerHash2.LineHash(new HashedLine(m, OpenItem: original.OpenItems.TryGetValue(lineNo, out var oi)
+            lineHashes.Add(LedgerHash2.LineHash(new HashedLine(m,
+                Tax: original.Taxes.TryGetValue(lineNo, out var originalTax) ? TaxRows.MirrorTax(originalTax, mirrorId) : null,
+                TaxBases: original.TaxBases.TryGetValue(lineNo, out var originalBases) ? originalBases.Select(b => TaxRows.MirrorBase(b, mirrorId)).ToList() : null,
+                OpenItem: original.OpenItems.TryGetValue(lineNo, out var oi)
                 ? new Dictionary<string, object?>
                 {
                     ["tenant_id"] = tenantId, ["company_id"] = companyId, ["document_id"] = mirrorId, ["line_no"] = lineNo,
@@ -273,6 +276,12 @@ public sealed class DocumentReverser(NpgsqlDataSource source)
         if (await LegalSnapshots.WriteAsync(tx, tenantId, companyId, mirrorId, fiscalYear, reversalDate, postedAt, ct, copyFromDocumentId: req.DocumentId) is { } noSnapshot)
             return Reject(noSnapshot);
         foreach (var m in mirrorLines) await InsertLineAsync(tx, m, req.DocumentId, ct);
+        // the tax rows of the mirror: the same determination with the opposite amounts (02, 7). The tax date stays the date of the original.
+        foreach (var (taxLineNo, tax) in original.Taxes.OrderBy(t => t.Key))
+        {
+            await TaxRows.InsertTaxAsync(tx, TaxRows.MirrorTax(tax, mirrorId), ct);
+            foreach (var b in original.TaxBases.GetValueOrDefault(taxLineNo) ?? []) await TaxRows.InsertBaseAsync(tx, TaxRows.MirrorBase(b, mirrorId), ct);
+        }
         await CopyFreeDimensionsAsync(tx, tenantId, companyId, req.DocumentId, mirrorId, ct);
         // The mirror's open items start OPEN with nothing cleared. The automatic clearing below clears them (03, 5.7, B3).
         foreach (var m in mirrorLines.Where(m => original.OpenItems.ContainsKey((int)m["line_no"]!)))
