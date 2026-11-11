@@ -14,6 +14,12 @@ insert into platform.ref_country (country_code, alpha3, name) values
     ('FR', 'FRA', 'France'), ('NL', 'NLD', 'Netherlands')
 on conflict (country_code) do nothing;
 
+-- EU membership for VAT rules (07, 4), maintained by platform releases. These rows cover the countries above and are UNVERIFIED against the
+-- Official Journal. VAT territories that lie outside the VAT area (parts of a member state) are not modelled.
+insert into platform.ref_country_eu_membership (country_code, valid_from)
+values ('DK', date '1973-01-01'), ('DE', date '1958-01-01'), ('SE', date '1995-01-01'), ('FR', date '1958-01-01'), ('NL', date '1958-01-01')
+on conflict (country_code, valid_from) do nothing;
+
 insert into platform.tenant (tenant_id, tenant_code, name, status, purpose)
 values ('11111111-1111-4111-8111-111111111111', 'DEV', 'Development tenant', 'ACTIVE', 'TEST')
 on conflict (tenant_id) do nothing;

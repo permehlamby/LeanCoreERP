@@ -13,7 +13,7 @@ namespace FinanceCore.Api.Http;
 public sealed class MasterFieldsConverter : JsonConverter<IReadOnlyDictionary<string, object?>>
 {
     private static readonly Dictionary<string, MasterKind> Kinds = MasterFields.Partner
-        .Concat(MasterFields.Pii).Concat(MasterFields.Relation).Concat(MasterFields.PaymentTerms).Concat(DimensionFields.Type).Concat(DimensionFields.Value)
+        .Concat(MasterFields.Pii).Concat(MasterFields.Relation).Concat(MasterFields.PaymentTerms).Concat(DimensionFields.Type).Concat(DimensionFields.Value).Concat(TaxFields.TaxClass).Concat(TaxFields.RegistrationCreate).Concat(TaxFields.TaxCodeCreate).Concat(TaxFields.TaxCodeVersion).Concat(TaxFields.ReturnBoxFields)
         .GroupBy(f => f.Name).ToDictionary(g => g.Key, g => g.First().Kind);
 
     public override IReadOnlyDictionary<string, object?> Read(ref Utf8JsonReader reader, Type type, JsonSerializerOptions options)
@@ -42,11 +42,11 @@ public sealed class MasterFieldsConverter : JsonConverter<IReadOnlyDictionary<st
                 return kind switch
                 {
                     MasterKind.Id when Guid.TryParse(s, out Guid g) => g,
-                    MasterKind.Amount or MasterKind.Percent when decimal.TryParse(s, NumberStyles.Number, CultureInfo.InvariantCulture, out decimal d) => d,
+                    MasterKind.Amount or MasterKind.Percent or MasterKind.Rate when decimal.TryParse(s, NumberStyles.Number, CultureInfo.InvariantCulture, out decimal d) => d,
                     _ => s
                 };
             case JsonTokenType.Number:
-                if (kind is MasterKind.Amount or MasterKind.Percent) return r.GetDecimal();
+                if (kind is MasterKind.Amount or MasterKind.Percent or MasterKind.Rate) return r.GetDecimal();
                 if (r.TryGetInt64(out long l)) return l;   // two separate returns: a conditional of long and decimal would make both a decimal
                 return r.GetDecimal();
             default:

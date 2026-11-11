@@ -41,6 +41,24 @@ public sealed class ConfigModule : ICommandModule
         catalog.Add<CreateAccountDimensionRuleRequest, MasterResult>("account-dimension-rules:create", DimensionCommands.RulePermission, (sp, t, c, r, ct) => sp.GetRequiredService<DimensionCommands>().CreateRuleAsync(t, c, r, ct));
         catalog.Add<UpdateAccountDimensionRuleRequest, MasterResult>("account-dimension-rules:update", DimensionCommands.RulePermission, (sp, t, c, r, ct) => sp.GetRequiredService<DimensionCommands>().UpdateRuleAsync(t, c, r, ct));
 
+        catalog.Add<CreateTaxClassRequest, MasterResult>("tax-classes:create", TaxCommands.Permission, (sp, t, c, r, ct) => sp.GetRequiredService<TaxCommands>().CreateClassAsync(t, c, r, ct));
+        catalog.Add<UpdateTaxClassRequest, MasterResult>("tax-classes:update", TaxCommands.Permission, (sp, t, c, r, ct) => sp.GetRequiredService<TaxCommands>().UpdateClassAsync(t, c, r, ct));
+        catalog.Add<MasterStatusRequest, MasterResult>("tax-classes:deactivate", TaxCommands.Permission, (sp, t, c, r, ct) => sp.GetRequiredService<TaxCommands>().DeactivateClassAsync(t, c, r, ct));
+        catalog.Add<MasterStatusRequest, MasterResult>("tax-classes:reactivate", TaxCommands.Permission, (sp, t, c, r, ct) => sp.GetRequiredService<TaxCommands>().ReactivateClassAsync(t, c, r, ct));
+        catalog.Add<CreateVatRegistrationRequest, MasterResult>("company-vat-registrations:create", TaxCommands.Permission, (sp, t, c, r, ct) => sp.GetRequiredService<TaxCommands>().CreateRegistrationAsync(t, c, r, ct));
+        catalog.Add<UpdateVatRegistrationRequest, MasterResult>("company-vat-registrations:update", TaxCommands.Permission, (sp, t, c, r, ct) => sp.GetRequiredService<TaxCommands>().UpdateRegistrationAsync(t, c, r, ct));
+        catalog.Add<MasterStatusRequest, MasterResult>("company-vat-registrations:deactivate", TaxCommands.Permission, (sp, t, c, r, ct) => sp.GetRequiredService<TaxCommands>().DeactivateRegistrationAsync(t, c, r, ct));
+        catalog.Add<MasterStatusRequest, MasterResult>("company-vat-registrations:reactivate", TaxCommands.Permission, (sp, t, c, r, ct) => sp.GetRequiredService<TaxCommands>().ReactivateRegistrationAsync(t, c, r, ct));
+        catalog.Add<CreateTaxCodeRequest, MasterResult>("tax-codes:create", TaxCommands.Permission, (sp, t, c, r, ct) => sp.GetRequiredService<TaxCommands>().CreateCodeAsync(t, c, r, ct));
+        catalog.Add<UpdateTaxCodeRequest, MasterResult>("tax-codes:update", TaxCommands.Permission, (sp, t, c, r, ct) => sp.GetRequiredService<TaxCommands>().UpdateCodeAsync(t, c, r, ct));
+        catalog.Add<MasterStatusRequest, MasterResult>("tax-codes:deactivate", TaxCommands.Permission, (sp, t, c, r, ct) => sp.GetRequiredService<TaxCommands>().DeactivateCodeAsync(t, c, r, ct));
+        catalog.Add<MasterStatusRequest, MasterResult>("tax-codes:reactivate", TaxCommands.Permission, (sp, t, c, r, ct) => sp.GetRequiredService<TaxCommands>().ReactivateCodeAsync(t, c, r, ct));
+        catalog.Add<CreateTaxCodeVersionRequest, TaxCodeVersionResult>("tax-codes:create-version", TaxCommands.Permission, (sp, t, c, r, ct) => sp.GetRequiredService<TaxCommands>().CreateVersionAsync(t, c, r, ct));
+        catalog.Add<CreateTaxReturnBoxRequest, MasterResult>("tax-return-boxes:create", TaxCommands.Permission, (sp, t, c, r, ct) => sp.GetRequiredService<TaxCommands>().CreateBoxAsync(t, c, r, ct));
+        catalog.Add<UpdateTaxReturnBoxRequest, MasterResult>("tax-return-boxes:update", TaxCommands.Permission, (sp, t, c, r, ct) => sp.GetRequiredService<TaxCommands>().UpdateBoxAsync(t, c, r, ct));
+        catalog.Add<TaxReturnBoxStatusRequest, MasterResult>("tax-return-boxes:deactivate", TaxCommands.Permission, (sp, t, c, r, ct) => sp.GetRequiredService<TaxCommands>().DeactivateBoxAsync(t, c, r, ct));
+        catalog.Add<TaxReturnBoxStatusRequest, MasterResult>("tax-return-boxes:reactivate", TaxCommands.Permission, (sp, t, c, r, ct) => sp.GetRequiredService<TaxCommands>().ReactivateBoxAsync(t, c, r, ct));
+
         catalog.Add<AssignAccountRoleRequest, AssignedAccountRole>("account-role-assignments:create", AccountRoleAssigner.Permission, (sp, t, c, r, ct) => sp.GetRequiredService<AccountRoleAssigner>().AssignAsync(t, c, r, ct));
         catalog.Add<CreateRetentionRuleVersionRequest, CreatedRetentionRule>("retention-rules:create-version", RetentionRules.Permission, (sp, t, c, r, ct) => sp.GetRequiredService<RetentionRuleCommands>().CreateVersionAsync(t, c, r, ct));
 

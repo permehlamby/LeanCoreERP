@@ -28,7 +28,7 @@ declare
     tables text[] := array[
         'outbox_event', 'change_log', 'master_change_log', 'command_log_result', 'command_log', 'clearing_item', 'journal_line_open_item', 'clearing', 'journal_line_dimension', 'journal_line', 'document_legal_snapshot', 'journal_document', 'number_range_counter',
         'fiscal_period', 'fiscal_year', 'chain_head', 'period_event', 'posting_window', 'number_series_assignment',
-        'number_series', 'account_role_assignment', 'account_dimension_rule', 'dimension_value', 'dimension_type', 'gl_account', 'exchange_rate', 'partner_company_relation', 'business_partner_pii', 'business_partner', 'payment_terms', 'company_setting_version', 'group_membership', 'ledger', 'retention_rule', 'company',
+        'number_series', 'account_role_assignment', 'account_dimension_rule', 'dimension_value', 'dimension_type', 'tax_code_version_box', 'tax_code_version', 'tax_code', 'tax_return_box', 'company_vat_registration', 'gl_account', 'tax_class', 'exchange_rate', 'partner_company_relation', 'business_partner_pii', 'business_partner', 'payment_terms', 'company_setting_version', 'group_membership', 'ledger', 'retention_rule', 'company',
         'company_group', 'fiscal_calendar', 'tenant_currency', 'tenant_setting', 'outbox_head'];
     only_id uuid := nullif(current_setting('cleanup.only_tenant', true), '')::uuid;
     removed int := 0;

@@ -647,6 +647,116 @@ select pg_temp.expect_count('dimensions: tenant B sees none of A''s rows',
     $t$select pg_temp.count_as('cmd_post', 'select (select count(*) from core.dimension_value) + (select count(*) from core.journal_line_dimension) + (select count(*) from core.account_dimension_rule)')$t$, 0);
 select set_config('app.tenant_id', '11111111-1111-4111-8111-111111111111', false);
 
+
+-- ---------------------------------------------------------------------------------------------------------
+-- VAT configuration (0023, 07, 4, 8.1 to 8.3, 08, 4.1)
+-- ---------------------------------------------------------------------------------------------------------
+select pg_temp.expect_count('eu membership: a command role reads the reference rows',
+    $t$select pg_temp.count_as('cmd_read', 'select count(*) from platform.ref_country_eu_membership where country_code = ''DK''')$t$, 1);
+select pg_temp.expect_error('eu membership: a command role cannot write it',
+    $t$set local role cmd_config; insert into platform.ref_country_eu_membership (country_code, valid_from) values ('NO', date '2000-01-01')$t$, '%permission denied%');
+select pg_temp.expect_error('eu membership: the end is after the start',
+    $t$insert into platform.ref_country_eu_membership (country_code, valid_from, valid_to) values ('NO', date '2000-01-01', date '2000-01-01')$t$, '%violates check constraint%');
+
+insert into core.tax_class (tenant_id, tax_class_id, code, name, created_by, updated_by)
+values ('11111111-1111-4111-8111-111111111111', 'ee000000-0000-4000-8000-0000000000c1', 'GOODS', 'Goods', 't', 't');
+insert into core.company_vat_registration (tenant_id, company_id, registration_id, country_code, vat_id, scheme, filing_frequency, correction_method,
+    return_currency, valid_from, created_by, updated_by)
+values ('11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222201', 'ee000000-0000-4000-8000-0000000000d1', 'DK', 'DK12345678',
+        'STANDARD', 'QUARTERLY', 'ADJUST_NEXT', 'DKK', date '2026-01-01', 't', 't');
+insert into core.tax_return_box (tenant_id, country_code, return_type, box_code, name, created_by, updated_by)
+values ('11111111-1111-4111-8111-111111111111', 'DK', 'STANDARD', 'A', 'Box A', 't', 't'),
+       ('11111111-1111-4111-8111-111111111111', 'DK', 'STANDARD', 'B', 'Box B', 't', 't');
+insert into core.tax_code (tenant_id, company_id, tax_code_id, code, description, tax_type, vat_registration_id, created_by, updated_by)
+values ('11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222201', 'ee000000-0000-4000-8000-0000000000e1', 'U25', 'Output 25', 'OUTPUT',
+        'ee000000-0000-4000-8000-0000000000d1', 't', 't'),
+       ('11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222201', 'ee000000-0000-4000-8000-0000000000e2', 'I25', 'Input 25', 'INPUT',
+        'ee000000-0000-4000-8000-0000000000d1', 't', 't'),
+       ('11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222201', 'ee000000-0000-4000-8000-0000000000e3', 'Z0', 'Zero rated', 'ZERO_RATED',
+        'ee000000-0000-4000-8000-0000000000d1', 't', 't');
+
+select pg_temp.expect_error('vat registration: one row per country, scheme and start',
+    $t$insert into core.company_vat_registration (tenant_id, company_id, country_code, vat_id, scheme, filing_frequency, correction_method, return_currency, valid_from, created_by, updated_by)
+       values ('11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222201', 'DK', 'DK1', 'STANDARD', 'MONTHLY', 'ADJUST_NEXT', 'DKK', date '2026-01-01', 't', 't')$t$, '%duplicate key%');
+select pg_temp.expect_error('vat registration: the scheme is one of the four',
+    $t$insert into core.company_vat_registration (tenant_id, company_id, country_code, vat_id, scheme, filing_frequency, correction_method, return_currency, valid_from, created_by, updated_by)
+       values ('11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222201', 'SE', 'SE1', 'OSS', 'MONTHLY', 'ADJUST_NEXT', 'SEK', date '2026-01-01', 't', 't')$t$, '%violates check constraint%');
+select pg_temp.expect_error('vat registration: the country and the scheme are fixed once a tax code uses it',
+    $t$update core.company_vat_registration set country_code = 'DE' where registration_id = 'ee000000-0000-4000-8000-0000000000d1'$t$, '%IMMUTABLE_AFTER_POSTING%');
+select pg_temp.expect_ok('vat registration: the filing frequency can change',
+    $t$update core.company_vat_registration set filing_frequency = 'MONTHLY' where registration_id = 'ee000000-0000-4000-8000-0000000000d1'$t$);
+select pg_temp.expect_error('tax code: the type is one of four',
+    $t$update core.tax_code set tax_type = 'SALES' where code = 'U25'$t$, '%violates check constraint%');
+
+-- the first versions: the VAT accounts become tax accounts, the system does it
+select pg_temp.expect_ok('tax code version: an output code with its account',
+    $t$set local role cmd_config; insert into core.tax_code_version (tenant_id, company_id, tax_code_id, valid_from, rate, vat_account_id, created_by)
+       values ('11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222201', 'ee000000-0000-4000-8000-0000000000e1', date '2026-01-01', 25,
+               '55555555-5555-4555-8555-555555555501', 't')$t$);
+select pg_temp.expect_count('tax code version: the VAT account is marked as a tax account',
+    $t$select count(*) from core.gl_account where account_id = '55555555-5555-4555-8555-555555555501' and tax_account$t$, 1);
+select pg_temp.expect_error('tax code version: a tax account is never reset',
+    $t$update core.gl_account set tax_account = false where account_id = '55555555-5555-4555-8555-555555555501'$t$, '%never reset%');
+select pg_temp.expect_error('tax code version: a version starts after the latest one',
+    $t$insert into core.tax_code_version (tenant_id, company_id, tax_code_id, valid_from, rate, vat_account_id, created_by)
+       values ('11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222201', 'ee000000-0000-4000-8000-0000000000e1', date '2026-01-01', 25,
+               '55555555-5555-4555-8555-555555555501', 't')$t$, '%VALID_FROM_NOT_LATER%');
+select pg_temp.expect_ok('tax code version: a later version, also an end-version',
+    $t$insert into core.tax_code_version (tenant_id, company_id, tax_code_id, valid_from, valid_to, rate, vat_account_id, created_by)
+       values ('11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222201', 'ee000000-0000-4000-8000-0000000000e1', date '2026-07-01', date '2026-12-31', 24,
+               '55555555-5555-4555-8555-555555555501', 't')$t$);
+select pg_temp.expect_error('tax code version: a version cannot be updated',
+    $t$update core.tax_code_version set rate = 20$t$, '%append-only%');
+select pg_temp.expect_error('tax code version: the rate of a zero-rated code is 0',
+    $t$insert into core.tax_code_version (tenant_id, company_id, tax_code_id, valid_from, rate, vat_account_id, en16931_vat_category, created_by)
+       values ('11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222201', 'ee000000-0000-4000-8000-0000000000e3', date '2026-01-01', 5,
+               '55555555-5555-4555-8555-555555555501', 'Z', 't')$t$, '%rate of an exempt or zero-rated code is 0%');
+select pg_temp.expect_error('tax code version: a deductible share belongs to an input code',
+    $t$insert into core.tax_code_version (tenant_id, company_id, tax_code_id, valid_from, rate, vat_account_id, deductible_pct, created_by)
+       values ('11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222201', 'ee000000-0000-4000-8000-0000000000e1', date '2027-01-01', 25,
+               '55555555-5555-4555-8555-555555555501', 50, 't')$t$, '%DEDUCTION_ON_NON_INPUT_CODE%');
+select pg_temp.expect_error('tax code version: the VAT account is a balance sheet account',
+    $t$insert into core.tax_code_version (tenant_id, company_id, tax_code_id, valid_from, rate, vat_account_id, created_by)
+       values ('11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222201', 'ee000000-0000-4000-8000-0000000000e2', date '2026-01-01', 25,
+               '55555555-5555-4555-8555-555555555502', 't')$t$, '%balance sheet account%');
+select pg_temp.expect_error('tax code version: reverse charge needs its counter account',
+    $t$insert into core.tax_code_version (tenant_id, company_id, tax_code_id, valid_from, rate, vat_account_id, reverse_charge, created_by)
+       values ('11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222201', 'ee000000-0000-4000-8000-0000000000e2', date '2026-01-01', 25,
+               '55555555-5555-4555-8555-555555555501', true, 't')$t$, '%violates check constraint%');
+select pg_temp.expect_error('tax code: the type is fixed once the code has a version',
+    $t$update core.tax_code set tax_type = 'INPUT' where code = 'U25'$t$, '%IMMUTABLE_AFTER_POSTING%');
+select pg_temp.expect_ok('tax code: a code can be described again',
+    $t$update core.tax_code set description = 'Output VAT 25' where code = 'U25'$t$);
+
+-- the boxes of a version
+select pg_temp.expect_ok('tax code version box: a box of the country of the registration',
+    $t$set local role cmd_config; insert into core.tax_code_version_box (tenant_id, company_id, tax_code_id, valid_from, line_side, return_type, box_code, amount_kind, sign)
+       values ('11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222201', 'ee000000-0000-4000-8000-0000000000e1', date '2026-01-01', 'PRIMARY', 'STANDARD', 'A', 'BASE', 1)$t$);
+select pg_temp.expect_error('tax code version box: a box that does not exist for the country',
+    $t$insert into core.tax_code_version_box (tenant_id, company_id, tax_code_id, valid_from, line_side, return_type, box_code, amount_kind, sign)
+       values ('11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222201', 'ee000000-0000-4000-8000-0000000000e1', date '2026-01-01', 'PRIMARY', 'STANDARD', 'ZZ', 'BASE', 1)$t$, '%does not exist for the country%');
+select pg_temp.expect_error('tax code version box: the counter side needs a reverse-charge version',
+    $t$insert into core.tax_code_version_box (tenant_id, company_id, tax_code_id, valid_from, line_side, return_type, box_code, amount_kind, sign)
+       values ('11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222201', 'ee000000-0000-4000-8000-0000000000e1', date '2026-01-01', 'COUNTER', 'STANDARD', 'B', 'TAX', -1)$t$, '%counter side%');
+select pg_temp.expect_error('tax code version box: the sign is 1 or -1',
+    $t$insert into core.tax_code_version_box (tenant_id, company_id, tax_code_id, valid_from, line_side, return_type, box_code, amount_kind, sign)
+       values ('11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222201', 'ee000000-0000-4000-8000-0000000000e1', date '2026-01-01', 'PRIMARY', 'STANDARD', 'B', 'TAX', 2)$t$, '%violates check constraint%');
+select pg_temp.expect_error('tax code version box: a box cannot be updated', $t$update core.tax_code_version_box set sign = -1$t$, '%append-only%');
+select pg_temp.expect_error('vat: no delete of a code', $t$delete from core.tax_code$t$, '%no hard delete%');
+select pg_temp.expect_error('vat: no delete of a registration', $t$delete from core.company_vat_registration$t$, '%no hard delete%');
+select pg_temp.expect_error('vat: the posting role cannot write a tax code',
+    $t$set local role cmd_post; update core.tax_code set description = 'x' where code = 'U25'$t$, '%permission denied%');
+select pg_temp.expect_error('gl_account: the default tax class names a tax class of the tenant',
+    $t$update core.gl_account set default_tax_class_id = gen_random_uuid() where account_no = '1000'$t$, '%foreign key%');
+select pg_temp.expect_ok('gl_account: the default tax class of the tenant',
+    $t$update core.gl_account set default_tax_class_id = 'ee000000-0000-4000-8000-0000000000c1' where tenant_id = '11111111-1111-4111-8111-111111111111' and account_no = '1000'$t$);
+select pg_temp.expect_count('vat: a command role reads the rows of its tenant',
+    $t$select pg_temp.count_as('cmd_post', 'select (select count(*) from core.tax_code) + (select count(*) from core.tax_code_version) + (select count(*) from core.tax_code_version_box) + (select count(*) from core.tax_class) + (select count(*) from core.tax_return_box) + (select count(*) from core.company_vat_registration)')$t$, 10);
+select set_config('app.tenant_id', '99999999-9999-4999-8999-999999999999', false);
+select pg_temp.expect_count('vat: tenant B sees none of A''s rows',
+    $t$select pg_temp.count_as('cmd_post', 'select (select count(*) from core.tax_code) + (select count(*) from core.tax_code_version) + (select count(*) from core.tax_class) + (select count(*) from core.tax_return_box) + (select count(*) from core.company_vat_registration)')$t$, 0);
+select set_config('app.tenant_id', '11111111-1111-4111-8111-111111111111', false);
+
 -- ---------------------------------------------------------------------------------------------------------
 -- Result
 -- ---------------------------------------------------------------------------------------------------------

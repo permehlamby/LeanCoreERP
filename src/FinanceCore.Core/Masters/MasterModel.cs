@@ -7,7 +7,7 @@ using FinanceCore.Core.Periods;
 namespace FinanceCore.Core.Masters;
 
 /// <summary>The kinds of value of a master data field. The text form of a value is canonical, so that old and new values of a change compare and log.</summary>
-public enum MasterKind { Code, Text, Bool, Amount, Percent, Id, Country, Currency, SmallInt, Date }
+public enum MasterKind { Code, Text, Bool, Amount, Percent, Id, Country, Currency, SmallInt, Date, Rate }
 
 /// <summary>
 /// One field that a master command may set: the column, the kind, the length, whether it may be null, the allowed values of a code and whether
@@ -56,6 +56,13 @@ public static class MasterValues
                 if (f.Kind == MasterKind.Amount && d < 0) { reason = "not negative"; return null; }
                 if (f.Kind == MasterKind.Percent && (d <= 0 || d > 100)) { reason = "more than 0 and at most 100"; return null; }
                 return new ParsedValue(d, d.ToString("F" + scale, CultureInfo.InvariantCulture));
+            case MasterKind.Rate:
+                // a rate in percent, 0 to 100 (a VAT rate of 0, a deductible share of 0): Percent is more than 0
+                if (v is int or long) v = Convert.ToDecimal(v, CultureInfo.InvariantCulture);
+                if (v is not decimal r) { reason = "a decimal number"; return null; }
+                if (Math.Round(r, Canonical.RateScale) != r) { reason = $"at most {Canonical.RateScale} fraction digits"; return null; }
+                if (r < 0 || r > 100) { reason = "0 to 100"; return null; }
+                return new ParsedValue(r, r.ToString("F" + Canonical.RateScale, CultureInfo.InvariantCulture));
             case MasterKind.Date:
                 if (v is DateOnly day) return new ParsedValue(day, day.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture));
                 if (v is string ds && DateOnly.TryParseExact(ds, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out DateOnly parsedDay))
@@ -139,6 +146,79 @@ public sealed record UpdateDimensionValueRequest(Guid DimensionValueId, long Exp
 public sealed record CreateAccountDimensionRuleRequest(Guid CompanyId, Guid AccountId, Guid DimensionTypeId, string Rule);
 public sealed record UpdateAccountDimensionRuleRequest(Guid CompanyId, Guid AccountId, Guid DimensionTypeId, long ExpectedVersion, string Rule);
 
+/// <summary>The fields of the VAT configuration commands (07, 8.1 to 8.3, 08, 4.1, 19, 3.1).</summary>
+public static class TaxFields
+{
+    public static readonly string[] Schemes = ["STANDARD", "OSS_UNION", "OSS_NON_UNION", "IOSS"];
+    public static readonly string[] Frequencies = ["MONTHLY", "QUARTERLY", "HALF_YEARLY", "YEARLY"];
+    public static readonly string[] CorrectionMethods = ["ADJUST_NEXT", "SUPPLEMENTARY", "REPLACEMENT"];
+    public static readonly string[] TaxTypes = ["OUTPUT", "INPUT", "EXEMPT", "ZERO_RATED"];
+    public static readonly string[] ReturnTypes = ["STANDARD", "EC_LIST", "OSS", "IOSS"];
+
+    public static readonly IReadOnlyList<MasterField> TaxClass =
+    [
+        new("code", MasterKind.Code, 50, false), new("name", MasterKind.Text, 100, false)
+    ];
+
+    private static readonly MasterField[] RegistrationShared =
+    [
+        new("country_code", MasterKind.Country, 0, false), new("vat_id", MasterKind.Text, 30, false),
+        new("scheme", MasterKind.Code, 50, false, Schemes), new("filing_frequency", MasterKind.Code, 50, false, Frequencies),
+        new("ec_list_frequency", MasterKind.Code, 50, true, ["MONTHLY", "QUARTERLY"]),
+        new("correction_method", MasterKind.Code, 50, false, CorrectionMethods), new("return_currency", MasterKind.Currency, 0, false),
+        new("vat_rate_type", MasterKind.Code, 50, false, ["BOOKING", "VAT"]),
+        new("valid_from", MasterKind.Date, 0, false), new("valid_to", MasterKind.Date)
+    ];
+    public static readonly IReadOnlyList<MasterField> RegistrationCreate = [new("company_id", MasterKind.Id, 0, false), .. RegistrationShared];
+    public static readonly IReadOnlyList<MasterField> RegistrationUpdate = RegistrationShared;
+
+    public static readonly IReadOnlyList<MasterField> TaxCodeCreate =
+    [
+        new("company_id", MasterKind.Id, 0, false), new("code", MasterKind.Code, 50, false), new("description", MasterKind.Text, 100, false),
+        new("tax_type", MasterKind.Code, 50, false, TaxTypes), new("vat_registration_id", MasterKind.Id, 0, false)
+    ];
+    public static readonly IReadOnlyList<MasterField> TaxCodeUpdate =
+    [
+        new("code", MasterKind.Code, 50, false), new("description", MasterKind.Text, 100, false),
+        new("tax_type", MasterKind.Code, 50, false, TaxTypes), new("vat_registration_id", MasterKind.Id, 0, false)
+    ];
+
+    public static readonly IReadOnlyList<MasterField> TaxCodeVersion =
+    [
+        new("valid_from", MasterKind.Date, 0, false), new("valid_to", MasterKind.Date), new("rate", MasterKind.Rate, 0, false),
+        new("vat_account_id", MasterKind.Id, 0, false), new("reverse_charge", MasterKind.Bool, 0, false), new("reverse_charge_account_id", MasterKind.Id),
+        new("en16931_vat_category", MasterKind.Code, 50, true, ["S", "Z", "E", "AE", "K", "G", "O", "L", "M"]),
+        new("exemption_reason_code", MasterKind.Code, 50), new("exemption_reason_text", MasterKind.Text, 200),
+        new("ec_list_category", MasterKind.Code, 50, true, ["GOODS", "SERVICES", "TRIANGULATION"]), new("supply_kind", MasterKind.Code, 50, true, ["GOODS", "SERVICES"]),
+        new("evidence_required_type", MasterKind.Code, 50, true, ["CUSTOMS_DECLARATION", "PROOF_OF_EXPORT", "TRANSPORT_DOCUMENT", "PARTNER_VAT_CHECK", "OTHER"]),
+        new("deductible_pct", MasterKind.Rate, 0, false), new("deduction_key", MasterKind.Code, 50),
+        new("deduction_cap", MasterKind.Code, 50, false, ["NONE", "SUPPLIED_AMOUNT"])
+    ];
+
+    public static readonly IReadOnlyList<MasterField> ReturnBoxFields =
+    [
+        new("name", MasterKind.Text, 100, false), new("box_group", MasterKind.Code, 50)
+    ];
+}
+
+public sealed record CreateTaxClassRequest(IReadOnlyDictionary<string, object?> Fields);
+public sealed record UpdateTaxClassRequest(Guid TaxClassId, long ExpectedVersion, IReadOnlyDictionary<string, object?> Fields);
+public sealed record CreateVatRegistrationRequest(IReadOnlyDictionary<string, object?> Fields);
+public sealed record UpdateVatRegistrationRequest(Guid RegistrationId, long ExpectedVersion, IReadOnlyDictionary<string, object?> Fields);
+public sealed record CreateTaxCodeRequest(IReadOnlyDictionary<string, object?> Fields);
+public sealed record UpdateTaxCodeRequest(Guid TaxCodeId, long ExpectedVersion, IReadOnlyDictionary<string, object?> Fields);
+
+/// <summary>One box a tax code version maps to (08, 6.2): the side of the line, the return type, the box, whether the base or the tax goes in it, and the sign.</summary>
+public sealed record TaxBoxMapping(string LineSide, string ReturnType, string BoxCode, string AmountKind, int Sign);
+
+/// <summary>Payload of tax-codes:create-version (07, 8.3). The boxes are part of the version and are written with it.</summary>
+public sealed record CreateTaxCodeVersionRequest(Guid TaxCodeId, IReadOnlyDictionary<string, object?> Fields, IReadOnlyList<TaxBoxMapping> Boxes);
+
+/// <summary>A return box is keyed by country, return type and code (07, 8.2).</summary>
+public sealed record CreateTaxReturnBoxRequest(string CountryCode, string ReturnType, string BoxCode, IReadOnlyDictionary<string, object?> Fields);
+public sealed record UpdateTaxReturnBoxRequest(string CountryCode, string ReturnType, string BoxCode, long ExpectedVersion, IReadOnlyDictionary<string, object?> Fields);
+public sealed record TaxReturnBoxStatusRequest(string CountryCode, string ReturnType, string BoxCode, long ExpectedVersion, string ReasonCode);
+
 /// <summary>One relation of a partner to a company, given as the fields to set. On create it is a new row, on update it creates the row or changes it.</summary>
 public sealed record PartnerRelationInput(Guid CompanyId, IReadOnlyDictionary<string, object?> Fields);
 
@@ -213,6 +293,23 @@ public static class MasterRules
         Fingerprint("account-dimension-rules:create", $"{r.CompanyId:D}|{r.AccountId:D}|{r.DimensionTypeId:D}|{r.Rule}");
     public static byte[] Fingerprint(UpdateAccountDimensionRuleRequest r) =>
         Fingerprint("account-dimension-rules:update", $"{r.CompanyId:D}|{r.AccountId:D}|{r.DimensionTypeId:D}|{r.ExpectedVersion}|{r.Rule}");
+
+    public static byte[] Fingerprint(CreateTaxClassRequest r) => Fingerprint("tax-classes:create", Text(r.Fields));
+    public static byte[] Fingerprint(UpdateTaxClassRequest r) => Fingerprint("tax-classes:update", r.TaxClassId.ToString("D") + "|" + r.ExpectedVersion + "|" + Text(r.Fields));
+    public static byte[] Fingerprint(CreateVatRegistrationRequest r) => Fingerprint("company-vat-registrations:create", Text(r.Fields));
+    public static byte[] Fingerprint(UpdateVatRegistrationRequest r) =>
+        Fingerprint("company-vat-registrations:update", r.RegistrationId.ToString("D") + "|" + r.ExpectedVersion + "|" + Text(r.Fields));
+    public static byte[] Fingerprint(CreateTaxCodeRequest r) => Fingerprint("tax-codes:create", Text(r.Fields));
+    public static byte[] Fingerprint(UpdateTaxCodeRequest r) => Fingerprint("tax-codes:update", r.TaxCodeId.ToString("D") + "|" + r.ExpectedVersion + "|" + Text(r.Fields));
+    public static byte[] Fingerprint(CreateTaxCodeVersionRequest r) =>
+        Fingerprint("tax-codes:create-version", r.TaxCodeId.ToString("D") + "|" + Text(r.Fields) + "|" +
+            string.Join(";", r.Boxes.Select(b => $"{b.LineSide}/{b.ReturnType}/{b.BoxCode}/{b.AmountKind}/{b.Sign}")));
+    public static byte[] Fingerprint(CreateTaxReturnBoxRequest r) =>
+        Fingerprint("tax-return-boxes:create", $"{r.CountryCode}|{r.ReturnType}|{r.BoxCode}|" + Text(r.Fields));
+    public static byte[] Fingerprint(UpdateTaxReturnBoxRequest r) =>
+        Fingerprint("tax-return-boxes:update", $"{r.CountryCode}|{r.ReturnType}|{r.BoxCode}|{r.ExpectedVersion}|" + Text(r.Fields));
+    public static byte[] Fingerprint(string command, TaxReturnBoxStatusRequest r) =>
+        Fingerprint(command, $"{r.CountryCode}|{r.ReturnType}|{r.BoxCode}|{r.ExpectedVersion}|{r.ReasonCode}");
 
     public static byte[] Fingerprint(CreatePaymentTermsRequest r) => Fingerprint("payment-terms:create", Text(r.Fields));
 

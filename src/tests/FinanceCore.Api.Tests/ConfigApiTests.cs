@@ -92,6 +92,34 @@ public class ConfigApiTests(ApiFixture api) : IClassFixture<ApiFixture>
     }
 
     [Fact]
+    public async Task VatConfigurationIsCreatedWithItsBoxesOverHttp()
+    {
+        var t = await TestTenant.CreateReadyAsync();
+        var registration = await Send(t, "company-vat-registrations:create", D(("fields", D(("company_id", t.CompanyId), ("country_code", "DK"), ("vat_id", "DK12345678"), ("scheme", "STANDARD"),
+            ("filing_frequency", "QUARTERLY"), ("correction_method", "ADJUST_NEXT"), ("return_currency", "DKK"), ("valid_from", "2026-01-01")))), "vr1", "write.config");
+        Assert.Equal(HttpStatusCode.OK, registration.Response.StatusCode);
+        string registrationId = registration.Body.GetProperty("result").GetProperty("entity_id").GetString()!;
+
+        var box = await Send(t, "tax-return-boxes:create", D(("country_code", "DK"), ("return_type", "STANDARD"), ("box_code", "A"), ("fields", D(("name", "Box A")))), "tb1", "write.config");
+        Assert.Equal(HttpStatusCode.OK, box.Response.StatusCode);
+
+        var code = await Send(t, "tax-codes:create", D(("fields", D(("company_id", t.CompanyId), ("code", "U25"), ("description", "Output 25"), ("tax_type", "OUTPUT"), ("vat_registration_id", registrationId)))), "tc1", "write.config");
+        Assert.Equal(HttpStatusCode.OK, code.Response.StatusCode);
+        string codeId = code.Body.GetProperty("result").GetProperty("entity_id").GetString()!;
+
+        // a rate is a number or a string, a date is text, the boxes are a list of objects
+        var version = await Send(t, "tax-codes:create-version", D(("tax_code_id", codeId), ("fields", D(("valid_from", "2026-01-01"), ("rate", 25), ("vat_account_id", t.Bank))),
+            ("boxes", new object[] { D(("line_side", "PRIMARY"), ("return_type", "STANDARD"), ("box_code", "A"), ("amount_kind", "BASE"), ("sign", 1)) })), "tv1", "write.config");
+        Assert.Equal(HttpStatusCode.OK, version.Response.StatusCode);
+        Assert.Equal(1, version.Body.GetProperty("result").GetProperty("box_count").GetInt32());
+
+        var again = await Send(t, "tax-codes:create-version", D(("tax_code_id", codeId), ("fields", D(("valid_from", "2026-01-01"), ("rate", 25), ("vat_account_id", t.Bank))), ("boxes", Array.Empty<object>())), "tv2", "write.config");
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, again.Response.StatusCode);
+        Assert.Equal("CONFIG.VALID_FROM_NOT_LATER", Code(again.Body));
+        Assert.Equal(HttpStatusCode.Forbidden, (await Send(t, "tax-codes:create-version", D(("tax_code_id", codeId), ("fields", D())), "tv3", "write.master")).Response.StatusCode);
+    }
+
+    [Fact]
     public async Task APartnerIsCreatedUpdatedWithTypedFieldsAndDeactivated()
     {
         var t = await TestTenant.CreateReadyAsync();
