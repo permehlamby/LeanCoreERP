@@ -56,12 +56,22 @@ public static class OpenFieldRules
 
     public static readonly IReadOnlySet<string> OpenItemFieldsNotBuilt = new HashSet<string> { "bank_account_id" };
 
+    /// <summary>The evidence types of a tax line (08, 5.3).</summary>
+    public static readonly IReadOnlyList<string> EvidenceTypes = ["CUSTOMS_DECLARATION", "PROOF_OF_EXPORT", "TRANSPORT_DOCUMENT", "PARTNER_VAT_CHECK", "OTHER"];
+
+    /// <summary>The four fields of the entity type TAX_EVIDENCE (08, 5.3). The sub_key is the evidence_no, the line_no the line number of the tax line.</summary>
+    public static readonly IReadOnlyDictionary<string, FieldKind> EvidenceFields = new Dictionary<string, FieldKind>
+    {
+        ["evidence_type"] = new(Kind.Code, 50), ["reference"] = new(Kind.Text, 100), ["evidence_date"] = new(Kind.Date, 0, "date"), ["note"] = new(Kind.Text, 200)
+    };
+
     public static FieldKind? KindOf(string entityType, string field) => entityType switch
     {
         "DOCUMENT" => HeaderFields.TryGetValue(field, out int h) ? new(Kind.Text, h) : null,
         "LINE" => LineFields.TryGetValue(field, out int l) ? new(Kind.Text, l) : TypedDimensionFields.ContainsKey(field) ? new(Kind.Id, 0, "uuid") : null,
         "LINE_DIMENSION" => field == FreeDimensionField ? new(Kind.Id, 0, "uuid") : null,
         "LINE_OPEN_ITEM" => OpenItemFields.GetValueOrDefault(field),
+        "TAX_EVIDENCE" => EvidenceFields.GetValueOrDefault(field),
         _ => null
     };
 
@@ -92,10 +102,10 @@ public static class OpenFieldRules
     }
 
     /// <summary>Entity types of the spec that this slice does not build, with the reason.</summary>
-    public static readonly IReadOnlySet<string> EntityTypesNotBuilt = new HashSet<string> { "TAX_EVIDENCE" };
+    public static readonly IReadOnlySet<string> EntityTypesNotBuilt = new HashSet<string>();
 
     /// <summary>The entity types the command takes. LINE and LINE_OPEN_ITEM name a line.</summary>
-    public static readonly IReadOnlySet<string> EntityTypes = new HashSet<string> { "DOCUMENT", "LINE", "LINE_OPEN_ITEM", "LINE_DIMENSION" };
+    public static readonly IReadOnlySet<string> EntityTypes = new HashSet<string> { "DOCUMENT", "LINE", "LINE_OPEN_ITEM", "LINE_DIMENSION", "TAX_EVIDENCE" };
 
     public const string ReservedReason = "SYSTEM";
 

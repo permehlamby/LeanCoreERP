@@ -81,6 +81,7 @@ public static class ErrorCatalog
         "DOCUMENT.NOT_BALANCED",
         "DOCUMENT.NOT_FOUND",
         "DOCUMENT.OPEN_ITEM_NOT_FOUND",
+        "DOCUMENT.TAX_LINE_NOT_FOUND",
         "DOCUMENT.TYPE_NOT_ALLOWED",
         "FISCAL_YEAR.ALREADY_OPEN",
         "FISCAL_YEAR.NOT_CONTIGUOUS",
@@ -98,7 +99,6 @@ public static class ErrorCatalog
         "LIMIT.OPEN_ITEM_FIELD_NOT_BUILT",
         "LIMIT.PARTIAL_DEDUCTION_NOT_BUILT",
         "LIMIT.READINESS_CHECKS_NOT_IMPLEMENTED",
-        "LIMIT.RETURN_TYPE_NOT_BUILT",
         "LIMIT.VAT_RATE_TYPE_NOT_BUILT",
         "LOCK.FIELD_LOCKED_L1",
         "LOCK.FIELD_LOCKED_L3",
@@ -161,17 +161,20 @@ public static class ErrorCatalog
         "VAT.ALREADY_FILED",
         "VAT.ALREADY_PREPARED",
         "VAT.ALREADY_SETTLED",
+        "VAT.EVIDENCE_MISSING",
         "VAT.NOTHING_TO_REPORT",
         "VAT.NOTHING_TO_SETTLE",
         "VAT.NOT_SETTLED",
         "VAT.NO_REGISTRATION",
+        "VAT.PARTNER_MISSING",
         "VAT.PERIOD_NOT_COMPLETE",
         "VAT.PERIOD_NOT_FOUND",
         "VAT.PREVIOUS_PERIOD_NOT_PREPARED",
         "VAT.REGISTRATION_INACTIVE",
         "VAT.RETURN_NOT_FOUND",
         "VAT.SETTLEMENT_DATE_NOT_POSTABLE",
-        "VAT.SUPERSEDED"
+        "VAT.SUPERSEDED",
+        "VAT.SUPPLY_KIND_MISSING"
     ];
 
     /// <summary>Codes of the platform CLI (F-IMPL-30). They are not returned by the API.</summary>

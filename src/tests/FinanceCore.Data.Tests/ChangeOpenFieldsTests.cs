@@ -161,7 +161,7 @@ public class ChangeOpenFieldsTests
         Assert.Equal("JOURNAL", await t.ScalarAsync<string>("select document_type from core.journal_document where tenant_id = @t and document_id = @d", ("d", doc.DocumentId)));
 
         var dim = await Run(t, Change(t, "c2"), doc.DocumentId, "CORRECTION", new FieldChange("TAX_EVIDENCE", 1, "evidence_no", null, "x"));
-        Assert.Equal(["LIMIT.ENTITY_TYPE_NOT_BUILT"], Codes(dim));
+        Assert.Contains("SCHEMA.INVALID_VALUE", Codes(dim));      // TAX_EVIDENCE is built: this one has no evidence_no
     }
 
     [Fact]

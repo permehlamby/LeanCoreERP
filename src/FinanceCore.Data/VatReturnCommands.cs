@@ -23,11 +23,12 @@ public sealed class VatReturnCommands(NpgsqlDataSource source)
 
     private sealed record Registration(
         Guid CompanyId, string Country, string Scheme, string FilingFrequency, string CorrectionMethod, string ReturnCurrency,
-        DateOnly ValidFrom, DateOnly? ValidTo, bool Active);
+        DateOnly ValidFrom, DateOnly? ValidTo, bool Active, string? EcListFrequency);
 
     private sealed record TaxRow(
         Guid DocumentId, int LineNo, DateOnly TaxDate, Guid VersionId, decimal VatBase, decimal VatTax, Guid AccountId, Guid TaxCodeId,
-        DateOnly VersionFrom, Guid? ReverseChargeAccount);
+        DateOnly VersionFrom, Guid? ReverseChargeAccount, string DestinationCountry, decimal TaxRate, string? EcListCategory, string? SupplyKind,
+        string? EvidenceRequired, bool HasEvidence);
 
     private sealed record BoxMapping(string LineSide, string BoxCode, string AmountKind, int Sign);
 
@@ -78,12 +79,35 @@ public sealed class VatReturnCommands(NpgsqlDataSource source)
         }
     }
 
+    /// <summary>vat-returns:preview (08, 7.4): the same as prepare, in VALIDATE mode. The snapshot is built in a transaction that is rolled back, so nothing is stored, no number of the chain is used and no event is written.</summary>
+    public async Task<CommandResult<VatReturnResult>> PreviewAsync(
+        Guid tenantId, CommandContext ctx, PrepareVatReturnRequest req, CancellationToken ct = default)
+    {
+        if (!ctx.Permissions.Contains(PreparePermission))
+            return Reject(JournalDocumentPoster.Error("AUTH.PERMISSION_MISSING", "P0", "", ("permission", PreparePermission)));
+        List<CommandError> shape = ShapeErrors(ctx);
+        if (req.RegistrationId == Guid.Empty) shape.Add(JournalDocumentPoster.Error("SCHEMA.INVALID_VALUE", "P1", "registration_id", ("reason", "required")));
+        if (req.ReturnType is not ("STANDARD" or "EC_LIST" or "OSS" or "IOSS"))
+            shape.Add(JournalDocumentPoster.Error("SCHEMA.INVALID_VALUE", "P1", "return_type", ("allowed_values", new[] { "STANDARD", "EC_LIST", "OSS", "IOSS" })));
+        if (req.FiscalYear < 1) shape.Add(JournalDocumentPoster.Error("SCHEMA.INVALID_VALUE", "P1", "fiscal_year", ("reason", "at least 1")));
+        if (req.VatPeriodNo < 1 || req.VatPeriodNo > short.MaxValue) shape.Add(JournalDocumentPoster.Error("SCHEMA.INVALID_VALUE", "P1", "vat_period_no", ("reason", "at least 1")));
+        if (shape.Count > 0) return CommandResult<VatReturnResult>.Rejected(shape);
+        try
+        {
+            return await PrepareOnceAsync(tenantId, ctx, req, [], ct, preview: true);
+        }
+        catch (PostgresException ex) when (ex.SqlState == PostgresErrorCodes.LockNotAvailable)
+        {
+            return CommandResult<VatReturnResult>.Failed(new CommandError("SYSTEM.LOCK_TIMEOUT", "P7", "", null, true));
+        }
+    }
+
     private async Task<CommandResult<VatReturnResult>> PrepareOnceAsync(
-        Guid tenantId, CommandContext ctx, PrepareVatReturnRequest req, byte[] fingerprint, CancellationToken ct)
+        Guid tenantId, CommandContext ctx, PrepareVatReturnRequest req, byte[] fingerprint, CancellationToken ct, bool preview = false)
     {
         await using TenantTransaction tx = await TenantTransaction.BeginAsync(source, tenantId, CommandRole.Post, ct: ct);
 
-        CommandSupport.EarlierCommand? earlier = await CommandSupport.FindEarlierAsync(tx, tenantId, ctx.IdempotencyKey, ct);
+        CommandSupport.EarlierCommand? earlier = preview ? null : await CommandSupport.FindEarlierAsync(tx, tenantId, ctx.IdempotencyKey, ct);
         if (earlier is not null)
         {
             if (!earlier.Fingerprint.AsSpan().SequenceEqual(fingerprint))
@@ -105,11 +129,13 @@ public sealed class VatReturnCommands(NpgsqlDataSource source)
         string schemeType = VatPeriods.ReturnTypeOfScheme(reg.Scheme);
         if (req.ReturnType != schemeType && !(req.ReturnType == "EC_LIST" && reg.Scheme == "STANDARD"))
             return Reject(JournalDocumentPoster.Error("SCHEMA.INVALID_VALUE", "P2", "return_type", ("reason", $"the scheme {reg.Scheme} files {schemeType}")));
-        if (req.ReturnType != "STANDARD")
-            return Reject(JournalDocumentPoster.Error("LIMIT.RETURN_TYPE_NOT_BUILT", "P2", "return_type", ("return_type", req.ReturnType)));
+        // the VAT period of an EC list follows ec_list_frequency (08, 4.2), every other return the filing frequency
+        string? frequency = req.ReturnType == "EC_LIST" ? reg.EcListFrequency : reg.FilingFrequency;
+        if (frequency is null)
+            return Reject(JournalDocumentPoster.Error("SCHEMA.INVALID_VALUE", "P2", "return_type", ("reason", "the registration files no EC list (ec_list_frequency)")));
 
         // P2: the VAT period of the fiscal year (08, 4.2)
-        IReadOnlyList<VatPeriod> periods = VatPeriods.Build(await ReadRegularPeriodsAsync(tx, tenantId, companyId, req.FiscalYear, ct), reg.FilingFrequency);
+        IReadOnlyList<VatPeriod> periods = VatPeriods.Build(await ReadRegularPeriodsAsync(tx, tenantId, companyId, req.FiscalYear, ct), frequency);
         VatPeriod? period = periods.FirstOrDefault(p => p.No == req.VatPeriodNo);
         if (period is null)
             return Reject(JournalDocumentPoster.Error("VAT.PERIOD_NOT_FOUND", "P2", "vat_period_no", ("fiscal_year", req.FiscalYear), ("vat_period_no", req.VatPeriodNo)));
@@ -131,7 +157,7 @@ public sealed class VatReturnCommands(NpgsqlDataSource source)
         int previousYear = req.FiscalYear, previousNo = req.VatPeriodNo - 1;
         if (previous is null && req.VatPeriodNo == 1)
         {
-            var earlierYear = VatPeriods.Build(await ReadRegularPeriodsAsync(tx, tenantId, companyId, req.FiscalYear - 1, ct), reg.FilingFrequency);
+            var earlierYear = VatPeriods.Build(await ReadRegularPeriodsAsync(tx, tenantId, companyId, req.FiscalYear - 1, ct), frequency);
             previous = earlierYear.LastOrDefault();
             previousYear = req.FiscalYear - 1; previousNo = previous?.No ?? 0;
         }
@@ -173,12 +199,15 @@ public sealed class VatReturnCommands(NpgsqlDataSource source)
         // P5: the tax lines of the registration up to the period end that no current snapshot holds, and for a replacement those of the replaced one
         var rows = new List<TaxRow>();
         await using (var cmd = tx.Command(
-            "select t.document_id, t.line_no, t.tax_date, t.tax_code_version_id, t.vat_base_amount, t.vat_tax_amount, l.account_id, v.tax_code_id, v.valid_from, v.reverse_charge_account_id " +
+            "select t.document_id, t.line_no, t.tax_date, t.tax_code_version_id, t.vat_base_amount, t.vat_tax_amount, l.account_id, v.tax_code_id, v.valid_from, v.reverse_charge_account_id, " +
+            "t.destination_country, t.tax_rate, v.ec_list_category, v.supply_kind, v.evidence_required_type, " +
+            "(v.evidence_required_type is null or exists (select 1 from core.journal_line_tax_evidence e where e.tenant_id = t.tenant_id and e.company_id = t.company_id " +
+            "and e.document_id = t.document_id and e.line_no = t.line_no and e.evidence_type = v.evidence_required_type)) " +
             "from core.journal_line_tax t " +
             "join core.journal_line l on l.tenant_id = t.tenant_id and l.company_id = t.company_id and l.document_id = t.document_id and l.line_no = t.line_no " +
             "join core.tax_code_version v on v.tenant_id = t.tenant_id and v.tax_code_version_id = t.tax_code_version_id " +
             "join core.tax_code c on c.tenant_id = v.tenant_id and c.company_id = v.company_id and c.tax_code_id = v.tax_code_id " +
-            "where t.tenant_id = @t and t.company_id = @c and c.vat_registration_id = @r and t.tax_date <= @end and (" +
+            "where t.tenant_id = @t and t.company_id = @c and c.vat_registration_id = @r and t.tax_date <= @end and (@rt <> 'EC_LIST' or v.ec_list_category is not null) and (" +
             "not exists (select 1 from core.vat_return_tax_line x where x.tenant_id = t.tenant_id and x.company_id = t.company_id and x.registration_id = @r " +
             "and x.return_type = @rt and x.document_id = t.document_id and x.line_no = t.line_no and x.is_current) " +
             "or exists (select 1 from core.vat_return_tax_line y where y.tenant_id = t.tenant_id and y.company_id = t.company_id and y.return_id = @rep " +
@@ -191,11 +220,15 @@ public sealed class VatReturnCommands(NpgsqlDataSource source)
             await using var r = await cmd.ExecuteReaderAsync(ct);
             while (await r.ReadAsync(ct))
                 rows.Add(new TaxRow(r.GetGuid(0), r.GetInt32(1), r.GetFieldValue<DateOnly>(2), r.GetGuid(3), r.GetDecimal(4), r.GetDecimal(5), r.GetGuid(6),
-                    r.GetGuid(7), r.GetFieldValue<DateOnly>(8), r.IsDBNull(9) ? null : r.GetGuid(9)));
+                    r.GetGuid(7), r.GetFieldValue<DateOnly>(8), r.IsDBNull(9) ? null : r.GetGuid(9), r.GetString(10).Trim(), r.GetDecimal(11),
+                    r.IsDBNull(12) ? null : r.GetString(12), r.IsDBNull(13) ? null : r.GetString(13), r.IsDBNull(14) ? null : r.GetString(14), r.GetBoolean(15)));
         }
         // P6: a supplementary return has something to report
         if (kind == "SUPPLEMENTARY" && rows.Count == 0)
             return Reject(JournalDocumentPoster.Error("VAT.NOTHING_TO_REPORT", "P6", "vat_period_no"));
+
+        var warnings = rows.Where(r => !r.HasEvidence).Select(r => JournalDocumentPoster.Error("VAT.EVIDENCE_MISSING", "P5", "vat_period_no",
+            ("document_id", r.DocumentId), ("line_no", r.LineNo), ("evidence_type", r.EvidenceRequired)) with { Severity = "WARNING" }).ToList();
 
         // Aggregation by the box mapping of the version, with the side of the line (08, 5.2, 6.2)
         var mappings = new Dictionary<(Guid, DateOnly), List<BoxMapping>>();
@@ -231,14 +264,41 @@ public sealed class VatReturnCommands(NpgsqlDataSource source)
         DateTime now = DateTime.UtcNow;
         DateTime preparedAt = new(now.Ticks - now.Ticks % 10, DateTimeKind.Utc);
         var lineRows = new List<Dictionary<string, object?>>();
-        foreach (var (box, v) in boxes)
-            lineRows.Add(new Dictionary<string, object?>
+        Dictionary<string, object?> Row(string type, string? box, Guid? partner, string? partnerVat, string? country, string? category, decimal? rate, string? supplyKind,
+            decimal baseAmount, decimal taxAmount, int count) => new()
+        {
+            ["tenant_id"] = tenantId, ["company_id"] = companyId, ["return_id"] = returnId, ["line_no"] = lineRows.Count + 1, ["row_type"] = type,
+            ["box_code"] = box, ["partner_id"] = partner, ["partner_vat_id"] = partnerVat, ["country_code"] = country, ["category"] = category, ["rate"] = rate,
+            ["supply_kind"] = supplyKind, ["currency_code"] = reg.ReturnCurrency, ["base_amount"] = baseAmount, ["tax_amount"] = taxAmount, ["line_count"] = count,
+            ["legacy_base_amount"] = 0m, ["legacy_tax_amount"] = 0m
+        };
+        if (req.ReturnType == "STANDARD")
+            foreach (var (box, v) in boxes) lineRows.Add(Row("BOX", box, null, null, null, null, null, null, v.Base, v.Tax, v.Lines.Count));
+        else if (req.ReturnType == "EC_LIST")
+        {
+            // one row per partner, country and category: the supplies of the period as positive amounts (a sale is a credit, a credit note nets it)
+            var partners = await ReadPartnersAsync(tx, tenantId, companyId, rows.Select(r => r.DocumentId).Distinct().ToArray(), ct);
+            foreach (TaxRow row in rows)
+                if (!partners.TryGetValue(row.DocumentId, out Guid? p) || p is null)
+                    return Reject(JournalDocumentPoster.Error("VAT.PARTNER_MISSING", "P5", "vat_period_no", ("document_id", row.DocumentId), ("line_no", row.LineNo)));
+            var groups = rows.GroupBy(r => (Country: r.DestinationCountry, Partner: partners[r.DocumentId]!.Value, Category: r.EcListCategory!))
+                .OrderBy(g => g.Key.Country, StringComparer.Ordinal).ThenBy(g => g.Key.Partner.ToString("D"), StringComparer.Ordinal).ThenBy(g => g.Key.Category, StringComparer.Ordinal);
+            foreach (var g in groups)
             {
-                ["tenant_id"] = tenantId, ["company_id"] = companyId, ["return_id"] = returnId, ["line_no"] = lineRows.Count + 1, ["row_type"] = "BOX",
-                ["box_code"] = box, ["partner_id"] = null, ["partner_vat_id"] = null, ["country_code"] = null, ["category"] = null, ["rate"] = null,
-                ["supply_kind"] = null, ["currency_code"] = reg.ReturnCurrency, ["base_amount"] = v.Base, ["tax_amount"] = v.Tax, ["line_count"] = v.Lines.Count,
-                ["legacy_base_amount"] = 0m, ["legacy_tax_amount"] = 0m
-            });
+                string? vatId = await ReadPartnerVatIdAsync(tx, tenantId, g.Key.Partner, g.Key.Country, g.Max(r => r.TaxDate), ct);
+                lineRows.Add(Row("EC_LIST", null, g.Key.Partner, vatId, g.Key.Country, g.Key.Category, null, null, -g.Sum(r => r.VatBase), -g.Sum(r => r.VatTax), g.Count()));
+            }
+        }
+        else
+        {
+            // OSS and IOSS: one row per consumption country, rate and kind of supply, as positive amounts
+            foreach (TaxRow row in rows)
+                if (row.SupplyKind is null)
+                    return Reject(JournalDocumentPoster.Error("VAT.SUPPLY_KIND_MISSING", "P5", "vat_period_no", ("document_id", row.DocumentId), ("line_no", row.LineNo)));
+            foreach (var g in rows.GroupBy(r => (Country: r.DestinationCountry, Rate: r.TaxRate, Kind: r.SupplyKind!))
+                         .OrderBy(g => g.Key.Country, StringComparer.Ordinal).ThenBy(g => g.Key.Rate).ThenBy(g => g.Key.Kind, StringComparer.Ordinal))
+                lineRows.Add(Row("OSS", null, null, null, g.Key.Country, null, g.Key.Rate, g.Key.Kind, -g.Sum(r => r.VatBase), -g.Sum(r => r.VatTax), g.Count()));
+        }
         var taxRows = rows.Select(r => new Dictionary<string, object?>
         {
             ["tenant_id"] = tenantId, ["company_id"] = companyId, ["return_id"] = returnId, ["document_id"] = r.DocumentId, ["line_no"] = r.LineNo,
@@ -276,10 +336,17 @@ public sealed class VatReturnCommands(NpgsqlDataSource source)
         foreach (var l in lineRows)
         {
             await using var cmd = tx.Command(
-                "insert into core.vat_return_line (tenant_id, company_id, return_id, line_no, row_type, box_code, currency_code, base_amount, tax_amount, line_count) " +
-                "values (@t, @c, @id, @n, 'BOX', @box, @ccy, @b, @x, @lc)");
+                "insert into core.vat_return_line (tenant_id, company_id, return_id, line_no, row_type, box_code, partner_id, partner_vat_id, country_code, category, rate, supply_kind, " +
+                "currency_code, base_amount, tax_amount, line_count) values (@t, @c, @id, @n, @type, @box, @partner, @pvat, @country, @cat, @rate, @kind, @ccy, @b, @x, @lc)");
             cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("c", companyId); cmd.Parameters.AddWithValue("id", returnId);
-            cmd.Parameters.AddWithValue("n", (int)l["line_no"]!); cmd.Parameters.AddWithValue("box", (string)l["box_code"]!);
+            cmd.Parameters.AddWithValue("n", (int)l["line_no"]!); cmd.Parameters.AddWithValue("type", (string)l["row_type"]!);
+            cmd.Parameters.Add(new NpgsqlParameter("box", NpgsqlDbType.Text) { Value = (object?)l["box_code"] ?? DBNull.Value });
+            cmd.Parameters.Add(new NpgsqlParameter("partner", NpgsqlDbType.Uuid) { Value = (object?)l["partner_id"] ?? DBNull.Value });
+            cmd.Parameters.Add(new NpgsqlParameter("pvat", NpgsqlDbType.Text) { Value = (object?)l["partner_vat_id"] ?? DBNull.Value });
+            cmd.Parameters.Add(new NpgsqlParameter("country", NpgsqlDbType.Char) { Value = (object?)l["country_code"] ?? DBNull.Value });
+            cmd.Parameters.Add(new NpgsqlParameter("cat", NpgsqlDbType.Text) { Value = (object?)l["category"] ?? DBNull.Value });
+            cmd.Parameters.Add(new NpgsqlParameter("rate", NpgsqlDbType.Numeric) { Value = (object?)l["rate"] ?? DBNull.Value });
+            cmd.Parameters.Add(new NpgsqlParameter("kind", NpgsqlDbType.Text) { Value = (object?)l["supply_kind"] ?? DBNull.Value });
             cmd.Parameters.AddWithValue("ccy", reg.ReturnCurrency); cmd.Parameters.AddWithValue("b", (decimal)l["base_amount"]!);
             cmd.Parameters.AddWithValue("x", (decimal)l["tax_amount"]!); cmd.Parameters.AddWithValue("lc", (int)l["line_count"]!);
             await cmd.ExecuteNonQueryAsync(ct);
@@ -315,6 +382,8 @@ public sealed class VatReturnCommands(NpgsqlDataSource source)
             await cmd.ExecuteNonQueryAsync(ct);
         }
         await ClearingPoster.MoveHeadAsync(tx, tenantId, companyId, VatReturnHash2.ChainType, "", chainSeq, rowHash, VatReturnHash2.Version, ct);
+        if (preview)
+            return CommandResult<VatReturnResult>.Ok((await LoadAsync(tx, tenantId, companyId, returnId, ct))!, Guid.Empty, warnings);   // the transaction ends without a commit
 
         Guid logId = await CommandSupport.WriteLogAsync(tx, tenantId, companyId, ctx, "vat-returns:prepare", fingerprint, "VAT_RETURN", returnId, ct);
         await CommandSupport.WriteOutboxAsync(tx, tenantId, companyId, ctx, "vat.return_prepared", "VAT_RETURN", $"{companyId:D}/{returnId:D}", "PREPARED",
@@ -331,7 +400,7 @@ public sealed class VatReturnCommands(NpgsqlDataSource source)
 
         await tx.CommitAsync(ct);
         VatReturnResult result = await LoadForResultAsync(tenantId, companyId, returnId, ct);
-        return CommandResult<VatReturnResult>.Ok(result, logId);
+        return CommandResult<VatReturnResult>.Ok(result, logId, warnings);
     }
 
     // ---------------------------------------------------------------------------------------------------------
@@ -415,6 +484,30 @@ public sealed class VatReturnCommands(NpgsqlDataSource source)
     }
 
     // ---------------------------------------------------------------------------------------------------------
+    // vat-returns:list
+    // ---------------------------------------------------------------------------------------------------------
+    public async Task<CommandResult<VatReturnList>> ListAsync(Guid tenantId, CommandContext ctx, ListVatReturnsRequest req, CancellationToken ct = default)
+    {
+        if (!ctx.Permissions.Contains(ReadPermission))
+            return CommandResult<VatReturnList>.Rejected([JournalDocumentPoster.Error("AUTH.PERMISSION_MISSING", "P0", "", ("permission", ReadPermission))]);
+        await using TenantTransaction tx = await TenantTransaction.BeginAsync(source, tenantId, CommandRole.Read, ct: ct);
+        var items = new List<VatReturnHeader>();
+        await using var cmd = tx.Command(
+            "select return_id, registration_id, return_type, fiscal_year, vat_period_no, return_kind, return_seq, chain_seq, tax_line_count, filed_at, settled_document_id, superseded_by_return_id " +
+            "from core.vat_return where tenant_id = @t and (@r::uuid is null or registration_id = @r) and (@rt::text is null or return_type = @rt) and (@fy::int is null or fiscal_year = @fy) " +
+            "order by chain_seq limit 500");
+        cmd.Parameters.AddWithValue("t", tenantId);
+        cmd.Parameters.Add(new NpgsqlParameter("r", NpgsqlDbType.Uuid) { Value = (object?)req.RegistrationId ?? DBNull.Value });
+        cmd.Parameters.Add(new NpgsqlParameter("rt", NpgsqlDbType.Text) { Value = (object?)req.ReturnType ?? DBNull.Value });
+        cmd.Parameters.Add(new NpgsqlParameter("fy", NpgsqlDbType.Integer) { Value = (object?)req.FiscalYear ?? DBNull.Value });
+        await using var r = await cmd.ExecuteReaderAsync(ct);
+        while (await r.ReadAsync(ct))
+            items.Add(new VatReturnHeader(r.GetGuid(0), r.GetGuid(1), r.GetString(2), r.GetInt32(3), r.GetInt16(4), r.GetString(5), r.GetInt32(6), r.GetInt64(7), r.GetInt32(8),
+                r.IsDBNull(9) ? null : r.GetDateTime(9), r.IsDBNull(10) ? null : r.GetGuid(10), r.IsDBNull(11) ? null : r.GetGuid(11)));
+        return CommandResult<VatReturnList>.Ok(new VatReturnList(items), Guid.Empty);
+    }
+
+    // ---------------------------------------------------------------------------------------------------------
     private async Task<VatReturnResult> LoadForResultAsync(Guid tenantId, Guid companyId, Guid returnId, CancellationToken ct)
     {
         await using TenantTransaction tx = await TenantTransaction.BeginAsync(source, tenantId, CommandRole.Read, ct: ct);
@@ -465,13 +558,13 @@ public sealed class VatReturnCommands(NpgsqlDataSource source)
     private static async Task<Registration?> ReadRegistrationAsync(TenantTransaction tx, Guid tenantId, Guid registrationId, CancellationToken ct)
     {
         await using var cmd = tx.Command(
-            "select company_id, country_code, scheme, filing_frequency, correction_method, return_currency, valid_from, valid_to, active " +
+            "select company_id, country_code, scheme, filing_frequency, correction_method, return_currency, valid_from, valid_to, active, ec_list_frequency " +
             "from core.company_vat_registration where tenant_id = @t and registration_id = @r");
         cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("r", registrationId);
         await using var r = await cmd.ExecuteReaderAsync(ct);
         return await r.ReadAsync(ct)
             ? new Registration(r.GetGuid(0), r.GetString(1).Trim(), r.GetString(2), r.GetString(3), r.GetString(4), r.GetString(5).Trim(),
-                r.GetFieldValue<DateOnly>(6), r.IsDBNull(7) ? null : r.GetFieldValue<DateOnly>(7), r.GetBoolean(8))
+                r.GetFieldValue<DateOnly>(6), r.IsDBNull(7) ? null : r.GetFieldValue<DateOnly>(7), r.GetBoolean(8), r.IsDBNull(9) ? null : r.GetString(9))
             : null;
     }
 
@@ -485,6 +578,31 @@ public sealed class VatReturnCommands(NpgsqlDataSource source)
         await using var r = await cmd.ExecuteReaderAsync(ct);
         while (await r.ReadAsync(ct)) result.Add(new RegularPeriod(r.GetInt32(0), r.GetFieldValue<DateOnly>(1), r.GetFieldValue<DateOnly>(2), r.GetString(3)));
         return result;
+    }
+
+    /// <summary>The partner of a document: the partner of its open item lines. A document with none, or with more than one, has no partner here.</summary>
+    private static async Task<Dictionary<Guid, Guid?>> ReadPartnersAsync(TenantTransaction tx, Guid tenantId, Guid companyId, Guid[] documents, CancellationToken ct)
+    {
+        var result = new Dictionary<Guid, Guid?>();
+        if (documents.Length == 0) return result;
+        await using var cmd = tx.Command(
+            "select document_id, (array_agg(distinct partner_id))[1], count(distinct partner_id) from core.journal_line_open_item " +
+            "where tenant_id = @t and company_id = @c and document_id = any(@d) and partner_id is not null group by document_id");
+        cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("c", companyId);
+        cmd.Parameters.Add(new NpgsqlParameter("d", NpgsqlDbType.Array | NpgsqlDbType.Uuid) { Value = documents });
+        await using var r = await cmd.ExecuteReaderAsync(ct);
+        while (await r.ReadAsync(ct)) result[r.GetGuid(0)] = r.GetInt64(2) == 1 ? r.GetGuid(1) : null;
+        return result;
+    }
+
+    /// <summary>The VAT id of the partner in the country, as registered at the date (the row that started last).</summary>
+    private static async Task<string?> ReadPartnerVatIdAsync(TenantTransaction tx, Guid tenantId, Guid partnerId, string country, DateOnly date, CancellationToken ct)
+    {
+        await using var cmd = tx.Command(
+            "select vat_id from core.partner_tax_registration where tenant_id = @t and partner_id = @p and country_code = @k and active and valid_from <= @d " +
+            "and (valid_to is null or valid_to >= @d) order by valid_from desc limit 1");
+        cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("p", partnerId); cmd.Parameters.AddWithValue("k", country); cmd.Parameters.AddWithValue("d", date);
+        return await cmd.ExecuteScalarAsync(ct) as string;
     }
 
     private static async Task<bool> ExistsAsync(

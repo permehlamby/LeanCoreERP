@@ -153,7 +153,7 @@ public class VatReturnTests
         Assert.Equal(["AUTH.PERMISSION_MISSING"], Codes(await vat.PrepareAsync(t.TenantId, t.Context("x0", "journal.post"), new(w.Registration, "STANDARD", 2026, 1))));
         Assert.Equal(["VAT.NO_REGISTRATION"], Codes(await vat.PrepareAsync(t.TenantId, t.Context("x1", "vat.prepare"), new(Guid.NewGuid(), "STANDARD", 2026, 1))));
         Assert.Equal(["VAT.PERIOD_NOT_FOUND"], Codes(await Prepare(t, w, "x2", 5)));
-        Assert.Equal(["LIMIT.RETURN_TYPE_NOT_BUILT"], Codes(await vat.PrepareAsync(t.TenantId, t.Context("x3", "vat.prepare"), new(w.Registration, "EC_LIST", 2026, 1))));
+        Assert.Equal(["SCHEMA.INVALID_VALUE"], Codes(await vat.PrepareAsync(t.TenantId, t.Context("x3", "vat.prepare"), new(w.Registration, "EC_LIST", 2026, 1))));   // the registration files no EC list
         Assert.Equal(["SCHEMA.INVALID_VALUE"], Codes(await vat.PrepareAsync(t.TenantId, t.Context("x4", "vat.prepare"), new(w.Registration, "OSS", 2026, 1))));
         Assert.Equal(["VAT.PERIOD_NOT_COMPLETE"], Codes(await Prepare(t, w, "x5")));          // all three months are open
         await t.SetPeriodStatusAsync(1, "SOFT_CLOSED"); await t.SetPeriodStatusAsync(2, "HARD_CLOSED");

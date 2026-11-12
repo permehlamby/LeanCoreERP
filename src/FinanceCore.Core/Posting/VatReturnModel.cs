@@ -150,3 +150,12 @@ public static class VatReturnHash2
 
 /// <summary>Payload of vat-returns:get (08, 7.4).</summary>
 public sealed record GetVatReturnRequest(Guid ReturnId);
+
+/// <summary>Payload of vat-returns:list (08, 7.4). Every filter is optional.</summary>
+public sealed record ListVatReturnsRequest(Guid? RegistrationId, string? ReturnType, int? FiscalYear);
+
+public sealed record VatReturnHeader(
+    Guid ReturnId, Guid RegistrationId, string ReturnType, int FiscalYear, int VatPeriodNo, string ReturnKind, int ReturnSeq, long ChainSeq,
+    int TaxLineCount, DateTime? FiledAt, Guid? SettledDocumentId, Guid? SupersededByReturnId);
+
+public sealed record VatReturnList(IReadOnlyList<VatReturnHeader> Items);
