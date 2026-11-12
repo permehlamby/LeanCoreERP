@@ -1,7 +1,9 @@
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using System.Text.Json.Nodes;
+using FinanceCore.Core.Packages;
 using FinanceCore.Core.Commands;
 using FinanceCore.Core.Masters;
 using FinanceCore.Core.Roles;
@@ -18,6 +20,9 @@ public sealed record PackageInputs(
 /// <summary>An object of the package and what the apply did with it (18, 7.1): CREATED, or SKIPPED_EXISTS when the company already had it.</summary>
 public sealed record AppliedItem(string ItemId, string EntityType, string Action, string? EntityId = null);
 
+/// <summary>What the verification of a signed archive proves (20, 11): kept in the record of the apply.</summary>
+public sealed record SignedSource(string ArchiveSha256, string SignerKeyId, string ManifestSha256);
+
 public sealed record PackageApplyResult(string PackageCode, string Version, string State, IReadOnlyList<AppliedItem> Items, Guid AppliedId = default);
 
 /// <summary>A row of the record of applies (18, 7.1).</summary>
@@ -27,8 +32,8 @@ public sealed record AppliedPackageInfo(Guid AppliedId, string PackageCode, stri
 /// The VAT content of a country package (18, 8: tax return boxes, the VAT registration, the deduction keys and rates, the tax codes with their versions and
 /// box mappings, the determination rules with their alternatives, the VAT_SETTLEMENT role and the accounts they name, and the tax classes of EU_VAT) applied
 /// to one company through the command handlers of 07 (create-only: an object that exists is never changed, 18, 7). The package is read from a directory
-/// in the format of 18, 4 (package.json and core/*.json). Not built: the signed archive and its digest (ADR-217), the apply record tables of 18, 7.1, VALIDATE
-/// mode, the policy file, and the other core content of the package (the chart, number series, retention, payment terms, settings), which the first-slice
+/// in the format of 18, 4 (package.json and core/*.json). The signed archive (ADR-217) is applied by ApplyVatFromArchivesAsync and a PRODUCTION tenant accepts nothing else. Not built: VALIDATE
+/// mode, config-packages:diff, the policy file, and the other core content of the package (the chart, number series, retention, payment terms, settings), which the first-slice
 /// package of 07, 11.4 still carries (F-IMPL-39).
 /// A package whose state is not RELEASED is refused for a PRODUCTION tenant (18, 6: PACKAGE.NOT_RELEASED).
 /// </summary>
@@ -40,7 +45,7 @@ public sealed class CountryPackageApplier(NpgsqlDataSource source)
         new(key, "platform-" + key, Actor, new HashSet<string>(permissions), "PLATFORM");
 
     public async Task<PackageApplyResult> ApplyVatAsync(
-        Guid tenantId, CompanyInfo company, string packagesDirectory, string packageCode, PackageInputs inputs, CancellationToken ct = default)
+        Guid tenantId, CompanyInfo company, string packagesDirectory, string packageCode, PackageInputs inputs, CancellationToken ct = default, SignedSource? signed = null)
     {
         string dir = Path.Combine(packagesDirectory, packageCode);
         if (!File.Exists(Path.Combine(dir, "package.json")))
@@ -57,6 +62,8 @@ public sealed class CountryPackageApplier(NpgsqlDataSource source)
                          ?? throw new ProvisioningException("TENANT.NOT_FOUND", "No such tenant");
         if (purpose == "PRODUCTION" && state != "RELEASED")
             throw new ProvisioningException("PACKAGE.NOT_RELEASED", $"The package {packageCode} {version} is {state}: a PRODUCTION tenant accepts only RELEASED packages");
+        if (purpose == "PRODUCTION" && signed is null)
+            throw new ProvisioningException("PACKAGE.SIGNATURE_INVALID", $"The package {packageCode} {version} comes from a directory: a PRODUCTION tenant accepts signed archives only (20, 11)");
 
         string digest = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(
             string.Join("|", inputs.VatId, inputs.FilingFrequency, inputs.EcListFrequency, inputs.CorrectionMethod, inputs.VatProfile, inputs.IncludeSpecialCodes,
@@ -231,14 +238,85 @@ public sealed class CountryPackageApplier(NpgsqlDataSource source)
         Guid appliedId = Guid.NewGuid();
         await ExecuteAsync(tenantId,
             "insert into core.applied_config_package (tenant_id, applied_id, company_id, package_code, package_version, country_code, kind, state, manifest_digest, inputs_digest, requires_snapshot, " +
-            "item_count, created_count, applied_by) values (@t, @id, @c, @code, @v, @cty, @kind, @state, @md, @idg, @req, @n, @created, @by)", ct,
+            "item_count, created_count, applied_by, archive_sha256, signer_key_id, signing_manifest_sha256) values (@t, @id, @c, @code, @v, @cty, @kind, @state, @md, @idg, @req, @n, @created, @by, @ash, @key, @msh)", ct,
             ("id", appliedId), ("c", company.CompanyId), ("code", packageCode), ("v", version), ("cty", company.Country), ("kind", (string)manifest["kind"]!), ("state", state),
-            ("md", manifestDigest), ("idg", digest), ("req", requires), ("n", items.Count), ("created", items.Count(i => i.Action == "CREATED")), ("by", Actor));
+            ("md", manifestDigest), ("idg", digest), ("req", requires), ("n", items.Count), ("created", items.Count(i => i.Action == "CREATED")), ("by", Actor),
+            ("ash", (object?)signed?.ArchiveSha256 ?? DBNull.Value), ("key", (object?)signed?.SignerKeyId ?? DBNull.Value), ("msh", (object?)signed?.ManifestSha256 ?? DBNull.Value));
         for (int n = 0; n < items.Count; n++)
             await ExecuteAsync(tenantId,
                 "insert into core.applied_config_package_item (tenant_id, applied_id, item_no, item_id, entity_type, entity_id, action) values (@t, @id, @n, @item, @type, @eid, @action)", ct,
                 ("id", appliedId), ("n", n + 1), ("item", items[n].ItemId), ("type", items[n].EntityType), ("eid", (object?)items[n].EntityId ?? DBNull.Value), ("action", items[n].Action));
         return new PackageApplyResult(packageCode, version, state, items, appliedId);
+    }
+
+
+    /// <summary>
+    /// The apply from signed archives (ADR-217, 20, 11): the archive of the package and of every package it requires, each with its detached signature, are verified
+    /// against the trust set of the tenant purpose, extracted to a temporary directory and applied from there. The record keeps the digest of the archive and the signer.
+    /// The archives are named {code}-{version}.tar with the signature in {code}-{version}.sig.json. The core never fetches them.
+    /// </summary>
+    public async Task<PackageApplyResult> ApplyVatFromArchivesAsync(
+        Guid tenantId, CompanyInfo company, string archiveDirectory, string packageCode, TrustSet trust, PackageInputs inputs, CancellationToken ct = default)
+    {
+        string purpose = (string?)await ScalarAsync(tenantId, "select purpose from platform.tenant where tenant_id = @t", ct)
+                         ?? throw new ProvisioningException("TENANT.NOT_FOUND", "No such tenant");
+        DateOnly today = DateOnly.FromDateTime(DateTime.UtcNow);
+        string root = Path.Combine(Path.GetTempPath(), "financecore-pkg-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            VerifiedPackage country = LoadArchive(archiveDirectory, packageCode, trust, purpose, today);
+            Extract(country, root);
+            using (JsonDocument manifest = JsonDocument.Parse(country.Files["package.json"]))
+                foreach (JsonElement req in manifest.RootElement.TryGetProperty("requires", out JsonElement list) ? list.EnumerateArray() : [])
+                {
+                    string code = req.GetProperty("package_code").GetString()!;
+                    VerifiedPackage required;
+                    try
+                    {
+                        required = LoadArchive(archiveDirectory, code, trust, purpose, today);
+                    }
+                    catch (PackageException e) when (e.Code == "PACKAGE.NOT_FOUND")
+                    {
+                        throw new ProvisioningException("PACKAGE.REQUIRES_NOT_SATISFIED", $"{packageCode} requires {code}, and {archiveDirectory} has no archive of it");
+                    }
+                    string range = req.TryGetProperty("range", out JsonElement rg) ? rg.GetString() ?? "" : "";
+                    if (range.StartsWith('^') && required.PackageVersion.Split('.')[0] != range[1..].Split('.')[0])
+                        throw new ProvisioningException("PACKAGE.REQUIRES_NOT_SATISFIED", $"{packageCode} requires {code} {range}, the archive is {required.PackageVersion}");
+                    Extract(required, root);
+                }
+            return await ApplyVatAsync(tenantId, company, root, packageCode, inputs, ct, new SignedSource(country.ArchiveSha256, country.SignerKeyId, country.ManifestSha256));
+        }
+        catch (PackageException e)
+        {
+            throw new ProvisioningException(e.Code, e.Message);
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    private static VerifiedPackage LoadArchive(string directory, string code, TrustSet trust, string purpose, DateOnly today)
+    {
+        if (!Directory.Exists(directory)) throw new PackageException("PACKAGE.NOT_FOUND", $"No directory {directory}");
+        // the newest version that has both the archive and its signature
+        string? tar = Directory.GetFiles(directory, code + "-*.tar")
+            .Where(f => File.Exists(Path.ChangeExtension(f, ".sig.json")) && Path.GetFileNameWithoutExtension(f)[(code.Length + 1)..].Split('.').All(p => p.All(char.IsDigit)))
+            .OrderByDescending(f => Version.TryParse(Path.GetFileNameWithoutExtension(f)[(code.Length + 1)..], out Version? v) ? v : new Version(0, 0), Comparer<Version>.Default).FirstOrDefault();
+        if (tar is null) throw new PackageException("PACKAGE.NOT_FOUND", $"No signed archive of {code} in {directory}");
+        return PackageSigning.Verify(File.ReadAllBytes(tar), File.ReadAllText(Path.ChangeExtension(tar, ".sig.json")), trust, purpose, today);
+    }
+
+    private static void Extract(VerifiedPackage package, string root)
+    {
+        foreach (var (path, bytes) in package.Files)
+        {
+            string target = Path.GetFullPath(Path.Combine(root, package.PackageCode, path));
+            if (!target.StartsWith(Path.GetFullPath(Path.Combine(root, package.PackageCode)) + Path.DirectorySeparatorChar, StringComparison.Ordinal))
+                throw new PackageException("PACKAGE.DIGEST_MISMATCH", $"The path {path} leaves the package directory");
+            Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+            File.WriteAllBytes(target, bytes);
+        }
     }
 
     /// <summary>The applies that a company has had, the newest first (18, 7.2 `config-packages:list-applied`).</summary>

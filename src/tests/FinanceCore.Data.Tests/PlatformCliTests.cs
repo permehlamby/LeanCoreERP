@@ -98,4 +98,40 @@ public class PlatformCliTests
         Assert.Equal(0, packages.Code);
         Assert.Contains("dk-minimal", packages.Output);
     }
+
+    [Fact]
+    public async Task APackageIsSignedPackedAndVerifiedThroughTheCli()
+    {
+        string work = Path.Combine(Path.GetTempPath(), "fc-cli-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(work);
+        try
+        {
+            string packages = Path.Combine(AppContext.BaseDirectory);
+            for (var d = new DirectoryInfo(AppContext.BaseDirectory); d is not null; d = d.Parent)
+                if (Directory.Exists(Path.Combine(d.FullName, "country-packages", "DK"))) { packages = Path.Combine(d.FullName, "country-packages"); break; }
+            string prefix = Path.Combine(work, "dev");
+            var keygen = await Run("package", "keygen", "--out", prefix, "--key-id", "dev-1");
+            Assert.Equal(0, keygen.Code);
+            Assert.Equal(1, (await Run("package", "keygen", "--out", prefix, "--key-id", "dev-1")).Code);   // a key is never overwritten
+
+            var pack = await Run("package", "pack", "--dir", Path.Combine(packages, "DK"), "--key", prefix + ".private.pem", "--key-id", "dev-1", "--out", Path.Combine(work, "out"));
+            Assert.Equal(0, pack.Code);
+            Assert.Contains("signed with dev-1, state DRAFT", pack.Output);
+
+            string trust = Path.Combine(work, "trust.json");
+            File.WriteAllText(trust, System.Text.Json.JsonSerializer.Serialize(new { keys = new[] { new { key_id = "dev-1", role = "development", public_key_pem = File.ReadAllText(prefix + ".public.pem") } } }));
+            string tar = Directory.GetFiles(Path.Combine(work, "out"), "DK-*.tar").Single();
+            var ok = await Run("package", "verify", "--archive", tar, "--trust", trust);
+            Assert.Equal(0, ok.Code);
+            Assert.Contains("verified for a TEST tenant: signed by dev-1", ok.Output);
+
+            var production = await Run("package", "verify", "--archive", tar, "--trust", trust, "--purpose", "PRODUCTION");
+            Assert.Equal(1, production.Code);
+            Assert.Contains("refused: PACKAGE.SIGNATURE_INVALID", production.Output);
+        }
+        finally
+        {
+            Directory.Delete(work, true);
+        }
+    }
 }

@@ -9,7 +9,7 @@ Oprettet 2026-11-12, efter at momsområdet (V1–V5) og DK-pakkens momsindhold e
 | Hovedbog, clearing, perioder, partner, retention, API-skal | Bygget (første slice) |
 | Moms/VAT (08, 19), skatte- og fradragstabeller | Bygget (V1–V5). Mangler `vat-positions:get` og `legacy_tax_summary` |
 | Dimensioner (typede og frie) | Bygget (migration 0022) |
-| Landepakkeformat (18) | Delvist: DK-pakkens momsindhold installeres med `package apply-vat`, og kørslerne registreres. Signering, VALIDATE-tilstand og `config-packages:diff` mangler |
+| Landepakkeformat (18) | Signering bygget (F-IMPL-43: signeret arkiv, tillidssæt, verifikation, PRODUCTION kun signeret). Delvist: DK-pakkens momsindhold installeres med `package apply-vat`, og kørslerne registreres. VALIDATE-tilstand og `config-packages:diff` mangler |
 | Revaluering og årsafslutning (05) | Bygget (0029, F-IMPL-40): revaluering med rerun, årsafslutning og genåbning, forældelsestjek ved hard-close. Mangler: SQL-checks, kørsel mod Supabase, historik-variant (migration), tidsstempeljob for anchors |
 | Anchors (`chain_anchor`) og RFC 3161-tidsstempel | Ikke bygget |
 | Læse-API'er og søgning (09) | Ikke bygget, bortset fra `chains:verify` og `vat-returns:get`/`:list` |
