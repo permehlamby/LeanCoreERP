@@ -79,7 +79,7 @@ public class AccountRoleTests
         }
 
         var vat = await assigner.AssignAsync(t.TenantId, Config(t, "vat"), new(t.CompanyId, "VAT_SETTLEMENT", account, VatRegistrationId: Guid.NewGuid()));
-        Assert.Contains("LIMIT.VAT_REGISTRATION_NOT_BUILT", vat.Errors.Select(e => e.Code));
+        Assert.Contains("CONFIG.INVALID_REFERENCE", vat.Errors.Select(e => e.Code));
 
         var sek = await assigner.AssignAsync(t.TenantId, Config(t, "sek"), new(t.CompanyId, "ROUNDING", account, "SEK"));
         Assert.Contains("CONFIG.CURRENCY_NOT_ENABLED", sek.Errors.Select(e => e.Code));

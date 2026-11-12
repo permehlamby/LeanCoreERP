@@ -7,7 +7,7 @@ namespace FinanceCore.Data;
 /// <summary>
 /// chains:verify (06, 7.4, permission chain.verify): read-only, it writes no event, no run record and no command_log entry. It recomputes the chain with the
 /// verifier of the library and answers OK or the breaks with the first broken sequence number. A chain with breaks is a successful command: the breaks
-/// are the result. The slice verifies LEDGER, CLEARING and PERIOD_EVENT, whole chains only.
+/// are the result. The slice verifies LEDGER, CLEARING, PERIOD_EVENT and VAT_RETURN, whole chains only.
 /// </summary>
 public sealed class ChainVerification(NpgsqlDataSource source)
 {
@@ -60,6 +60,7 @@ public sealed class ChainVerification(NpgsqlDataSource source)
         {
             "LEDGER" => await verifier.VerifyLedgerAsync(tenantId, req.CompanyId, ledgerId!.Value, ct),
             "CLEARING" => await verifier.VerifyClearingsAsync(tenantId, req.CompanyId, ct),
+            "VAT_RETURN" => await verifier.VerifyVatReturnsAsync(tenantId, req.CompanyId, ct),
             _ => await verifier.VerifyPeriodEventsAsync(tenantId, req.CompanyId, ct)
         };
         var breaks = result.Problems.Select(p => new ChainBreak(ChainRules.KindOf(p.Code), p.Code, p.ChainSeq, p.Detail)).ToList();

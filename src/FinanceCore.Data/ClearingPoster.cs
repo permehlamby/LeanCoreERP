@@ -501,7 +501,7 @@ public sealed partial class ClearingPoster(NpgsqlDataSource source)
         return Convert.ToInt32(await cmd.ExecuteScalarAsync(ct) ?? 4, CultureInfo.InvariantCulture);
     }
 
-    private static async Task<Guid?> ReadDefaultLedgerAsync(TenantTransaction tx, Guid tenantId, Guid companyId, CancellationToken ct)
+    internal static async Task<Guid?> ReadDefaultLedgerAsync(TenantTransaction tx, Guid tenantId, Guid companyId, CancellationToken ct)
     {
         await using var cmd = tx.Command("select ledger_id from core.ledger where tenant_id = @t and company_id = @c and is_default and active");
         cmd.Parameters.AddWithValue("t", tenantId);
@@ -509,7 +509,7 @@ public sealed partial class ClearingPoster(NpgsqlDataSource source)
         return await cmd.ExecuteScalarAsync(ct) is Guid g ? g : null;
     }
 
-    private static async Task<string?> ReadGroupCurrencyAsync(TenantTransaction tx, Guid tenantId, Guid companyId, DateOnly date, CancellationToken ct)
+    internal static async Task<string?> ReadGroupCurrencyAsync(TenantTransaction tx, Guid tenantId, Guid companyId, DateOnly date, CancellationToken ct)
     {
         await using var cmd = tx.Command(
             "select g.group_currency from core.group_membership m " +
@@ -522,7 +522,7 @@ public sealed partial class ClearingPoster(NpgsqlDataSource source)
     }
 
     /// <summary>Locks the number counter of the series for the fiscal year and returns last_number, or null when there is no counter.</summary>
-    private static async Task<long?> LockCounterAsync(TenantTransaction tx, Guid tenantId, Guid companyId, Guid seriesId, int fiscalYear, CancellationToken ct)
+    internal static async Task<long?> LockCounterAsync(TenantTransaction tx, Guid tenantId, Guid companyId, Guid seriesId, int fiscalYear, CancellationToken ct)
     {
         await using var cmd = tx.Command(
             "select last_number from core.number_range_counter where tenant_id = @t and company_id = @c and series_id = @s and fiscal_year = @y for update");
@@ -534,7 +534,7 @@ public sealed partial class ClearingPoster(NpgsqlDataSource source)
         return value is null ? null : Convert.ToInt64(value, CultureInfo.InvariantCulture);
     }
 
-    private static async Task<(long Seq, byte[] Hash)> LockLedgerHeadAsync(TenantTransaction tx, Guid tenantId, Guid companyId, Guid ledgerId, CancellationToken ct)
+    internal static async Task<(long Seq, byte[] Hash)> LockLedgerHeadAsync(TenantTransaction tx, Guid tenantId, Guid companyId, Guid ledgerId, CancellationToken ct)
     {
         await using var cmd = tx.Command(
             "select last_seq, last_hash from core.chain_head where tenant_id = @t and company_id = @c and chain_type = 'LEDGER' and scope_key = @k for update");
@@ -712,7 +712,7 @@ public sealed partial class ClearingPoster(NpgsqlDataSource source)
         await cmd.ExecuteNonQueryAsync(ct);
     }
 
-    private static async Task InsertLineAsync(
+    internal static async Task InsertLineAsync(
         TenantTransaction tx, Guid tenantId, Guid companyId, Guid documentId, Guid ledgerId, int fiscalYear, int period, DateOnly postingDate,
         PostedLine l, int? reversedLineNo, CancellationToken ct)
     {

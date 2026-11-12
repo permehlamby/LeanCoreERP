@@ -868,6 +868,74 @@ select pg_temp.expect_count('deduction key: tenant B sees none of A''s rows',
 select set_config('app.tenant_id', '11111111-1111-4111-8111-111111111111', false);
 
 -- ---------------------------------------------------------------------------------------------------------
+-- VAT returns (0026, 08, 6.3 to 6.7)
+-- ---------------------------------------------------------------------------------------------------------
+select pg_temp.expect_ok('vat return: the posting role writes the snapshot of a return',
+    $t$set local role cmd_post; set constraints all deferred;
+       insert into core.chain_head (tenant_id, company_id, chain_type, scope_key, last_seq, last_hash, hash_version)
+       values ('11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222201', 'VAT_RETURN', '', 0,
+               sha256(convert_to('genesis|11111111-1111-4111-8111-111111111111|22222222-2222-4222-8222-222222222201|VAT_RETURN|', 'UTF8')), 2);
+       insert into core.vat_return (tenant_id, company_id, return_id, registration_id, return_type, fiscal_year, vat_period_no, period_start_date, period_end_date,
+           return_kind, return_seq, prepared_at, prepared_by, correlation_id, idempotency_key, tax_line_count, late_line_count, snapshot_digest, chain_seq, prev_hash, row_hash, hash_version)
+       values ('11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222201', 'ff000000-0000-4000-8000-000000000001', 'ee000000-0000-4000-8000-0000000000d1',
+               'STANDARD', 2026, 1, date '2026-01-01', date '2026-03-31', 'ORIGINAL', 1, now(), 't', 'c', 'vat-k1', 0, 0, decode(repeat('00', 32), 'hex'), 1,
+               sha256(convert_to('genesis|11111111-1111-4111-8111-111111111111|22222222-2222-4222-8222-222222222201|VAT_RETURN|', 'UTF8')), decode(repeat('11', 32), 'hex'), 2);
+       update core.chain_head set last_seq = 1, last_hash = decode(repeat('11', 32), 'hex'), updated_at = now() where chain_type = 'VAT_RETURN';
+       set constraints all immediate$t$);
+select pg_temp.expect_error('vat return: an original is the first return of its period',
+    $t$insert into core.vat_return (tenant_id, company_id, return_id, registration_id, return_type, fiscal_year, vat_period_no, period_start_date, period_end_date,
+           return_kind, return_seq, prepared_at, prepared_by, correlation_id, idempotency_key, tax_line_count, late_line_count, snapshot_digest, chain_seq, prev_hash, row_hash, hash_version)
+       values ('11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222201', 'ff000000-0000-4000-8000-000000000002', 'ee000000-0000-4000-8000-0000000000d1',
+               'STANDARD', 2026, 1, date '2026-01-01', date '2026-03-31', 'ORIGINAL', 2, now(), 't', 'c', 'vat-k2', 0, 0, decode(repeat('00', 32), 'hex'), 2,
+               decode(repeat('11', 32), 'hex'), decode(repeat('22', 32), 'hex'), 2)$t$, '%violates check constraint%');
+select pg_temp.expect_error('vat return: a replacement names the return it replaces',
+    $t$insert into core.vat_return (tenant_id, company_id, return_id, registration_id, return_type, fiscal_year, vat_period_no, period_start_date, period_end_date,
+           return_kind, return_seq, prepared_at, prepared_by, correlation_id, idempotency_key, tax_line_count, late_line_count, snapshot_digest, chain_seq, prev_hash, row_hash, hash_version)
+       values ('11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222201', 'ff000000-0000-4000-8000-000000000003', 'ee000000-0000-4000-8000-0000000000d1',
+               'STANDARD', 2026, 1, date '2026-01-01', date '2026-03-31', 'REPLACEMENT', 2, now(), 't', 'c', 'vat-k3', 0, 0, decode(repeat('00', 32), 'hex'), 2,
+               decode(repeat('11', 32), 'hex'), decode(repeat('22', 32), 'hex'), 2)$t$, '%violates check constraint%');
+select pg_temp.expect_error('vat return: the idempotency key is unique',
+    $t$insert into core.vat_return (tenant_id, company_id, return_id, registration_id, return_type, fiscal_year, vat_period_no, period_start_date, period_end_date,
+           return_kind, return_seq, prepared_at, prepared_by, correlation_id, idempotency_key, tax_line_count, late_line_count, snapshot_digest, chain_seq, prev_hash, row_hash, hash_version)
+       values ('11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222201', 'ff000000-0000-4000-8000-000000000004', 'ee000000-0000-4000-8000-0000000000d1',
+               'STANDARD', 2026, 2, date '2026-04-01', date '2026-06-30', 'ORIGINAL', 1, now(), 't', 'c', 'vat-k1', 0, 0, decode(repeat('00', 32), 'hex'), 2,
+               decode(repeat('11', 32), 'hex'), decode(repeat('22', 32), 'hex'), 2)$t$, '%duplicate key%');
+select pg_temp.expect_error('vat return: the configuration role cannot write a return',
+    $t$set local role cmd_config; update core.vat_return set filed_by = 'x'$t$, '%permission denied%');
+select pg_temp.expect_error('vat return: the posting role cannot change an L1 column',
+    $t$set local role cmd_post; update core.vat_return set return_seq = 5$t$, '%permission denied%');
+select pg_temp.expect_error('vat return: an L1 column cannot change', $t$update core.vat_return set return_seq = 5$t$, '%L1 column%');
+select pg_temp.expect_error('vat return: a filing is set together or not at all',
+    $t$set local role cmd_post; update core.vat_return set filing_reference = 'F1' where return_id = 'ff000000-0000-4000-8000-000000000001'$t$, '%violates check constraint%');
+select pg_temp.expect_ok('vat return: the filing is recorded',
+    $t$set local role cmd_post; update core.vat_return set filing_reference = 'F1', filed_at = now(), filed_by = 't' where return_id = 'ff000000-0000-4000-8000-000000000001'$t$);
+select pg_temp.expect_error('vat return: a filing is recorded once',
+    $t$set local role cmd_post; update core.vat_return set filing_reference = 'F2', filed_at = now(), filed_by = 't' where return_id = 'ff000000-0000-4000-8000-000000000001'$t$, '%VAT.ALREADY_FILED%');
+select pg_temp.expect_error('vat return: no delete', $t$delete from core.vat_return$t$, '%no hard delete%');
+select pg_temp.expect_ok('vat return line: a box row',
+    $t$set local role cmd_post; insert into core.vat_return_line (tenant_id, company_id, return_id, line_no, row_type, box_code, currency_code, base_amount, tax_amount, line_count)
+       values ('11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222201', 'ff000000-0000-4000-8000-000000000001', 1, 'BOX', 'B1', 'DKK', 100, 25, 1)$t$);
+select pg_temp.expect_error('vat return line: a box row has no partner or country',
+    $t$insert into core.vat_return_line (tenant_id, company_id, return_id, line_no, row_type, box_code, country_code, currency_code, base_amount, tax_amount, line_count)
+       values ('11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222201', 'ff000000-0000-4000-8000-000000000001', 2, 'BOX', 'B2', 'DK', 'DKK', 100, 25, 1)$t$, '%violates check constraint%');
+select pg_temp.expect_error('vat return line: a row is never changed', $t$update core.vat_return_line set tax_amount = 0$t$, '%append-only%');
+select pg_temp.expect_error('vat return line: no delete', $t$delete from core.vat_return_line$t$, '%no hard delete%');
+select pg_temp.expect_error('vat return: a settlement line belongs to a settlement document',
+    $t$insert into core.journal_line (tenant_id, company_id, document_id, line_no, ledger_id, line_type, account_id, posting_date, fiscal_year, fiscal_period, amount_tc, amount_lc, currency_lc, rate_lc,
+           amount_gc, currency_gc, rate_gc, rate_type, rate_date)
+       select tenant_id, company_id, document_id, 99, ledger_id, 'VAT_SETTLEMENT', account_id, posting_date, fiscal_year, fiscal_period, 0, 0, currency_lc, 1, 0, currency_gc, 1, 'DERIVED', posting_date
+         from core.journal_line where line_no = 1 limit 1$t$, '%VAT_SETTLEMENT%');
+select pg_temp.expect_error('vat settlement role: it is per VAT registration',
+    $t$insert into core.account_role_assignment (tenant_id, company_id, assignment_id, role_code, account_id, effective_from)
+       values ('11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222201', gen_random_uuid(), 'VAT_SETTLEMENT', '55555555-5555-4555-8555-555555555501', now())$t$, '%ROLE_ACCOUNT_RULE_VIOLATED%');
+select pg_temp.expect_count('vat return: a command role reads the rows of its tenant',
+    $t$select pg_temp.count_as('cmd_read', 'select (select count(*) from core.vat_return) + (select count(*) from core.vat_return_line)')$t$, 2);
+select set_config('app.tenant_id', '99999999-9999-4999-8999-999999999999', false);
+select pg_temp.expect_count('vat return: tenant B sees none of A''s rows',
+    $t$select pg_temp.count_as('cmd_read', 'select (select count(*) from core.vat_return) + (select count(*) from core.vat_return_line)')$t$, 0);
+select set_config('app.tenant_id', '11111111-1111-4111-8111-111111111111', false);
+
+-- ---------------------------------------------------------------------------------------------------------
 -- Result
 -- ---------------------------------------------------------------------------------------------------------
 select name, case when ok then 'PASS' else 'FAIL' end as result, detail from test_result order by seq;

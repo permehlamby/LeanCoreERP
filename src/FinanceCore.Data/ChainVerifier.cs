@@ -117,6 +117,116 @@ public sealed class ChainVerifier(NpgsqlDataSource source)
     }
 
     /// <summary>
+    /// chains:verify for the VAT_RETURN chain (08, 6.6, 6.8): recomputes the snapshot digest from the stored result rows and tax lines and every row hash,
+    /// checks the links, the gapless chain_seq and the head.
+    /// </summary>
+    public async Task<VerificationResult> VerifyVatReturnsAsync(Guid tenantId, Guid companyId, CancellationToken ct = default)
+    {
+        var problems = new List<VerificationProblem>();
+        await using TenantTransaction tx = await TenantTransaction.BeginAsync(source, tenantId, CommandRole.Read, ct: ct);
+
+        long headSeq = 0; byte[]? headHash = null; bool headFound = false;
+        await using (var cmd = tx.Command(
+            "select last_seq, last_hash from core.chain_head where tenant_id = @t and company_id = @c and chain_type = 'VAT_RETURN' and scope_key = ''"))
+        {
+            cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("c", companyId);
+            await using var r = await cmd.ExecuteReaderAsync(ct);
+            if (await r.ReadAsync(ct)) { headFound = true; headSeq = r.GetInt64(0); headHash = (byte[])r[1]; }
+        }
+
+        var returns = new List<(long Seq, byte[] Prev, byte[] Row, int Version, Guid Id, byte[] Digest, Dictionary<string, object?> Body)>();
+        await using (var cmd = tx.Command(
+            "select chain_seq, prev_hash, row_hash, hash_version, return_id, snapshot_digest, registration_id, return_type, fiscal_year, vat_period_no, period_start_date, " +
+            "period_end_date, return_kind, return_seq, replaces_return_id, prepared_at, prepared_by, correlation_id, idempotency_key, tax_line_count, late_line_count " +
+            "from core.vat_return where tenant_id = @t and company_id = @c order by chain_seq"))
+        {
+            cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("c", companyId);
+            await using var r = await cmd.ExecuteReaderAsync(ct);
+            while (await r.ReadAsync(ct))
+            {
+                var body = new Dictionary<string, object?>
+                {
+                    ["return_id"] = r.GetGuid(4), ["registration_id"] = r.GetGuid(6), ["return_type"] = r.GetString(7), ["fiscal_year"] = (long)r.GetInt32(8),
+                    ["vat_period_no"] = (long)r.GetInt16(9), ["period_start_date"] = r.GetFieldValue<DateOnly>(10), ["period_end_date"] = r.GetFieldValue<DateOnly>(11),
+                    ["return_kind"] = r.GetString(12), ["return_seq"] = (long)r.GetInt32(13), ["replaces_return_id"] = r.IsDBNull(14) ? null : r.GetGuid(14),
+                    ["prepared_at"] = DateTime.SpecifyKind(r.GetDateTime(15), DateTimeKind.Utc), ["prepared_by"] = r.GetString(16), ["correlation_id"] = r.GetString(17),
+                    ["idempotency_key"] = r.GetString(18), ["tax_line_count"] = (long)r.GetInt32(19), ["late_line_count"] = (long)r.GetInt32(20)
+                };
+                returns.Add((r.GetInt64(0), (byte[])r[1], (byte[])r[2], r.GetInt16(3), r.GetGuid(4), (byte[])r[5], body));
+            }
+        }
+        var linesOf = new Dictionary<Guid, List<Dictionary<string, object?>>>();
+        await using (var cmd = tx.Command(
+            "select return_id, line_no, row_type, box_code, partner_id, partner_vat_id, country_code, category, rate, supply_kind, currency_code, base_amount, tax_amount, " +
+            "line_count, legacy_base_amount, legacy_tax_amount from core.vat_return_line where tenant_id = @t and company_id = @c order by return_id, line_no"))
+        {
+            cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("c", companyId);
+            await using var r = await cmd.ExecuteReaderAsync(ct);
+            while (await r.ReadAsync(ct))
+            {
+                string? Str(int i) => r.IsDBNull(i) ? null : r.GetString(i);
+                Guid id = r.GetGuid(0);
+                if (!linesOf.TryGetValue(id, out var list)) linesOf[id] = list = [];
+                list.Add(new Dictionary<string, object?>
+                {
+                    ["tenant_id"] = tenantId, ["company_id"] = companyId, ["return_id"] = id, ["line_no"] = (long)r.GetInt32(1), ["row_type"] = r.GetString(2),
+                    ["box_code"] = Str(3), ["partner_id"] = r.IsDBNull(4) ? null : r.GetGuid(4), ["partner_vat_id"] = Str(5), ["country_code"] = Str(6)?.Trim(),
+                    ["category"] = Str(7), ["rate"] = r.IsDBNull(8) ? null : r.GetDecimal(8), ["supply_kind"] = Str(9), ["currency_code"] = r.GetString(10).Trim(),
+                    ["base_amount"] = r.GetDecimal(11), ["tax_amount"] = r.GetDecimal(12), ["line_count"] = (long)r.GetInt32(13),
+                    ["legacy_base_amount"] = r.GetDecimal(14), ["legacy_tax_amount"] = r.GetDecimal(15)
+                });
+            }
+        }
+        var taxLinesOf = new Dictionary<Guid, List<Dictionary<string, object?>>>();
+        await using (var cmd = tx.Command(
+            "select return_id, document_id, line_no, registration_id, return_type, tax_date, is_late, tax_code_version_id, vat_base_amount, vat_tax_amount " +
+            "from core.vat_return_tax_line where tenant_id = @t and company_id = @c order by return_id, document_id, line_no"))
+        {
+            cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("c", companyId);
+            await using var r = await cmd.ExecuteReaderAsync(ct);
+            while (await r.ReadAsync(ct))
+            {
+                Guid id = r.GetGuid(0);
+                if (!taxLinesOf.TryGetValue(id, out var list)) taxLinesOf[id] = list = [];
+                list.Add(new Dictionary<string, object?>
+                {
+                    ["tenant_id"] = tenantId, ["company_id"] = companyId, ["return_id"] = id, ["document_id"] = r.GetGuid(1), ["line_no"] = (long)r.GetInt32(2),
+                    ["registration_id"] = r.GetGuid(3), ["return_type"] = r.GetString(4), ["tax_date"] = r.GetFieldValue<DateOnly>(5), ["is_late"] = r.GetBoolean(6),
+                    ["tax_code_version_id"] = r.GetGuid(7), ["vat_base_amount"] = r.GetDecimal(8), ["vat_tax_amount"] = r.GetDecimal(9)
+                });
+            }
+        }
+
+        byte[] prev = LedgerHash2.Genesis(tenantId, companyId, VatReturnHash2.ChainType, "");
+        long expected = 1;
+        foreach (var v in returns)
+        {
+            if (v.Seq != expected) { problems.Add(new("CHAIN.SEQUENCE_GAP", v.Seq, $"expected chain_seq {expected}")); expected = v.Seq; }
+            if (!v.Prev.AsSpan().SequenceEqual(prev)) problems.Add(new("CHAIN.PREV_HASH_MISMATCH", v.Seq, "prev_hash is not the row_hash of the predecessor"));
+            if (v.Version != VatReturnHash2.Version) problems.Add(new("CHAIN.HASH_VERSION_UNSUPPORTED", v.Seq, $"hash_version {v.Version}"));
+            else
+            {
+                var lines = (linesOf.GetValueOrDefault(v.Id) ?? []).Select(x => (IReadOnlyDictionary<string, object?>)x).ToList();
+                var taxLines = (taxLinesOf.GetValueOrDefault(v.Id) ?? []).Select(x => (IReadOnlyDictionary<string, object?>)x).ToList();
+                byte[] digest = VatReturnHash2.SnapshotDigest(lines, taxLines);
+                if (!digest.AsSpan().SequenceEqual(v.Digest)) problems.Add(new("CHAIN.ROW_HASH_MISMATCH", v.Seq, "the snapshot digest differs from the stored result rows and tax lines"));
+                byte[] row = VatReturnHash2.RowHash(tenantId, companyId, v.Seq, v.Prev, v.Body, v.Digest);
+                if (!row.AsSpan().SequenceEqual(v.Row)) problems.Add(new("CHAIN.ROW_HASH_MISMATCH", v.Seq, "recomputed row_hash differs from the stored one"));
+            }
+            prev = v.Row;
+            expected = v.Seq + 1;
+        }
+        if (headFound)
+        {
+            long newest = returns.Count == 0 ? 0 : returns[^1].Seq;
+            if (headSeq != newest) problems.Add(new("CHAIN.HEAD_MISMATCH", headSeq, $"head sequence {headSeq}, newest return {newest}"));
+            else if (!headHash!.AsSpan().SequenceEqual(prev)) problems.Add(new("CHAIN.HEAD_HASH_MISMATCH", headSeq, "head hash differs from the newest row_hash"));
+        }
+        else if (returns.Count > 0) problems.Add(new("CHAIN.HEAD_MISSING", null, "no VAT_RETURN chain head"));
+        return new VerificationResult(problems.Count == 0, returns.Count, problems);
+    }
+
+    /// <summary>
     /// chains:verify for the CLEARING chain (03, 5.5 and 6.1): recomputes every row hash and items digest from the stored columns and the stored
     /// row hash of the difference document, checks the links, the gapless chain_seq and the head, that every clearing nets to zero and that its
     /// difference document is of the right type and date, and recomputes the S columns of every open item from the clearing items (the cache
