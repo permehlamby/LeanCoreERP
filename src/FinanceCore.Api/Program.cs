@@ -31,6 +31,7 @@ builder.Services.AddSingleton(sp => new RevaluationCommands(sp.GetRequiredServic
 builder.Services.AddSingleton(sp => new YearEndCommands(sp.GetRequiredService<NpgsqlDataSource>()));
 builder.Services.AddSingleton(sp => new LedgerReads(sp.GetRequiredService<NpgsqlDataSource>()));
 builder.Services.AddSingleton(sp => new EventFeed(sp.GetRequiredService<NpgsqlDataSource>()));
+builder.Services.AddSingleton(sp => new MigrationCommands(sp.GetRequiredService<NpgsqlDataSource>()));
 builder.Services.AddSingleton(sp => new CompanyActivator(sp.GetRequiredService<NpgsqlDataSource>()));
 builder.Services.AddSingleton(sp => new ChainVerification(sp.GetRequiredService<NpgsqlDataSource>()));
 builder.Services.AddSingleton<ICommandModule, PostingModule>();
@@ -38,6 +39,7 @@ builder.Services.AddSingleton<ICommandModule, VatModule>();
 builder.Services.AddSingleton<ICommandModule, ClosingModule>();
 builder.Services.AddSingleton<ICommandModule, ReadModule>();
 builder.Services.AddSingleton<ICommandModule, FeedModule>();
+builder.Services.AddSingleton<ICommandModule, MigrationModule>();
 builder.Services.AddSingleton<ICommandModule, ConfigModule>();
 builder.Services.AddSingleton<CommandCatalog>(sp =>
 {

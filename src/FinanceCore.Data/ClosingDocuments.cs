@@ -7,14 +7,17 @@ using NpgsqlTypes;
 namespace FinanceCore.Data;
 
 /// <summary>One line of a system document of the closing commands: the REVALUATION, REVAL_REVERSAL and YEAR_END documents and their mirrors (05, 3.3, 5.2).</summary>
+/// <summary>The open item row of a line (02, 5A): the partner, the dates and the legacy references of a migrated item (13, 6.3).</summary>
+internal sealed record OpenItemSpec(Guid? PartnerId, DateOnly? DueDate, DateOnly? BaselineDate, DateOnly? LegacyDocumentDate, DateOnly? LegacyPostingDate, string? LegacyDocumentRef);
+
 internal sealed record NewLine(
     Guid AccountId, string LineType, decimal Tc, decimal Lc, decimal Gc, decimal? Rc, decimal RateLc, decimal RateGc, decimal? RateRc, string RateType, DateOnly RateDate,
     int? ReversedLineNo = null, Guid? CostCenterId = null, Guid? ProjectId = null, Guid? ProfitCenterId = null, Guid? BusinessUnitId = null,
-    IReadOnlyList<(Guid TypeId, Guid ValueId)>? FreeDimensions = null);
+    IReadOnlyList<(Guid TypeId, Guid ValueId)>? FreeDimensions = null, OpenItemSpec? OpenItem = null);
 
 internal sealed record DocumentSpec(
     string DocumentType, string CommandName, JournalDocumentPoster.SeriesRow Series, int FiscalYear, int PeriodNo, bool SoftOverride, DateOnly PostingDate,
-    string IdempotencyKey, Guid? ReversalOf = null, string? ReasonCode = null, DateOnly? AutoReversalDate = null, byte[]? DetailDigest = null);
+    string IdempotencyKey, Guid? ReversalOf = null, string? ReasonCode = null, DateOnly? AutoReversalDate = null, byte[]? DetailDigest = null, string Origin = "SYSTEM", Guid? MigrationBatchId = null, string? TransactionCurrency = null);
 
 /// <summary>The ledger of one command and the head of its chain, moved by every document the command posts.</summary>
 internal sealed class ClosingLedger(TenantTransaction tx, Guid tenantId, Guid companyId, Guid ledgerId, JournalDocumentPoster.CompanyRow company, string groupCurrency, long seq, byte[] hash)
@@ -121,6 +124,7 @@ internal static class ClosingDocuments
         DateTime now = DateTime.UtcNow;
         DateTime postedAt = new(now.Ticks - now.Ticks % 10, DateTimeKind.Utc);
         string lc = l.Company.LocalCurrency;
+        string tcCurrency = spec.TransactionCurrency ?? lc;
         bool hasRc = l.Company.ReportingCurrency is not null;
 
         var header = new Dictionary<string, object?>
@@ -128,10 +132,10 @@ internal static class ClosingDocuments
             ["tenant_id"] = l.TenantId, ["company_id"] = l.CompanyId, ["document_id"] = documentId, ["ledger_id"] = l.LedgerId,
             ["document_type"] = spec.DocumentType, ["is_system_generated"] = true, ["number_series_id"] = spec.Series.SeriesId,
             ["fiscal_year"] = spec.FiscalYear, ["sequence_no"] = sequenceNo, ["document_number"] = number,
-            ["fiscal_period"] = spec.PeriodNo, ["soft_close_override"] = spec.SoftOverride, ["migration_batch_id"] = null, ["detail_digest"] = spec.DetailDigest,
-            ["document_date"] = spec.PostingDate, ["posting_date"] = spec.PostingDate, ["posted_at"] = postedAt, ["transaction_currency"] = lc,
+            ["fiscal_period"] = spec.PeriodNo, ["soft_close_override"] = spec.SoftOverride, ["detail_digest"] = spec.DetailDigest, ["migration_batch_id"] = spec.MigrationBatchId,
+            ["document_date"] = spec.PostingDate, ["posting_date"] = spec.PostingDate, ["posted_at"] = postedAt, ["transaction_currency"] = tcCurrency,
             ["reversal_of_document_id"] = spec.ReversalOf, ["reversal_reason_code"] = spec.ReasonCode, ["auto_reversal_date"] = spec.AutoReversalDate,
-            ["ic_transaction_id"] = null, ["ic_counterpart_company_id"] = null, ["origin"] = "SYSTEM",
+            ["ic_transaction_id"] = null, ["ic_counterpart_company_id"] = null, ["origin"] = spec.Origin,
             ["source_system"] = ctx.SourceSystem, ["source_document_ref"] = null, ["idempotency_key"] = spec.IdempotencyKey,
             ["command_name"] = spec.CommandName, ["posted_by"] = ctx.Actor, ["correlation_id"] = ctx.CorrelationId, ["hash_version"] = (long)LedgerHash2.Version
         };
@@ -150,21 +154,29 @@ internal static class ClosingDocuments
                 ["rate_type"] = n.RateType, ["rate_date"] = n.RateDate, ["ic_counterpart_company_id"] = null
             });
         }
-        byte[] rowHash = LedgerHash2.RowHash(header, chainSeq, l.Hash, LedgerHash2.LineDigest(rows.Select(r => LedgerHash2.LineHash(new HashedLine(r))).ToList()));
+        byte[] rowHash = LedgerHash2.RowHash(header, chainSeq, l.Hash, LedgerHash2.LineDigest(rows.Select((r, i) => LedgerHash2.LineHash(new HashedLine(r,
+            OpenItem: newLines[i].OpenItem is { } oi
+                ? new Dictionary<string, object?>
+                {
+                    ["tenant_id"] = l.TenantId, ["company_id"] = l.CompanyId, ["document_id"] = documentId, ["line_no"] = i + 1, ["partner_id"] = oi.PartnerId,
+                    ["legacy_document_date"] = oi.LegacyDocumentDate, ["legacy_posting_date"] = oi.LegacyPostingDate, ["legacy_document_ref"] = oi.LegacyDocumentRef
+                }
+                : null))).ToList()));
 
         await using (var cmd = tx.Command(
             "insert into core.journal_document (tenant_id, company_id, document_id, ledger_id, document_type, is_system_generated, number_series_id, fiscal_year, sequence_no, " +
-            "document_number, fiscal_period, soft_close_override, detail_digest, document_date, posting_date, posted_at, transaction_currency, reversal_of_document_id, " +
+            "document_number, fiscal_period, soft_close_override, migration_batch_id, detail_digest, document_date, posting_date, posted_at, transaction_currency, reversal_of_document_id, " +
             "reversal_reason_code, auto_reversal_date, origin, source_system, idempotency_key, command_name, posted_by, correlation_id, chain_seq, prev_hash, row_hash, hash_version) " +
-            "values (@t, @c, @id, @l, @dt, true, @s, @fy, @seq, @num, @fp, @soft, @dig, @d, @d, @at, @tc, @rev, @reason, @auto, 'SYSTEM', @src, @key, @cmd, @by, @corr, @cs, @prev, @row, @hv)"))
+            "values (@t, @c, @id, @l, @dt, true, @s, @fy, @seq, @num, @fp, @soft, @mb, @dig, @d, @d, @at, @tc, @rev, @reason, @auto, @origin, @src, @key, @cmd, @by, @corr, @cs, @prev, @row, @hv)"))
         {
             cmd.Parameters.AddWithValue("t", l.TenantId); cmd.Parameters.AddWithValue("c", l.CompanyId); cmd.Parameters.AddWithValue("id", documentId);
-            cmd.Parameters.AddWithValue("l", l.LedgerId); cmd.Parameters.AddWithValue("dt", spec.DocumentType); cmd.Parameters.AddWithValue("s", spec.Series.SeriesId);
+            cmd.Parameters.AddWithValue("l", l.LedgerId); cmd.Parameters.AddWithValue("dt", spec.DocumentType); cmd.Parameters.AddWithValue("origin", spec.Origin);
+            cmd.Parameters.Add(new NpgsqlParameter("mb", NpgsqlDbType.Uuid) { Value = (object?)spec.MigrationBatchId ?? DBNull.Value }); cmd.Parameters.AddWithValue("s", spec.Series.SeriesId);
             cmd.Parameters.AddWithValue("fy", spec.FiscalYear); cmd.Parameters.AddWithValue("seq", sequenceNo); cmd.Parameters.AddWithValue("num", number);
             cmd.Parameters.AddWithValue("fp", spec.PeriodNo); cmd.Parameters.AddWithValue("soft", spec.SoftOverride);
             cmd.Parameters.Add(new NpgsqlParameter("dig", NpgsqlDbType.Bytea) { Value = (object?)spec.DetailDigest ?? DBNull.Value });
             cmd.Parameters.AddWithValue("d", spec.PostingDate); cmd.Parameters.Add(new NpgsqlParameter("at", NpgsqlDbType.TimestampTz) { Value = postedAt });
-            cmd.Parameters.AddWithValue("tc", lc);
+            cmd.Parameters.AddWithValue("tc", tcCurrency);
             cmd.Parameters.Add(new NpgsqlParameter("rev", NpgsqlDbType.Uuid) { Value = (object?)spec.ReversalOf ?? DBNull.Value });
             cmd.Parameters.Add(new NpgsqlParameter("reason", NpgsqlDbType.Text) { Value = (object?)spec.ReasonCode ?? DBNull.Value });
             cmd.Parameters.Add(new NpgsqlParameter("auto", NpgsqlDbType.Date) { Value = (object?)spec.AutoReversalDate ?? DBNull.Value });
@@ -184,7 +196,7 @@ internal static class ClosingDocuments
             lc, (decimal)r["rate_lc"]!, (decimal)r["amount_gc"]!, l.GroupCurrency, (decimal)r["rate_gc"]!, (decimal?)r["amount_rc"], (string?)r["currency_rc"], (decimal?)r["rate_rc"],
             (string)r["rate_type"]!, (DateOnly)r["rate_date"]!)).ToList();
         return (new PostedDocument(documentId, l.CompanyId, l.LedgerId, spec.DocumentType, number, sequenceNo, spec.FiscalYear, spec.PeriodNo, spec.PostingDate, spec.PostingDate,
-            lc, "posted", spec.SoftOverride, chainSeq, Canonical.FormatHex32(rowHash), Canonical.FormatHex32(prev), LedgerHash2.Version, lines), null);
+            tcCurrency, "posted", spec.SoftOverride, chainSeq, Canonical.FormatHex32(rowHash), Canonical.FormatHex32(prev), LedgerHash2.Version, lines), null);
     }
 
     private static async Task InsertLineAsync(ClosingLedger l, Guid documentId, int lineNo, NewLine n, DocumentSpec spec, bool hasRc, CancellationToken ct)
@@ -211,6 +223,21 @@ internal static class ClosingDocuments
             cmd.Parameters.Add(new NpgsqlParameter("pr", NpgsqlDbType.Uuid) { Value = (object?)n.ProjectId ?? DBNull.Value });
             cmd.Parameters.Add(new NpgsqlParameter("pc", NpgsqlDbType.Uuid) { Value = (object?)n.ProfitCenterId ?? DBNull.Value });
             cmd.Parameters.Add(new NpgsqlParameter("bu", NpgsqlDbType.Uuid) { Value = (object?)n.BusinessUnitId ?? DBNull.Value });
+            await cmd.ExecuteNonQueryAsync(ct);
+        }
+        if (n.OpenItem is { } item)
+        {
+            await using var cmd = l.Tx.Command(
+                "insert into core.journal_line_open_item (tenant_id, company_id, document_id, line_no, partner_id, baseline_date, due_date, legacy_document_date, legacy_posting_date, " +
+                "legacy_document_ref, cleared_amount_rc) values (@t, @c, @d, @n, @p, @bd, @due, @ldd, @lpd, @ref, @rc)");
+            cmd.Parameters.AddWithValue("t", l.TenantId); cmd.Parameters.AddWithValue("c", l.CompanyId); cmd.Parameters.AddWithValue("d", documentId); cmd.Parameters.AddWithValue("n", lineNo);
+            cmd.Parameters.Add(new NpgsqlParameter("p", NpgsqlDbType.Uuid) { Value = (object?)item.PartnerId ?? DBNull.Value });
+            cmd.Parameters.Add(new NpgsqlParameter("bd", NpgsqlDbType.Date) { Value = (object?)item.BaselineDate ?? DBNull.Value });
+            cmd.Parameters.Add(new NpgsqlParameter("due", NpgsqlDbType.Date) { Value = (object?)item.DueDate ?? DBNull.Value });
+            cmd.Parameters.Add(new NpgsqlParameter("ldd", NpgsqlDbType.Date) { Value = (object?)item.LegacyDocumentDate ?? DBNull.Value });
+            cmd.Parameters.Add(new NpgsqlParameter("lpd", NpgsqlDbType.Date) { Value = (object?)item.LegacyPostingDate ?? DBNull.Value });
+            cmd.Parameters.Add(new NpgsqlParameter("ref", NpgsqlDbType.Text) { Value = (object?)item.LegacyDocumentRef ?? DBNull.Value });
+            cmd.Parameters.Add(new NpgsqlParameter("rc", NpgsqlDbType.Numeric) { Value = hasRc ? 0m : DBNull.Value });
             await cmd.ExecuteNonQueryAsync(ct);
         }
         foreach (var (typeId, valueId) in n.FreeDimensions ?? [])

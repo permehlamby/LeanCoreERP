@@ -14,7 +14,7 @@ Oprettet 2026-11-12, efter at momsområdet (V1–V5) og DK-pakkens momsindhold e
 | Anchors (`chain_anchor`) og RFC 3161-tidsstempel | Ikke bygget |
 | Læse-API'er og søgning (09) | Ikke bygget, bortset fra `chains:verify` og `vat-returns:get`/`:list` |
 | Outbox-jobs, eksport, anonymisering, tenant-sletning | Ikke bygget (hændelser skrives, men ingen jobs) |
-| Migration (13) | Kun spec (databasens migrationsrunner er bygget, ikke datamigration) |
+| Migration (13) | Første slice bygget (F-IMPL-44): åbningsbalancer og åbne poster fra åbning til seal. Mangler historik, rollback, lager, ordrer, legacy_tax_summary, legacy_id_map, four-eyes |
 | Lager (10), ordrer (11) | Kun spec |
 | Fakturering og betaling (22), konsolidering (23) | Kun spec |
 | API-hærdning (mTLS, rate limits, pagination) | Ikke bygget |
