@@ -1,5 +1,13 @@
 # DK country package: changelog
 
+## 0.4.1 (DRAFT, 2026-11-12)
+
+PATCH, found by the first apply of the package to a company (F-IMPL-39). No item is added or removed, 638 core items, none VERIFIED.
+
+| Ref | Finding | Effect |
+|---|---|---|
+| F-DK-25 | The core requires `en16931_vat_category` for a reverse-charge code (07, 8.3, 12, 9.2), and 28 reverse-charge purchase codes of the package had none, so the apply rejected them (`SCHEMA.REQUIRED_FIELD_MISSING`) | The category AE (VAT reverse charge) is set on the 28 reverse-charge codes that had none. The category is a package choice, not in the official list. It is for the e-invoice data set (12, 9.2) and does not change a return. To be confirmed by the legal reviewer |
+
 ## 0.4.0 (DRAFT, 2026-10-19)
 
 Adds the Danish payment content as app content (21, D8, 22, section 12). No core item changes: still 638 core items, no change to the core files. State DRAFT, nothing VERIFIED.

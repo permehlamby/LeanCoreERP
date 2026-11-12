@@ -9,7 +9,7 @@ namespace FinanceCore.Platform.Cli;
 /// works on the database with the migration role (FINANCECORE_ADMIN_DB) and is not part of the API (ADR-213, 12, 13). Exit code 0 is done, 1 is a
 /// refusal with a stable code, 2 is a usage error.
 /// </summary>
-public sealed class PlatformCli(PlatformProvisioner provisioner, TextWriter output, MigrationRunner? migrations = null)
+public sealed class PlatformCli(PlatformProvisioner provisioner, TextWriter output, MigrationRunner? migrations = null, CountryPackageApplier? applier = null)
 {
     public const string Usage = """
         financecore-platform <command> [options]
@@ -23,6 +23,10 @@ public sealed class PlatformCli(PlatformProvisioner provisioner, TextWriter outp
           company activate --tenant <code> --company <code>
           rate add        --tenant <code> --from <DKK> --to <EUR> --date <yyyy-MM-dd> --rate <0.134> [--type SPOT|CLOSING]
           package list
+          package apply-vat --tenant <code> --company <code> --dir <country-packages> --package <DK> --vat-id <DK12345678>
+                          --filing-frequency <MONTHLY|QUARTERLY|HALF_YEARLY> --vat-profile <1-4> --first-fiscal-year-start <yyyy-MM-dd>
+                          [--currency <DKK>] [--ec-list-frequency <MONTHLY|QUARTERLY>] [--correction-method <ADJUST_NEXT|SUPPLEMENTARY|REPLACEMENT>]
+                          [--include-special-codes] [--pro-rata-rate <pct>] [--estimate-rate <pct>] [--sector-rate <pct>] [--area-rate <pct>]
           db status       [--dir <db/migrations>]
           db migrate      [--dir <db/migrations>] [--dry-run]
 
@@ -47,6 +51,7 @@ public sealed class PlatformCli(PlatformProvisioner provisioner, TextWriter outp
                 case "company activate": return await CompanyActivate(options, ct);
                 case "rate add": return await RateAdd(options, ct);
                 case "package list": return PackageList();
+                case "package apply-vat": return await PackageApplyVat(options, flags, ct);
                 case "db status": return await DbStatus(options, ct);
                 case "db migrate": return await DbMigrate(options, flags, ct);
                 default:
@@ -147,6 +152,24 @@ public sealed class PlatformCli(PlatformProvisioner provisioner, TextWriter outp
         await provisioner.AddExchangeRateAsync(tenantId, Opt(o, "type", "SPOT").ToUpperInvariant(), Req(o, "from").ToUpperInvariant(), Req(o, "to").ToUpperInvariant(),
             date, rate, ct);
         output.WriteLine($"rate {Req(o, "from").ToUpperInvariant()}/{Req(o, "to").ToUpperInvariant()} {rate.ToString(CultureInfo.InvariantCulture)} added for {Req(o, "date")}");
+        return 0;
+    }
+
+    private async Task<int> PackageApplyVat(Dictionary<string, string> o, HashSet<string> flags, CancellationToken ct)
+    {
+        CountryPackageApplier packages = applier ?? throw new UsageException("this command needs a database");
+        decimal? Pct(string name) => o.TryGetValue(name, out var v) ? decimal.TryParse(v, NumberStyles.Number, CultureInfo.InvariantCulture, out var d) ? d : throw new UsageException($"--{name} is a number") : null;
+        var inputs = new PackageInputs(Req(o, "vat-id"), Req(o, "filing-frequency").ToUpperInvariant(), o.TryGetValue("ec-list-frequency", out var ec) ? ec.ToUpperInvariant() : null,
+            Opt(o, "correction-method", "ADJUST_NEXT").ToUpperInvariant(), int.TryParse(Req(o, "vat-profile"), NumberStyles.None, CultureInfo.InvariantCulture, out int profile) ? profile : throw new UsageException("--vat-profile is 1 to 4"),
+            flags.Contains("include-special-codes"), ParseDate(Req(o, "first-fiscal-year-start"), "first-fiscal-year-start"), Opt(o, "currency", "DKK").ToUpperInvariant(),
+            Pct("pro-rata-rate"), Pct("estimate-rate"), Pct("sector-rate"), Pct("area-rate"));
+        Guid tenantId = await provisioner.RequireTenantAsync(Req(o, "tenant"), ct);
+        CompanyInfo company = await provisioner.RequireCompanyAsync(tenantId, Req(o, "company"), ct);
+        PackageApplyResult result = await packages.ApplyVatAsync(tenantId, company, Req(o, "dir"), Req(o, "package"), inputs, ct);
+        foreach (var group in result.Items.GroupBy(i => i.EntityType))
+            output.WriteLine($"{group.Key,-24} " + string.Join(", ", group.GroupBy(i => i.Action).Select(a => $"{a.Count()} {a.Key}")));
+        output.WriteLine($"package {result.PackageCode} {result.Version} ({result.State}) applied to {company.Code}: {result.Items.Count(i => i.Action == "CREATED")} created, {result.Items.Count(i => i.Action != "CREATED")} not created");
+        if (result.State != "RELEASED") output.WriteLine("the package is not RELEASED: no PRODUCTION tenant accepts it (18, 6)");
         return 0;
     }
 
