@@ -14,7 +14,7 @@ public class YearEndTests
     private static CommandContext Reopen(TestTenant t, string key) => t.Context(key, "year_end.reopen");
 
     /// <summary>Revenue 1000 and expense 400 in March, all twelve regular periods hard-closed.</summary>
-    private static async Task<TestTenant> ClosedYearAsync(bool postings = true)
+    internal static async Task<TestTenant> ClosedYearAsync(bool postings = true)
     {
         var t = await RevaluationTests.ReadyAsync(special: 1, revalueBank: false);
         if (postings)
