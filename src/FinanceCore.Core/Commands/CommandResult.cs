@@ -40,4 +40,5 @@ public sealed record CommandContext(
     string CorrelationId,
     string Actor,
     IReadOnlySet<string> Permissions,
-    string SourceSystem = "API");
+    string SourceSystem = "API",
+    string? AppCode = null);

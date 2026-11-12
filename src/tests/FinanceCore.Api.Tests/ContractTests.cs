@@ -189,7 +189,8 @@ public class ContractTests
     private static readonly string[] SliceOnly =
     [
         "API.COMMAND_NOT_FOUND", "AUTH.TENANT_MISMATCH", "AUTH.TENANT_MISSING", "AUTH.TOKEN_INVALID",
-        "CHAIN.DOCUMENT_WITHOUT_LINES", "NUMBER.GAP", "SYSTEM.FISCAL_YEAR_MISSING"
+        "CHAIN.DOCUMENT_WITHOUT_LINES", "NUMBER.GAP", "SYSTEM.FISCAL_YEAR_MISSING",
+        "EVENT.ACK_NOT_FORWARD", "EVENT.REWIND_NOT_BACKWARD"   // 15, 5.3 says "only forward" and "backward" without naming a code (F-IMPL-42)
     ];
 
     /// <summary>The index of 06 writes a code in full (`AREA.NAME`) or, inside the row of its area, as the bare name (`NAME`).</summary>
