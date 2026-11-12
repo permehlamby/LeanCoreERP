@@ -40,7 +40,8 @@ public sealed record LineDimensions(
 /// determined one, and the tax amount of the supplier document.</summary>
 public sealed record RequestLine(
     string LineRef, Guid AccountId, decimal AmountTc, string? LineText = null, OpenItemRequest? OpenItem = null, LineDimensions? Dimensions = null,
-    Guid? TaxClassId = null, DateOnly? TaxDate = null, string? OriginCountry = null, string? DestinationCountry = null, Guid? TaxCodeId = null, decimal? TaxAmountTc = null);
+    Guid? TaxClassId = null, DateOnly? TaxDate = null, string? OriginCountry = null, string? DestinationCountry = null, Guid? TaxCodeId = null, decimal? TaxAmountTc = null,
+    decimal? DeductibleTaxAmountTc = null);
 
 public sealed record PostedLine(
     int LineNo, string? LineRef, Guid AccountId, string LineType,
@@ -134,7 +135,7 @@ public static class RequestFingerprint
                 })));
         // The tax fields follow only when the request has some: the fingerprint of a request without them is what it was before the tax lines
         if (r.TaxDate is not null || r.OriginCountry is not null || r.DestinationCountry is not null || r.Lines.Any(l => l.TaxCodeId is not null || l.TaxAmountTc is not null || l.TaxClassId is not null
-                || l.TaxDate is not null || l.OriginCountry is not null || l.DestinationCountry is not null))
+                || l.TaxDate is not null || l.OriginCountry is not null || l.DestinationCountry is not null || l.DeductibleTaxAmountTc is not null))
         {
             all.Write(Canonical.Block(Canonical.EncodeFields(TaxHeaderSpec, new Dictionary<string, object?>
                 { ["tax_date"] = r.TaxDate, ["origin_country"] = r.OriginCountry, ["destination_country"] = r.DestinationCountry })));
@@ -144,6 +145,11 @@ public static class RequestFingerprint
                     ["tax_class_id"] = l.TaxClassId, ["tax_date"] = l.TaxDate, ["origin_country"] = l.OriginCountry, ["destination_country"] = l.DestinationCountry,
                     ["tax_code_id"] = l.TaxCodeId, ["tax_amount_tc"] = l.TaxAmountTc
                 })));
+            // the deductible amount follows only when a line has one (19, 6.2), so that the fingerprint of a request without it is what it was
+            if (r.Lines.Any(l => l.DeductibleTaxAmountTc is not null))
+                foreach (RequestLine l in r.Lines)
+                    all.Write(Canonical.Block(Canonical.EncodeFields([new FieldSpec("deductible_tax_amount_tc", FieldType.Amount, true)],
+                        new Dictionary<string, object?> { ["deductible_tax_amount_tc"] = l.DeductibleTaxAmountTc })));
         }
         // The header partner follows only when there is one, so the fingerprint of a request without it is what it was before the invoice types
         if (r.PartnerId is { } partner)

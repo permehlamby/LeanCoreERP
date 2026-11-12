@@ -231,7 +231,7 @@ public sealed class JournalDocumentPoster(NpgsqlDataSource source)
         }
 
         // P6 (TC balance) is cheap and independent, so it is reported with the other errors.
-        decimal sumTc = req.Lines.Sum(l => l.AmountTc) + taxPlan.Lines.Sum(t => t.TaxTc) + taxPlan.RoundingTc;
+        decimal sumTc = req.Lines.Sum(l => l.AmountTc) + taxPlan.Lines.Sum(t => t.TaxTc + t.Nondeductible.Sum(n => n.Tc)) + taxPlan.RoundingTc;
         // a document whose tax could not be worked out has no balance to speak of
         if (sumTc != 0m && !taxFailed) errors.Add(Error("BALANCE.UNBALANCED_TC", "P6", "lines", ("currency", "TC"), ("difference", sumTc)));
 
@@ -257,16 +257,15 @@ public sealed class JournalDocumentPoster(NpgsqlDataSource source)
                 rateRc is null ? null : PostingRules.Round(l.AmountTc * rateRc.Value, scales[company.ReportingCurrency!])));
 
         // the generated tax lines and the tax rounding line are derived like the base lines, from their transaction currency amount
-        var extras = new List<(string Type, Guid Account, decimal Tc, Guid? Code, int? Seed, decimal Lc, decimal Gc, decimal? Rc)>();
+        var extras = new List<(string Type, Guid Account, decimal Tc, Guid? Code, int? Seed, decimal Lc, decimal Gc, decimal? Rc, int? BaseIdx)>();
+        void AddExtra(string type, Guid account, decimal tc, Guid? code, int? seed, int? baseIdx) => extras.Add((type, account, tc, code, seed,
+            PostingRules.Round(tc * rateLc.Value, scales[company.LocalCurrency]), PostingRules.Round(tc * rateGc.Value, scales[groupCurrency!]),
+            rateRc is null ? null : PostingRules.Round(tc * rateRc.Value, scales[company.ReportingCurrency!]), baseIdx));
+        for (int sd = 0; sd < taxPlan.Lines.Count; sd++) AddExtra("TAX", taxPlan.Lines[sd].AccountId, taxPlan.Lines[sd].TaxTc, taxPlan.Lines[sd].CodeId, sd, null);
+        // the non-deductible part of an input tax is cost on the account of the base line it belongs to (19, 4.1)
         for (int sd = 0; sd < taxPlan.Lines.Count; sd++)
-        {
-            TaxLineSeed t = taxPlan.Lines[sd];
-            extras.Add(("TAX", t.AccountId, t.TaxTc, t.CodeId, sd, PostingRules.Round(t.TaxTc * rateLc.Value, scales[company.LocalCurrency]),
-                PostingRules.Round(t.TaxTc * rateGc.Value, scales[groupCurrency!]), rateRc is null ? null : PostingRules.Round(t.TaxTc * rateRc.Value, scales[company.ReportingCurrency!])));
-        }
-        if (taxPlan.RoundingTc != 0m)
-            extras.Add(("TAX_ROUNDING", taxRoundingAccount!.Value, taxPlan.RoundingTc, null, null, PostingRules.Round(taxPlan.RoundingTc * rateLc.Value, scales[company.LocalCurrency]),
-                PostingRules.Round(taxPlan.RoundingTc * rateGc.Value, scales[groupCurrency!]), rateRc is null ? null : PostingRules.Round(taxPlan.RoundingTc * rateRc.Value, scales[company.ReportingCurrency!])));
+            foreach (var (index, tc) in taxPlan.Lines[sd].Nondeductible) AddExtra("TAX_NONDEDUCTIBLE", req.Lines[index].AccountId, tc, null, sd, index);
+        if (taxPlan.RoundingTc != 0m) AddExtra("TAX_ROUNDING", taxRoundingAccount!.Value, taxPlan.RoundingTc, null, null, null);
 
         // P5/P6: the derived currencies balance with one ROUNDING line (design principle 4 of 00) on the account of the role
         // ROUNDING for the transaction currency, else the default row. Its amounts are the differences, TC is 0 (finding F-IMPL-16).
@@ -375,10 +374,14 @@ public sealed class JournalDocumentPoster(NpgsqlDataSource source)
                 "SPOT", req.PostingDate, taxPlan.BaseCodes.TryGetValue(i, out Guid baseCode) ? baseCode : null));
         }
         var taxLineNos = new int[taxPlan.Lines.Count];
+        var baseOfLine = new Dictionary<int, int>();                      // a base line, and the non-deductible line that belongs to it, by line number
+        var nondeductibleLineNo = new Dictionary<(int Seed, int BaseIdx), int>();
+        for (int i = 0; i < req.Lines.Count; i++) baseOfLine[i + 1] = i;
         foreach (var e in extras)
         {
             int lineNo = lines.Count + 1;
-            if (e.Seed is { } sd) taxLineNos[sd] = lineNo;
+            if (e.Type == "TAX" && e.Seed is { } sd) taxLineNos[sd] = lineNo;
+            if (e.Type == "TAX_NONDEDUCTIBLE") { baseOfLine[lineNo] = e.BaseIdx!.Value; nondeductibleLineNo[(e.Seed!.Value, e.BaseIdx.Value)] = lineNo; }
             lines.Add(new PostedLine(lineNo, null, e.Account, e.Type, e.Tc, e.Lc, company.LocalCurrency, rateLc.Value, e.Gc, groupCurrency!, rateGc.Value,
                 e.Rc, company.ReportingCurrency, rateRc?.Value, "SPOT", req.PostingDate, e.Code));
         }
@@ -410,13 +413,15 @@ public sealed class JournalDocumentPoster(NpgsqlDataSource source)
                 ["vat_base_amount"] = inLocal ? baseLc : baseRc!.Value, ["vat_tax_amount"] = inLocal ? tl.AmountLc : tl.AmountRc!.Value,
                 ["vat_rate"] = inLocal ? rateLc.Value : rateRc!.Value, ["vat_rate_date"] = null, ["is_override"] = t.IsOverride,
                 ["tax_amount_supplied_tc"] = t.SuppliedTc, ["rounding_mode"] = t.RoundingMode, ["origin_eu"] = t.OriginEu, ["destination_eu"] = t.DestinationEu,
-                ["deductible_pct"] = 100m, ["deduction_key"] = null, ["deduction_key_rate"] = null, ["deduction_share"] = 100m,
-                ["deduction_cap_amount_tc"] = null, ["gross_tax_amount_tc"] = tl.AmountTc
+                ["deductible_pct"] = t.DeductiblePct, ["deduction_key"] = t.DeductionKey, ["deduction_key_rate"] = t.KeyRate, ["deduction_share"] = t.Share,
+                ["deduction_cap_amount_tc"] = t.CapAmountTc, ["gross_tax_amount_tc"] = t.GrossTc
             };
             var bases = t.Bases.Select(b => new Dictionary<string, object?>
             {
                 ["tenant_id"] = tenantId, ["company_id"] = req.CompanyId, ["document_id"] = documentId, ["tax_line_no"] = tl.LineNo, ["base_line_no"] = b.Index + 1,
-                ["base_amount_tc"] = b.BaseTc, ["nondeductible_tax_tc"] = 0m, ["nondeductible_line_no"] = null
+                ["base_amount_tc"] = b.BaseTc,
+                ["nondeductible_tax_tc"] = t.Nondeductible.Where(x => x.Index == b.Index).Select(x => x.Tc).FirstOrDefault(),
+                ["nondeductible_line_no"] = nondeductibleLineNo.TryGetValue((sd, b.Index), out int ndLine) ? ndLine : null
             }).ToList();
             taxRows[tl.LineNo] = (row, bases);
         }
@@ -446,14 +451,14 @@ public sealed class JournalDocumentPoster(NpgsqlDataSource source)
             return Reject(noSnapshot);
         foreach (PostedLine l in lines)
             await InsertLineAsync(tx, tenantId, req, documentId, ledgerId.Value, fiscalYear, recheck.PeriodNo!.Value,
-                l.LineType == "BASE" ? req.Lines[l.LineNo - 1].LineText : null, l.LineType == "BASE" ? req.Lines[l.LineNo - 1].Dimensions : null, l, ct);
+                baseOfLine.TryGetValue(l.LineNo, out int textOf) ? req.Lines[textOf].LineText : null, baseOfLine.TryGetValue(l.LineNo, out int dimsOf) ? req.Lines[dimsOf].Dimensions : null, l, ct);
         foreach (var (taxLineNo, tax) in taxRows.OrderBy(t => t.Key))
         {
             await TaxRows.InsertTaxAsync(tx, tax.Row, ct);
             foreach (var b in tax.Bases) await TaxRows.InsertBaseAsync(tx, b, ct);
         }
-        foreach (PostedLine l in lines.Where(l => l.LineType == "BASE" && req.Lines[l.LineNo - 1].Dimensions?.Free is { Count: > 0 }))
-            foreach (FreeDimension f in req.Lines[l.LineNo - 1].Dimensions!.Free!.OrderBy(f => f.DimensionTypeId))
+        foreach (PostedLine l in lines.Where(l => baseOfLine.TryGetValue(l.LineNo, out int b) && req.Lines[b].Dimensions?.Free is { Count: > 0 }))
+            foreach (FreeDimension f in req.Lines[baseOfLine[l.LineNo]].Dimensions!.Free!.OrderBy(f => f.DimensionTypeId))
                 await InsertFreeDimensionAsync(tx, tenantId, req.CompanyId, documentId, l.LineNo, f, ct);
         foreach (PostedLine l in lines.Where(l => l.LineType == "BASE" && req.Lines[l.LineNo - 1].OpenItem is not null))
             await InsertOpenItemAsync(tx, tenantId, req.CompanyId, documentId, l, req.Lines[l.LineNo - 1].OpenItem!, openItemDefaults.GetValueOrDefault(l.LineNo - 1), ct);

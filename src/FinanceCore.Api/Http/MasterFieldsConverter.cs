@@ -13,7 +13,7 @@ namespace FinanceCore.Api.Http;
 public sealed class MasterFieldsConverter : JsonConverter<IReadOnlyDictionary<string, object?>>
 {
     private static readonly Dictionary<string, MasterKind> Kinds = MasterFields.Partner
-        .Concat(MasterFields.Pii).Concat(MasterFields.Relation).Concat(MasterFields.PaymentTerms).Concat(DimensionFields.Type).Concat(DimensionFields.Value).Concat(TaxFields.TaxClass).Concat(TaxFields.RegistrationCreate).Concat(TaxFields.TaxCodeCreate).Concat(TaxFields.TaxCodeVersion).Concat(TaxFields.ReturnBoxFields).Concat(TaxFields.PartnerRegistrationCreate).Concat(TaxFields.RuleVersion)
+        .Concat(MasterFields.Pii).Concat(MasterFields.Relation).Concat(MasterFields.PaymentTerms).Concat(DimensionFields.Type).Concat(DimensionFields.Value).Concat(TaxFields.TaxClass).Concat(TaxFields.RegistrationCreate).Concat(TaxFields.TaxCodeCreate).Concat(TaxFields.TaxCodeVersion).Concat(TaxFields.ReturnBoxFields).Concat(TaxFields.PartnerRegistrationCreate).Concat(TaxFields.RuleVersion).Concat(TaxFields.DeductionKeyCreate).Concat(TaxFields.DeductionRate)
         .GroupBy(f => f.Name).ToDictionary(g => g.Key, g => g.First().Kind);
 
     public override IReadOnlyDictionary<string, object?> Read(ref Utf8JsonReader reader, Type type, JsonSerializerOptions options)

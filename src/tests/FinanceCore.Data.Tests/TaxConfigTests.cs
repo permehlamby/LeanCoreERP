@@ -191,7 +191,7 @@ public class TaxConfigTests
         var partial = await commands.CreateVersionAsync(t.TenantId, Cfg(t, "p1"), Version(input, "2027-01-01", 25m, t.Bank, null, ("deductible_pct", 25.5m), ("deduction_cap", "SUPPLIED_AMOUNT")));
         Assert.True(partial.Status == CommandStatus.Ok, Describe(partial));
         Assert.Equal("25.5000000000", await t.ScalarAsync<string>("select deductible_pct::text from core.tax_code_version where tenant_id = @t and tax_code_version_id = @v", ("v", partial.Value!.TaxCodeVersionId)));
-        Assert.Equal(["LIMIT.DEDUCTION_KEY_NOT_BUILT"], Codes(await commands.CreateVersionAsync(t.TenantId, Cfg(t, "p2"), Version(input, "2028-01-01", 25m, t.Bank, null, ("deduction_key", "PRORATA")))));
+        Assert.Equal(["CONFIG.DEDUCTION_KEY_UNKNOWN"], Codes(await commands.CreateVersionAsync(t.TenantId, Cfg(t, "p2"), Version(input, "2028-01-01", 25m, t.Bank, null, ("deduction_key", "PRORATA")))));
         Assert.Equal(["CONFIG.DEDUCTION_ON_NON_INPUT_CODE"], Codes(await commands.CreateVersionAsync(t.TenantId, Cfg(t, "p3"), Version(output, "2028-01-01", 25m, t.Bank, null, ("deduction_cap", "SUPPLIED_AMOUNT")))));
     }
 

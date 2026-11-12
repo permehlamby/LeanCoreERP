@@ -8915,6 +8915,816 @@
           }
         }
       }
+    },
+    "/v1/vat-deduction-keys:create": {
+      "post": {
+        "operationId": "vatDeductionKeysCreate",
+        "summary": "vat-deduction-keys:create",
+        "tags": [
+          "vat-deduction-keys"
+        ],
+        "x-permission": "write.config",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          },
+          {
+            "$ref": "#/components/parameters/CorrelationId"
+          },
+          {
+            "$ref": "#/components/parameters/SourceSystem"
+          },
+          {
+            "$ref": "#/components/parameters/TenantId"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateDeductionKeyRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The command succeeded (06, 2.2). A replay of an earlier identical command has idempotent_replay true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "status",
+                    "idempotent_replay",
+                    "command_log_id",
+                    "result",
+                    "warnings"
+                  ],
+                  "properties": {
+                    "status": {
+                      "const": "OK"
+                    },
+                    "idempotent_replay": {
+                      "type": "boolean"
+                    },
+                    "command_log_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "format": "uuid"
+                    },
+                    "result": {
+                      "$ref": "#/components/schemas/MasterResult"
+                    },
+                    "warnings": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Error"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The envelope or the payload does not fit the contract (P0, P1)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid token (AUTH.TOKEN_INVALID)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "A permission or the tenant is missing (AUTH.*)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The command or something it names does not exist",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "An idempotency key was reused for another request, or a retryable conflict (SYSTEM.CONFLICT)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The command refused the request: business rules (P2 to P6)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The command failed (SYSTEM.*)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The service is unavailable (SYSTEM.UNAVAILABLE)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/vat-deduction-keys:deactivate": {
+      "post": {
+        "operationId": "vatDeductionKeysDeactivate",
+        "summary": "vat-deduction-keys:deactivate",
+        "tags": [
+          "vat-deduction-keys"
+        ],
+        "x-permission": "write.config",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          },
+          {
+            "$ref": "#/components/parameters/CorrelationId"
+          },
+          {
+            "$ref": "#/components/parameters/SourceSystem"
+          },
+          {
+            "$ref": "#/components/parameters/TenantId"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MasterStatusRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The command succeeded (06, 2.2). A replay of an earlier identical command has idempotent_replay true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "status",
+                    "idempotent_replay",
+                    "command_log_id",
+                    "result",
+                    "warnings"
+                  ],
+                  "properties": {
+                    "status": {
+                      "const": "OK"
+                    },
+                    "idempotent_replay": {
+                      "type": "boolean"
+                    },
+                    "command_log_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "format": "uuid"
+                    },
+                    "result": {
+                      "$ref": "#/components/schemas/MasterResult"
+                    },
+                    "warnings": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Error"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The envelope or the payload does not fit the contract (P0, P1)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid token (AUTH.TOKEN_INVALID)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "A permission or the tenant is missing (AUTH.*)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The command or something it names does not exist",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "An idempotency key was reused for another request, or a retryable conflict (SYSTEM.CONFLICT)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The command refused the request: business rules (P2 to P6)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The command failed (SYSTEM.*)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The service is unavailable (SYSTEM.UNAVAILABLE)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/vat-deduction-keys:reactivate": {
+      "post": {
+        "operationId": "vatDeductionKeysReactivate",
+        "summary": "vat-deduction-keys:reactivate",
+        "tags": [
+          "vat-deduction-keys"
+        ],
+        "x-permission": "write.config",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          },
+          {
+            "$ref": "#/components/parameters/CorrelationId"
+          },
+          {
+            "$ref": "#/components/parameters/SourceSystem"
+          },
+          {
+            "$ref": "#/components/parameters/TenantId"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MasterStatusRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The command succeeded (06, 2.2). A replay of an earlier identical command has idempotent_replay true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "status",
+                    "idempotent_replay",
+                    "command_log_id",
+                    "result",
+                    "warnings"
+                  ],
+                  "properties": {
+                    "status": {
+                      "const": "OK"
+                    },
+                    "idempotent_replay": {
+                      "type": "boolean"
+                    },
+                    "command_log_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "format": "uuid"
+                    },
+                    "result": {
+                      "$ref": "#/components/schemas/MasterResult"
+                    },
+                    "warnings": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Error"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The envelope or the payload does not fit the contract (P0, P1)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid token (AUTH.TOKEN_INVALID)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "A permission or the tenant is missing (AUTH.*)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The command or something it names does not exist",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "An idempotency key was reused for another request, or a retryable conflict (SYSTEM.CONFLICT)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The command refused the request: business rules (P2 to P6)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The command failed (SYSTEM.*)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The service is unavailable (SYSTEM.UNAVAILABLE)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/vat-deduction-keys:update": {
+      "post": {
+        "operationId": "vatDeductionKeysUpdate",
+        "summary": "vat-deduction-keys:update",
+        "tags": [
+          "vat-deduction-keys"
+        ],
+        "x-permission": "write.config",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          },
+          {
+            "$ref": "#/components/parameters/CorrelationId"
+          },
+          {
+            "$ref": "#/components/parameters/SourceSystem"
+          },
+          {
+            "$ref": "#/components/parameters/TenantId"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateDeductionKeyRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The command succeeded (06, 2.2). A replay of an earlier identical command has idempotent_replay true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "status",
+                    "idempotent_replay",
+                    "command_log_id",
+                    "result",
+                    "warnings"
+                  ],
+                  "properties": {
+                    "status": {
+                      "const": "OK"
+                    },
+                    "idempotent_replay": {
+                      "type": "boolean"
+                    },
+                    "command_log_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "format": "uuid"
+                    },
+                    "result": {
+                      "$ref": "#/components/schemas/MasterResult"
+                    },
+                    "warnings": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Error"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The envelope or the payload does not fit the contract (P0, P1)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid token (AUTH.TOKEN_INVALID)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "A permission or the tenant is missing (AUTH.*)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The command or something it names does not exist",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "An idempotency key was reused for another request, or a retryable conflict (SYSTEM.CONFLICT)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The command refused the request: business rules (P2 to P6)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The command failed (SYSTEM.*)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The service is unavailable (SYSTEM.UNAVAILABLE)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/vat-deduction-rates:create-version": {
+      "post": {
+        "operationId": "vatDeductionRatesCreateVersion",
+        "summary": "vat-deduction-rates:create-version",
+        "tags": [
+          "vat-deduction-rates"
+        ],
+        "x-permission": "write.config",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          },
+          {
+            "$ref": "#/components/parameters/CorrelationId"
+          },
+          {
+            "$ref": "#/components/parameters/SourceSystem"
+          },
+          {
+            "$ref": "#/components/parameters/TenantId"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateDeductionRateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The command succeeded (06, 2.2). A replay of an earlier identical command has idempotent_replay true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "status",
+                    "idempotent_replay",
+                    "command_log_id",
+                    "result",
+                    "warnings"
+                  ],
+                  "properties": {
+                    "status": {
+                      "const": "OK"
+                    },
+                    "idempotent_replay": {
+                      "type": "boolean"
+                    },
+                    "command_log_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "format": "uuid"
+                    },
+                    "result": {
+                      "$ref": "#/components/schemas/DeductionRateResult"
+                    },
+                    "warnings": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Error"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The envelope or the payload does not fit the contract (P0, P1)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid token (AUTH.TOKEN_INVALID)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "A permission or the tenant is missing (AUTH.*)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The command or something it names does not exist",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "An idempotency key was reused for another request, or a retryable conflict (SYSTEM.CONFLICT)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The command refused the request: business rules (P2 to P6)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The command failed (SYSTEM.*)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The service is unavailable (SYSTEM.UNAVAILABLE)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -9333,6 +10143,39 @@
           "rule"
         ]
       },
+      "CreateDeductionKeyRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "fields": {
+            "type": "object",
+            "additionalProperties": true,
+            "description": "A set of named fields. The fields the command knows are typed by their kind (07, 11.1)"
+          }
+        },
+        "required": [
+          "fields"
+        ]
+      },
+      "CreateDeductionRateRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "deduction_key_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "fields": {
+            "type": "object",
+            "additionalProperties": true,
+            "description": "A set of named fields. The fields the command knows are typed by their kind (07, 11.1)"
+          }
+        },
+        "required": [
+          "deduction_key_id",
+          "fields"
+        ]
+      },
       "CreateDimensionTypeRequest": {
         "type": "object",
         "additionalProperties": false,
@@ -9629,6 +10472,24 @@
           "new_rule"
         ]
       },
+      "DeductionRateResult": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "deduction_key_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "valid_from": {
+            "type": "string",
+            "format": "date"
+          }
+        },
+        "required": [
+          "deduction_key_id",
+          "valid_from"
+        ]
+      },
       "Error": {
         "type": "object",
         "required": [
@@ -9691,6 +10552,8 @@
               "COMPANY.NOT_FOUND",
               "CONFIG.COMPANY_NOT_READY",
               "CONFIG.CURRENCY_NOT_ENABLED",
+              "CONFIG.DEDUCTION_KEY_REFERENCED",
+              "CONFIG.DEDUCTION_KEY_UNKNOWN",
               "CONFIG.DEDUCTION_ON_NON_INPUT_CODE",
               "CONFIG.DIMENSION_COMPANY_MISMATCH",
               "CONFIG.DUPLICATE_CODE",
@@ -9724,7 +10587,6 @@
               "LIMIT.CALENDAR_ID_NOT_SUPPORTED",
               "LIMIT.CHAIN_RANGE_NOT_BUILT",
               "LIMIT.CHAIN_TYPE_NOT_BUILT",
-              "LIMIT.DEDUCTION_KEY_NOT_BUILT",
               "LIMIT.ENTITY_TYPE_NOT_BUILT",
               "LIMIT.FIELD_NOT_BUILT",
               "LIMIT.NUMBER_COUNTER_MISSING",
@@ -9785,6 +10647,10 @@
               "TAX.AMOUNT_OUT_OF_TOLERANCE",
               "TAX.CODE_DIFFERS_FROM_DETERMINED",
               "TAX.CODE_NOT_PERMITTED",
+              "TAX.DEDUCTION_AMOUNT_EXCEEDS_LIMIT",
+              "TAX.DEDUCTION_AMOUNT_NOT_ALLOWED",
+              "TAX.DEDUCTION_AMOUNT_REQUIRED",
+              "TAX.DEDUCTION_RATE_NOT_FOUND",
               "TAX.NO_RULE_MATCHED",
               "TAX.ORIGIN_DESTINATION_REQUIRED"
             ]
@@ -10891,6 +11757,14 @@
             ],
             "pattern": "^-?[0-9]\u002B(\\.[0-9]\u002B)?$",
             "description": "An exact decimal as a string of digits. A JSON number is accepted on input"
+          },
+          "deductible_tax_amount_tc": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^-?[0-9]\u002B(\\.[0-9]\u002B)?$",
+            "description": "An exact decimal as a string of digits. A JSON number is accepted on input"
           }
         },
         "required": [
@@ -11101,6 +11975,30 @@
           "dimension_type_id",
           "expected_version",
           "rule"
+        ]
+      },
+      "UpdateDeductionKeyRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "deduction_key_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "expected_version": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "fields": {
+            "type": "object",
+            "additionalProperties": true,
+            "description": "A set of named fields. The fields the command knows are typed by their kind (07, 11.1)"
+          }
+        },
+        "required": [
+          "deduction_key_id",
+          "expected_version",
+          "fields"
         ]
       },
       "UpdateDimensionTypeRequest": {

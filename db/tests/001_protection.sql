@@ -826,6 +826,48 @@ select pg_temp.expect_count('tax detail: tenant B sees none of A''s rows',
 select set_config('app.tenant_id', '11111111-1111-4111-8111-111111111111', false);
 
 -- ---------------------------------------------------------------------------------------------------------
+-- Deduction keys and rates (0025, 07, 8.6, 19, 3.2)
+-- ---------------------------------------------------------------------------------------------------------
+select pg_temp.expect_ok('deduction key: a key of a registration',
+    $t$set local role cmd_config; insert into core.vat_deduction_key (tenant_id, company_id, registration_id, key_code, kind, created_by, updated_by)
+       values ('11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222201', 'ee000000-0000-4000-8000-0000000000d1', 'PRORATA', 'PRO_RATA', 't', 't')$t$);
+select pg_temp.expect_error('deduction key: one key code per registration',
+    $t$insert into core.vat_deduction_key (tenant_id, company_id, registration_id, key_code, kind, created_by, updated_by)
+       values ('11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222201', 'ee000000-0000-4000-8000-0000000000d1', 'PRORATA', 'AREA', 't', 't')$t$, '%duplicate key%');
+select pg_temp.expect_error('deduction key: the kind is one of four',
+    $t$insert into core.vat_deduction_key (tenant_id, company_id, registration_id, key_code, kind, created_by, updated_by)
+       values ('11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222201', 'ee000000-0000-4000-8000-0000000000d1', 'X', 'OTHER', 't', 't')$t$, '%violates check constraint%');
+select pg_temp.expect_ok('deduction rate: a rate of the key',
+    $t$set local role cmd_config; insert into core.vat_deduction_rate (tenant_id, company_id, registration_id, key_code, valid_from, rate_pct, rate_status, created_by)
+       values ('11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222201', 'ee000000-0000-4000-8000-0000000000d1', 'PRORATA', date '2026-01-01', 80, 'PROVISIONAL', 't')$t$);
+select pg_temp.expect_error('deduction rate: a rate starts after the latest one',
+    $t$insert into core.vat_deduction_rate (tenant_id, company_id, registration_id, key_code, valid_from, rate_pct, rate_status, created_by)
+       values ('11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222201', 'ee000000-0000-4000-8000-0000000000d1', 'PRORATA', date '2025-01-01', 70, 'FINAL', 't')$t$, '%VALID_FROM_NOT_LATER%');
+select pg_temp.expect_error('deduction rate: the rate is 0 to 100',
+    $t$insert into core.vat_deduction_rate (tenant_id, company_id, registration_id, key_code, valid_from, rate_pct, rate_status, created_by)
+       values ('11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222201', 'ee000000-0000-4000-8000-0000000000d1', 'PRORATA', date '2026-02-01', 101, 'FINAL', 't')$t$, '%violates check constraint%');
+select pg_temp.expect_error('deduction rate: a rate cannot be updated', $t$update core.vat_deduction_rate set rate_pct = 10$t$, '%append-only%');
+select pg_temp.expect_error('deduction rate: no delete', $t$delete from core.vat_deduction_rate$t$, '%no hard delete%');
+select pg_temp.expect_error('deduction key: the kind is fixed once a rate exists',
+    $t$update core.vat_deduction_key set kind = 'AREA' where key_code = 'PRORATA'$t$, '%DEDUCTION_KEY_REFERENCED%');
+select pg_temp.expect_error('deduction key: no delete', $t$delete from core.vat_deduction_key$t$, '%no hard delete%');
+select pg_temp.expect_error('deduction key: the posting role cannot write a key',
+    $t$set local role cmd_post; insert into core.vat_deduction_key (tenant_id, company_id, registration_id, key_code, kind, created_by, updated_by)
+       values ('11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222201', 'ee000000-0000-4000-8000-0000000000d1', 'Y', 'AREA', 't', 't')$t$, '%permission denied%');
+select pg_temp.expect_error('tax code version: a key of the registration is needed',
+    $t$insert into core.tax_code_version (tenant_id, company_id, tax_code_id, valid_from, rate, vat_account_id, deduction_key, created_by)
+       values ('11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222201', 'ee000000-0000-4000-8000-0000000000e2', date '2026-01-01', 25, '55555555-5555-4555-8555-555555555501', 'NOPE', 't')$t$, '%DEDUCTION_KEY_UNKNOWN%');
+select pg_temp.expect_ok('tax code version: a version of an input code that names a key',
+    $t$insert into core.tax_code_version (tenant_id, company_id, tax_code_id, valid_from, rate, vat_account_id, deduction_key, deductible_pct, created_by)
+       values ('11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222201', 'ee000000-0000-4000-8000-0000000000e2', date '2026-01-01', 25, '55555555-5555-4555-8555-555555555501', 'PRORATA', 50, 't')$t$);
+select pg_temp.expect_count('deduction key: a command role reads the rows of its tenant',
+    $t$select pg_temp.count_as('cmd_post', 'select (select count(*) from core.vat_deduction_key) + (select count(*) from core.vat_deduction_rate)')$t$, 2);
+select set_config('app.tenant_id', '99999999-9999-4999-8999-999999999999', false);
+select pg_temp.expect_count('deduction key: tenant B sees none of A''s rows',
+    $t$select pg_temp.count_as('cmd_post', 'select (select count(*) from core.vat_deduction_key) + (select count(*) from core.vat_deduction_rate)')$t$, 0);
+select set_config('app.tenant_id', '11111111-1111-4111-8111-111111111111', false);
+
+-- ---------------------------------------------------------------------------------------------------------
 -- Result
 -- ---------------------------------------------------------------------------------------------------------
 select name, case when ok then 'PASS' else 'FAIL' end as result, detail from test_result order by seq;

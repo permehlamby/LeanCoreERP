@@ -12,7 +12,8 @@ namespace FinanceCore.Data;
 internal sealed record TaxLineSeed(
     Guid CodeId, Guid VersionId, string TaxType, decimal Rate, Guid AccountId, decimal TaxTc, decimal? SuppliedTc,
     IReadOnlyList<(int Index, decimal BaseTc)> Bases, Guid DeterminedCodeId, Guid? ClassId, string Origin, string Destination,
-    string? PartnerVatStatus, DateOnly TaxDate, bool IsOverride, bool OriginEu, bool DestinationEu, string VatCurrency, string RoundingMode);
+    string? PartnerVatStatus, DateOnly TaxDate, bool IsOverride, bool OriginEu, bool DestinationEu, string VatCurrency, string RoundingMode,
+    decimal GrossTc, decimal DeductiblePct, string? DeductionKey, decimal? KeyRate, decimal Share, decimal? CapAmountTc, IReadOnlyList<(int Index, decimal Tc)> Nondeductible);
 
 /// <summary>What the tax of a document comes to: the tax lines, the difference to the supplied tax (it goes to the TAX_ROUNDING account) and the code each
 /// taxed base line ended up with.</summary>
@@ -25,8 +26,8 @@ internal sealed record TaxPlan(IReadOnlyList<TaxLineSeed> Lines, decimal Roundin
 /// <summary>
 /// The tax of a posting (06, 5.2 P4 and P5, 07, 8.4 and 8.5, 08, 3.1, 5.1 and 5.2): which base lines are taxed, the tax code of each by the determination
 /// rules, the version of the code in force, the tax amount per line or per document, and the reverse-charge pair. Built choices are in 07, 13.2l.
-/// Not built, answered with a LIMIT code: the partial deduction (19), a VAT rate type other than BOOKING, a VAT currency that is neither the local nor the
-/// reporting currency.
+/// The split of an input tax (19) is built. Not built, answered with a LIMIT code: a VAT rate type other than BOOKING, a VAT currency that is neither the local nor the
+/// reporting currency, a non-deductible part on a line of an account with open items.
 /// </summary>
 internal static class TaxPlanner
 {
@@ -37,10 +38,10 @@ internal static class TaxPlanner
     }
 
     private sealed record Version(Guid VersionId, decimal Rate, Guid VatAccountId, bool ReverseCharge, Guid? ReverseChargeAccountId,
-        string TaxType, string ReturnCurrency);
+        string TaxType, string ReturnCurrency, Guid RegistrationId, decimal DeductiblePct, string? DeductionKey, string DeductionCap);
 
     private sealed record Resolved(int Index, decimal BaseTc, decimal? SuppliedTc, Version Version, Guid CodeId, Guid DeterminedCodeId, Guid? ClassId, string Origin,
-        string Destination, string? PartnerVatStatus, DateOnly TaxDate, bool IsOverride, bool OriginEu, bool DestinationEu);
+        string Destination, string? PartnerVatStatus, DateOnly TaxDate, bool IsOverride, bool OriginEu, bool DestinationEu, decimal? DeductibleTc);
 
     internal static async Task<TaxPlan> PlanAsync(
         TenantTransaction tx, Guid tenantId, PostJournalDocumentRequest req, JournalDocumentPoster.CompanyRow company,
@@ -158,7 +159,6 @@ internal static class TaxPlanner
                 string problem = cached.Problem ?? "NO_VERSION_AT_POSTING_DATE";
                 errors.Add(problem switch
                 {
-                    "PARTIAL_DEDUCTION_NOT_BUILT" => JournalDocumentPoster.Error("LIMIT.PARTIAL_DEDUCTION_NOT_BUILT", "P4", $"{at}.tax_code_id", ("tax_code_id", code)),
                     "VAT_RATE_TYPE_NOT_BUILT" => JournalDocumentPoster.Error("LIMIT.VAT_RATE_TYPE_NOT_BUILT", "P4", $"{at}.tax_code_id", ("reason", "the registration converts with the rate type VAT"), ("tax_code_id", code)),
                     _ => JournalDocumentPoster.Error("TAX.CODE_NOT_PERMITTED", "P4", $"{at}.tax_code_id", ("reason", problem), ("tax_code_id", code))
                 });
@@ -170,13 +170,24 @@ internal static class TaxPlanner
                 errors.Add(JournalDocumentPoster.Error("TAX.CODE_NOT_PERMITTED", "P4", $"{at}.tax_code_id", ("reason", "REGISTRATION_NOT_VALID_AT_TAX_DATE"), ("tax_code_id", code), ("tax_date", taxDate)));
                 continue;
             }
+            // the deductible amount of the line (19, 6.2): required by a code with a cap, not allowed for any other
+            if (cached.Version.DeductionCap == "SUPPLIED_AMOUNT" && l.DeductibleTaxAmountTc is null)
+            {
+                errors.Add(JournalDocumentPoster.Error("TAX.DEDUCTION_AMOUNT_REQUIRED", "P4", $"{at}.deductible_tax_amount_tc", ("tax_code_id", code)));
+                continue;
+            }
+            if (cached.Version.DeductionCap != "SUPPLIED_AMOUNT" && l.DeductibleTaxAmountTc is not null)
+            {
+                errors.Add(JournalDocumentPoster.Error("TAX.DEDUCTION_AMOUNT_NOT_ALLOWED", "P4", $"{at}.deductible_tax_amount_tc", ("tax_code_id", code)));
+                continue;
+            }
             if (l.TaxAmountTc is not null && cached.Version.ReverseCharge)
             {
                 errors.Add(JournalDocumentPoster.Error("SCHEMA.INVALID_VALUE", "P1", $"{at}.tax_amount_tc", ("reason", "the partner invoice of a reverse-charge line carries no tax")));
                 continue;
             }
             resolved.Add(new Resolved(i, l.AmountTc, l.TaxAmountTc, cached.Version, code, winner.TaxCodeId, classId, origin, destination,
-                winner.PartnerVatStatus is null ? null : partnerStatus, taxDate, isOverride, originEu, destinationEu));
+                winner.PartnerVatStatus is null ? null : partnerStatus, taxDate, isOverride, originEu, destinationEu, l.DeductibleTaxAmountTc));
         }
         if (errors.Count > 0) return TaxPlan.None;
 
@@ -188,6 +199,7 @@ internal static class TaxPlanner
 
         var seeds = new List<TaxLineSeed>();
         decimal roundingTc = 0m;
+        var keyRates = new Dictionary<(Guid, string, DateOnly), decimal?>();
         foreach (var group in groups.OrderBy(g => g.Min(r => r.Index)))
         {
             Resolved first = group[0];
@@ -217,20 +229,101 @@ internal static class TaxPlanner
                 }
                 roundingTc += supplied.Value - tax;
             }
+
+            // the split of an input tax into the deductible part D and the non-deductible part N (19, 3.3), on the deductible side only
+            decimal deductible = tax, share = 100m, pct = 100m;
+            string? key = null; decimal? keyRate = null, cap = null;
+            var nondeductible = new List<(int Index, decimal Tc)>();
+            if (v.TaxType == "INPUT")
+            {
+                pct = v.DeductiblePct; key = v.DeductionKey;
+                if (key is not null)
+                {
+                    if (!keyRates.TryGetValue((v.RegistrationId, key, first.TaxDate), out keyRate))
+                        keyRates[(v.RegistrationId, key, first.TaxDate)] = keyRate = await ReadKeyRateAsync(tx, tenantId, req.CompanyId, v.RegistrationId, key, first.TaxDate, ct);
+                    if (keyRate is null)
+                    {
+                        errors.Add(JournalDocumentPoster.Error("TAX.DEDUCTION_RATE_NOT_FOUND", "P4", $"lines[{first.Index}]", ("deduction_key", key), ("tax_date", first.TaxDate)));
+                        continue;
+                    }
+                }
+                if (v.DeductionCap == "SUPPLIED_AMOUNT")
+                {
+                    decimal suppliedDeductible = group.Sum(r => r.DeductibleTc!.Value);
+                    decimal limit = PostingRules.Round(tax * pct / 100m, tcScale);
+                    if ((suppliedDeductible != 0m && Math.Sign(suppliedDeductible) != Math.Sign(tax)) || Math.Abs(suppliedDeductible) > Math.Abs(limit))
+                    {
+                        errors.Add(JournalDocumentPoster.Error("TAX.DEDUCTION_AMOUNT_EXCEEDS_LIMIT", "P4", $"lines[{first.Index}].deductible_tax_amount_tc", ("supplied", suppliedDeductible), ("limit", limit)));
+                        continue;
+                    }
+                    cap = suppliedDeductible;
+                    deductible = PostingRules.Round(suppliedDeductible * (keyRate ?? 100m) / 100m, tcScale);
+                    share = tax == 0m ? 100m : Math.Round(deductible / tax * 100m, 10, MidpointRounding.AwayFromZero);
+                }
+                else
+                {
+                    decimal fraction = pct / 100m * (keyRate ?? 100m) / 100m;
+                    deductible = PostingRules.Round(tax * fraction, tcScale);
+                    share = Math.Round(fraction * 100m, 10, MidpointRounding.AwayFromZero);
+                }
+                decimal n = tax - deductible;
+                if (n != 0m)
+                {
+                    // a base line on an account with open items would need an open item of its own for the cost line
+                    int onOpenItemAccount = group.Select(r => r.Index).FirstOrDefault(i => accounts[req.Lines[i].AccountId].OpenItemMode != "NONE", -1);
+                    if (onOpenItemAccount >= 0)
+                    {
+                        errors.Add(JournalDocumentPoster.Error("LIMIT.PARTIAL_DEDUCTION_NOT_BUILT", "P4", $"lines[{onOpenItemAccount}]", ("reason", "the non-deductible tax of a line on an account with open items")));
+                        continue;
+                    }
+                    nondeductible = Allocate(n, bases, tcScale);
+                }
+            }
+
             if (v.ReverseCharge)
             {
-                // the output side with the opposite sign of the base, the deductible side with the sign of the base (08, 5.2)
+                // the output side with the opposite sign of the base and always the full tax, the deductible side with the sign of the base (08, 5.2, 19, 4.3)
                 seeds.Add(new TaxLineSeed(first.CodeId, v.VersionId, "OUTPUT", v.Rate, v.VatAccountId, -tax, null, bases, first.DeterminedCodeId, first.ClassId, first.Origin, first.Destination,
-                    first.PartnerVatStatus, first.TaxDate, first.IsOverride, first.OriginEu, first.DestinationEu, vatCurrency, roundingMode));
-                seeds.Add(new TaxLineSeed(first.CodeId, v.VersionId, "INPUT", v.Rate, v.ReverseChargeAccountId!.Value, tax, null, bases, first.DeterminedCodeId, first.ClassId, first.Origin, first.Destination,
-                    first.PartnerVatStatus, first.TaxDate, first.IsOverride, first.OriginEu, first.DestinationEu, vatCurrency, roundingMode));
+                    first.PartnerVatStatus, first.TaxDate, first.IsOverride, first.OriginEu, first.DestinationEu, vatCurrency, roundingMode, -tax, 100m, null, null, 100m, null, []));
+                seeds.Add(new TaxLineSeed(first.CodeId, v.VersionId, "INPUT", v.Rate, v.ReverseChargeAccountId!.Value, deductible, null, bases, first.DeterminedCodeId, first.ClassId, first.Origin, first.Destination,
+                    first.PartnerVatStatus, first.TaxDate, first.IsOverride, first.OriginEu, first.DestinationEu, vatCurrency, roundingMode, tax, pct, key, keyRate, share, cap, nondeductible));
             }
             else
-                seeds.Add(new TaxLineSeed(first.CodeId, v.VersionId, v.TaxType, v.Rate, v.VatAccountId, tax, supplied, bases, first.DeterminedCodeId, first.ClassId, first.Origin, first.Destination,
-                    first.PartnerVatStatus, first.TaxDate, first.IsOverride, first.OriginEu, first.DestinationEu, vatCurrency, roundingMode));
+                seeds.Add(new TaxLineSeed(first.CodeId, v.VersionId, v.TaxType, v.Rate, v.VatAccountId, deductible, supplied, bases, first.DeterminedCodeId, first.ClassId, first.Origin, first.Destination,
+                    first.PartnerVatStatus, first.TaxDate, first.IsOverride, first.OriginEu, first.DestinationEu, vatCurrency, roundingMode, tax, pct, key, keyRate, share, cap, nondeductible));
         }
         if (errors.Count > 0) return TaxPlan.None;
         return new TaxPlan(seeds, roundingTc, resolved.ToDictionary(r => r.Index, r => r.CodeId));
+    }
+
+    /// <summary>The non-deductible tax N allocated to the base lines by their base amounts: largest remainder, ties to the lowest line (19, 4.4). A base line that gets nothing is left out.</summary>
+    internal static List<(int Index, decimal Tc)> Allocate(decimal n, IReadOnlyList<(int Index, decimal BaseTc)> bases, int scale)
+    {
+        decimal unit = 1m;
+        for (int i = 0; i < scale; i++) unit /= 10m;
+        long total = (long)Math.Round(Math.Abs(n) / unit);
+        decimal weight = bases.Sum(b => Math.Abs(b.BaseTc));
+        var shares = new long[bases.Count];
+        if (weight == 0m) shares[0] = total;
+        else
+        {
+            var raw = bases.Select(b => (decimal)total * Math.Abs(b.BaseTc) / weight).ToArray();
+            for (int i = 0; i < raw.Length; i++) shares[i] = (long)Math.Floor(raw[i]);
+            long left = total - shares.Sum();
+            foreach (int i in Enumerable.Range(0, raw.Length).OrderByDescending(i => raw[i] - Math.Floor(raw[i])).ThenBy(i => i).Take((int)left)) shares[i]++;
+        }
+        int sign = Math.Sign(n);
+        return bases.Select((b, i) => (b.Index, Tc: sign * shares[i] * unit)).Where(x => x.Tc != 0m).ToList();
+    }
+
+    private static async Task<decimal?> ReadKeyRateAsync(TenantTransaction tx, Guid tenantId, Guid companyId, Guid registration, string key, DateOnly taxDate, CancellationToken ct)
+    {
+        await using var cmd = tx.Command(
+            "select rate_pct from core.vat_deduction_rate where tenant_id = @t and company_id = @c and registration_id = @r and key_code = @k and valid_from <= @d " +
+            "and (valid_to is null or valid_to >= @d) order by valid_from desc limit 1");
+        cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("c", companyId); cmd.Parameters.AddWithValue("r", registration); cmd.Parameters.AddWithValue("k", key);
+        cmd.Parameters.Add(new NpgsqlParameter("d", NpgsqlDbType.Date) { Value = taxDate });
+        return await cmd.ExecuteScalarAsync(ct) is decimal rate ? rate : null;
     }
 
     private static async Task<List<Rule>> ReadRulesAsync(TenantTransaction tx, Guid tenantId, Guid companyId, DateOnly postingDate, CancellationToken ct)
@@ -278,16 +371,16 @@ internal static class TaxPlanner
     private static async Task<(Version? Version, bool Active, bool RegistrationUsable, string? Problem)> ReadVersionAsync(
         TenantTransaction tx, Guid tenantId, Guid companyId, Guid code, DateOnly postingDate, CancellationToken ct)
     {
-        string type; bool active; string returnCurrency, rateType; bool registrationActive;
+        string type; bool active; string returnCurrency, rateType; bool registrationActive; Guid registrationId;
         await using (var cmd = tx.Command(
-            "select c.tax_type, c.active, r.return_currency, r.vat_rate_type, r.active from core.tax_code c join core.company_vat_registration r " +
+            "select c.tax_type, c.active, r.return_currency, r.vat_rate_type, r.active, c.vat_registration_id from core.tax_code c join core.company_vat_registration r " +
             "on r.tenant_id = c.tenant_id and r.company_id = c.company_id and r.registration_id = c.vat_registration_id " +
             "where c.tenant_id = @t and c.company_id = @c and c.tax_code_id = @x"))
         {
             cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("c", companyId); cmd.Parameters.AddWithValue("x", code);
             await using var r = await cmd.ExecuteReaderAsync(ct);
             if (!await r.ReadAsync(ct)) return (null, false, false, "TAX_CODE_NOT_FOUND");
-            type = r.GetString(0); active = r.GetBoolean(1); returnCurrency = r.GetString(2).Trim(); rateType = r.GetString(3); registrationActive = r.GetBoolean(4);
+            type = r.GetString(0); active = r.GetBoolean(1); returnCurrency = r.GetString(2).Trim(); rateType = r.GetString(3); registrationActive = r.GetBoolean(4); registrationId = r.GetGuid(5);
         }
         if (!active) return (null, false, false, "TAX_CODE_INACTIVE");
         if (!registrationActive) return (null, true, false, "REGISTRATION_INACTIVE");
@@ -299,8 +392,8 @@ internal static class TaxPlanner
         vc.Parameters.Add(new NpgsqlParameter("d", NpgsqlDbType.Date) { Value = postingDate });
         await using var v = await vc.ExecuteReaderAsync(ct);
         if (!await v.ReadAsync(ct)) return (null, true, true, "NO_VERSION_AT_POSTING_DATE");
-        if (v.GetDecimal(5) != 100m || !v.IsDBNull(6) || v.GetString(7) != "NONE") return (null, true, true, "PARTIAL_DEDUCTION_NOT_BUILT");
-        return (new Version(v.GetGuid(0), v.GetDecimal(1), v.GetGuid(2), v.GetBoolean(3), v.IsDBNull(4) ? null : v.GetGuid(4), type, returnCurrency), true, true, null);
+        return (new Version(v.GetGuid(0), v.GetDecimal(1), v.GetGuid(2), v.GetBoolean(3), v.IsDBNull(4) ? null : v.GetGuid(4), type, returnCurrency, registrationId,
+            v.GetDecimal(5), v.IsDBNull(6) ? null : v.GetString(6), v.GetString(7)), true, true, null);
     }
 
     private static async Task<bool> RegistrationValidAsync(TenantTransaction tx, Guid tenantId, Guid companyId, Guid code, DateOnly taxDate, CancellationToken ct)

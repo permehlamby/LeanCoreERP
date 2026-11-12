@@ -211,6 +211,23 @@ public static class TaxFields
     ];
     public static readonly IReadOnlyList<MasterField> PartnerRegistrationUpdate = PartnerRegistrationShared;
 
+    public static readonly string[] KeyKinds = ["PRO_RATA", "ESTIMATE", "SECTOR", "AREA"];
+    public static readonly IReadOnlyList<MasterField> DeductionKeyCreate =
+    [
+        new("company_id", MasterKind.Id, 0, false), new("registration_id", MasterKind.Id, 0, false), new("key_code", MasterKind.Code, 50, false),
+        new("kind", MasterKind.Code, 50, false, KeyKinds), new("description", MasterKind.Text, 200)
+    ];
+    public static readonly IReadOnlyList<MasterField> DeductionKeyUpdate =
+    [
+        new("kind", MasterKind.Code, 50, false, KeyKinds), new("description", MasterKind.Text, 200)
+    ];
+    /// <summary>One rate version of a deduction key (07, 8.6). The rate may be 0.</summary>
+    public static readonly IReadOnlyList<MasterField> DeductionRate =
+    [
+        new("valid_from", MasterKind.Date, 0, false), new("valid_to", MasterKind.Date), new("rate_pct", MasterKind.Rate, 0, false),
+        new("rate_status", MasterKind.Code, 50, false, ["PROVISIONAL", "FINAL"]), new("basis_note", MasterKind.Text, 200)
+    ];
+
     /// <summary>The fields of one version of a determination rule (07, 8.4). A key that is absent or null means any.</summary>
     public static readonly IReadOnlyList<MasterField> RuleVersion =
     [
@@ -223,6 +240,11 @@ public static class TaxFields
         new("priority", MasterKind.SmallInt, 0, false), new("tax_code_id", MasterKind.Id, 0, false)
     ];
 }
+
+public sealed record CreateDeductionKeyRequest(IReadOnlyDictionary<string, object?> Fields);
+public sealed record UpdateDeductionKeyRequest(Guid DeductionKeyId, long ExpectedVersion, IReadOnlyDictionary<string, object?> Fields);
+/// <summary>Payload of vat-deduction-rates:create-version (07, 8.6): a rate version of the key with this id. A version is insert-only.</summary>
+public sealed record CreateDeductionRateRequest(Guid DeductionKeyId, IReadOnlyDictionary<string, object?> Fields);
 
 public sealed record CreatePartnerTaxRegistrationRequest(IReadOnlyDictionary<string, object?> Fields);
 public sealed record UpdatePartnerTaxRegistrationRequest(Guid RegistrationId, long ExpectedVersion, IReadOnlyDictionary<string, object?> Fields);
@@ -342,6 +364,10 @@ public static class MasterRules
     public static byte[] Fingerprint(string command, TaxReturnBoxStatusRequest r) =>
         Fingerprint(command, $"{r.CountryCode}|{r.ReturnType}|{r.BoxCode}|{r.ExpectedVersion}|{r.ReasonCode}");
 
+    public static byte[] Fingerprint(CreateDeductionKeyRequest r) => Fingerprint("vat-deduction-keys:create", Text(r.Fields));
+    public static byte[] Fingerprint(UpdateDeductionKeyRequest r) =>
+        Fingerprint("vat-deduction-keys:update", r.DeductionKeyId.ToString("D") + "|" + r.ExpectedVersion + "|" + Text(r.Fields));
+    public static byte[] Fingerprint(CreateDeductionRateRequest r) => Fingerprint("vat-deduction-rates:create-version", r.DeductionKeyId.ToString("D") + "|" + Text(r.Fields));
     public static byte[] Fingerprint(CreatePartnerTaxRegistrationRequest r) => Fingerprint("partner-tax-registrations:create", Text(r.Fields));
     public static byte[] Fingerprint(UpdatePartnerTaxRegistrationRequest r) =>
         Fingerprint("partner-tax-registrations:update", r.RegistrationId.ToString("D") + "|" + r.ExpectedVersion + "|" + Text(r.Fields));

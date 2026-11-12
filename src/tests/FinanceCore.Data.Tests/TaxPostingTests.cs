@@ -319,12 +319,6 @@ public class TaxPostingTests
         var t = await TestTenant.CreateReadyAsync();
         var w = await Setup(t);
         var tax = new TaxCommands(t.App);
-        var partial = await tax.CreateCodeAsync(t.TenantId, Cfg(t, "l-c"), new(D(("company_id", t.CompanyId), ("code", "I80"), ("description", "80"), ("tax_type", "INPUT"), ("vat_registration_id", w.Registration))));
-        Assert.True((await tax.CreateVersionAsync(t.TenantId, Cfg(t, "l-v"), new(partial.Value!.EntityId, D(("valid_from", "2026-01-01"), ("rate", 25m), ("vat_account_id", w.Receivable), ("deductible_pct", 80m)), []))).Status == CommandStatus.Ok);
-        await Rule(t, "r1", partial.Value.EntityId, 10);
-        var r = await Post(t, "l1", Sale(t, 1250m, 1000m));
-        Assert.Equal(["LIMIT.PARTIAL_DEDUCTION_NOT_BUILT"], Codes(r));
-
         var t2 = await TestTenant.CreateReadyAsync();
         var w2 = await Setup(t2);
         Assert.True((await tax.UpdateRegistrationAsync(t2.TenantId, Cfg(t2, "l-u"), new(w2.Registration, 1, D(("vat_rate_type", "VAT"))))).Status == CommandStatus.Ok);

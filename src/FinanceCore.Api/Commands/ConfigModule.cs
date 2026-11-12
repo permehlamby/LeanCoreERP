@@ -66,6 +66,12 @@ public sealed class ConfigModule : ICommandModule
         catalog.Add<CreateTaxRuleRequest, TaxRuleResult>("tax-determination-rules:create", TaxDeterminationCommands.RulePermission, (sp, t, c, r, ct) => sp.GetRequiredService<TaxDeterminationCommands>().CreateRuleAsync(t, c, r, ct));
         catalog.Add<CreateTaxRuleVersionRequest, TaxRuleResult>("tax-determination-rules:create-version", TaxDeterminationCommands.RulePermission, (sp, t, c, r, ct) => sp.GetRequiredService<TaxDeterminationCommands>().CreateRuleVersionAsync(t, c, r, ct));
 
+        catalog.Add<CreateDeductionKeyRequest, MasterResult>("vat-deduction-keys:create", DeductionCommands.Permission, (sp, t, c, r, ct) => sp.GetRequiredService<DeductionCommands>().CreateKeyAsync(t, c, r, ct));
+        catalog.Add<UpdateDeductionKeyRequest, MasterResult>("vat-deduction-keys:update", DeductionCommands.Permission, (sp, t, c, r, ct) => sp.GetRequiredService<DeductionCommands>().UpdateKeyAsync(t, c, r, ct));
+        catalog.Add<MasterStatusRequest, MasterResult>("vat-deduction-keys:deactivate", DeductionCommands.Permission, (sp, t, c, r, ct) => sp.GetRequiredService<DeductionCommands>().DeactivateKeyAsync(t, c, r, ct));
+        catalog.Add<MasterStatusRequest, MasterResult>("vat-deduction-keys:reactivate", DeductionCommands.Permission, (sp, t, c, r, ct) => sp.GetRequiredService<DeductionCommands>().ReactivateKeyAsync(t, c, r, ct));
+        catalog.Add<CreateDeductionRateRequest, DeductionRateResult>("vat-deduction-rates:create-version", DeductionCommands.Permission, (sp, t, c, r, ct) => sp.GetRequiredService<DeductionCommands>().CreateRateAsync(t, c, r, ct));
+
         catalog.Add<AssignAccountRoleRequest, AssignedAccountRole>("account-role-assignments:create", AccountRoleAssigner.Permission, (sp, t, c, r, ct) => sp.GetRequiredService<AccountRoleAssigner>().AssignAsync(t, c, r, ct));
         catalog.Add<CreateRetentionRuleVersionRequest, CreatedRetentionRule>("retention-rules:create-version", RetentionRules.Permission, (sp, t, c, r, ct) => sp.GetRequiredService<RetentionRuleCommands>().CreateVersionAsync(t, c, r, ct));
 
