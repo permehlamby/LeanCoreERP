@@ -4,7 +4,7 @@ using Npgsql;
 namespace FinanceCore.Data;
 
 /// <summary>The command roles of 20, section 3. Names are fixed, never built from input.</summary>
-public enum CommandRole { Read, Config, Period, Post, Clearing }
+public enum CommandRole { Read, Config, Period, Post, Clearing, Closing }
 
 /// <summary>
 /// One database transaction of one command (ADR-209, ADR-210): it names its command role and its tenant first,
@@ -34,6 +34,7 @@ public sealed class TenantTransaction : IAsyncDisposable
         CommandRole.Period => "cmd_period",
         CommandRole.Post => "cmd_post",
         CommandRole.Clearing => "cmd_clearing",
+        CommandRole.Closing => "cmd_closing",
         _ => throw new ArgumentOutOfRangeException(nameof(role))
     };
 
