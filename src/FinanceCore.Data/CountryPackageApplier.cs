@@ -16,9 +16,12 @@ public sealed record PackageInputs(
     decimal? SectorRatePct = null, decimal? AreaRatePct = null);
 
 /// <summary>An object of the package and what the apply did with it (18, 7.1): CREATED, or SKIPPED_EXISTS when the company already had it.</summary>
-public sealed record AppliedItem(string ItemId, string EntityType, string Action);
+public sealed record AppliedItem(string ItemId, string EntityType, string Action, string? EntityId = null);
 
-public sealed record PackageApplyResult(string PackageCode, string Version, string State, IReadOnlyList<AppliedItem> Items);
+public sealed record PackageApplyResult(string PackageCode, string Version, string State, IReadOnlyList<AppliedItem> Items, Guid AppliedId = default);
+
+/// <summary>A row of the record of applies (18, 7.1).</summary>
+public sealed record AppliedPackageInfo(Guid AppliedId, string PackageCode, string PackageVersion, string State, int ItemCount, int CreatedCount, DateTime AppliedAt, string AppliedBy);
 
 /// <summary>
 /// The VAT content of a country package (18, 8: tax return boxes, the VAT registration, the deduction keys and rates, the tax codes with their versions and
@@ -63,7 +66,7 @@ public sealed class CountryPackageApplier(NpgsqlDataSource source)
         string Track<T>(string itemId, string type, CommandResult<T> r)
         {
             string action = Classify(itemId, r);
-            items.Add(new AppliedItem(itemId, type, action));
+            items.Add(new AppliedItem(itemId, type, action, action == "CREATED" ? EntityOf(r.Value) : null));
             return action;
         }
         var tax = new TaxCommands(source);
@@ -176,7 +179,8 @@ public sealed class CountryPackageApplier(NpgsqlDataSource source)
             var boxes = ((JsonArray)(v["boxes"] ?? new JsonArray())).Select(b => new TaxBoxMapping((string)b!["line_side"]!, (string)b["return_type"]!, (string)b["box"]!, (string)b["amount_kind"]!, (int)b["sign"]!)).ToList();
             var r = await tax.CreateVersionAsync(tenantId, Context(prefix + (string)o["item_id"]! + "-v1", Config), new(codeId, vf, boxes), ct);
             // a code that exists with a version already is create-only: the version is not a second one (18, 7)
-            items.Add(new AppliedItem((string)o["item_id"]! + "/v1", "TAX_CODE_VERSION", Classify((string)o["item_id"]! + "/v1", r)));
+            string versionAction = Classify((string)o["item_id"]! + "/v1", r);
+            items.Add(new AppliedItem((string)o["item_id"]! + "/v1", "TAX_CODE_VERSION", versionAction, versionAction == "CREATED" ? codeId.ToString("D") : null));
         }
 
         // the determination rules whose default code is applied, with the alternatives that are applied
@@ -193,6 +197,24 @@ public sealed class CountryPackageApplier(NpgsqlDataSource source)
             Track((string)o["item_id"]!, "TAX_DETERMINATION_RULE", await rules.CreateRuleAsync(tenantId, Context(prefix + (string)o["item_id"]!, Config), new(company.CompanyId, fields, alternatives), ct));
         }
 
+        // the settlement document needs a series (04, 5.2): the package assigns VAT_SETTLE to its general ledger series, which the company has
+        JsonObject numbering = Read(Path.Combine(dir, "core", "number_series.json"));
+        foreach (JsonObject a in ((JsonArray)numbering["assignments"]!).Select(x => (JsonObject)x!).Where(x => VatDocumentTypes.Contains((string)x["document_type"]!)))
+        {
+            string seriesCode = (string)((JsonArray)numbering["series"]!).Select(s => (JsonObject)s!).First(s => (string)s["ref"]! == (string)a["series"]!)["series_code"]!;
+            if (await ScalarAsync(tenantId, "select series_id from core.number_series where tenant_id = @t and company_id = '" + company.CompanyId + "'::uuid and series_code = '" + seriesCode.Replace("'", "''") + "'", ct) is not Guid seriesId)
+                throw new ProvisioningException("PACKAGE.REFERENCE_UNRESOLVED", $"{(string)a["item_id"]!}: the company has no number series {seriesCode}, which the package assigns to {(string)a["document_type"]!}");
+            if (await ScalarAsync(tenantId, "select 1 from core.number_series_assignment where tenant_id = @t and company_id = '" + company.CompanyId + "'::uuid and document_type = '" + (string)a["document_type"]! + "' limit 1", ct) is not null)
+            {
+                items.Add(new AppliedItem((string)a["item_id"]!, "NUMBER_SERIES_ASSIGNMENT", "SKIPPED_EXISTS"));
+                continue;
+            }
+            await ExecuteAsync(tenantId,
+                "insert into core.number_series_assignment (tenant_id, company_id, document_type, series_id, effective_from, created_by) values (@t, @c, @ty, @s, @from, @by)", ct,
+                ("c", company.CompanyId), ("ty", (string)a["document_type"]!), ("s", seriesId), ("from", inputs.FirstFiscalYearStart), ("by", Actor));
+            items.Add(new AppliedItem((string)a["item_id"]!, "NUMBER_SERIES_ASSIGNMENT", "CREATED", seriesId.ToString("D")));
+        }
+
         // the role of the settlement (08, 6.2: per registration)
         if (settlementRole is not null && await ScalarAsync(tenantId, "select 1 from core.account_role_assignment where tenant_id = @t and company_id = '" + company.CompanyId + "'::uuid and role_code = 'VAT_SETTLEMENT' and vat_registration_id = '" + registrationId + "'::uuid limit 1", ct) is not null)
             items.Add(new AppliedItem((string)settlementRole["item_id"]!, "ACCOUNT_ROLE_ASSIGNMENT", "SKIPPED_EXISTS"));   // a role version is not create-only: a second assignment would be a new version
@@ -202,7 +224,61 @@ public sealed class CountryPackageApplier(NpgsqlDataSource source)
                 new AssignAccountRoleRequest(company.CompanyId, "VAT_SETTLEMENT", accountIds[(string)settlementRole["account"]!], VatRegistrationId: registrationId), ct);
             Track((string)settlementRole["item_id"]!, "ACCOUNT_ROLE_ASSIGNMENT", r);
         }
-        return new PackageApplyResult(packageCode, version, state, items);
+
+        // the record of the apply (18, 7.1)
+        string manifestDigest = ManifestDigest(dir);
+        string requires = File.Exists(classFile) ? "EU_VAT " + (string?)Read(Path.Combine(packagesDirectory, "EU_VAT", "package.json"))["package_version"] : "";
+        Guid appliedId = Guid.NewGuid();
+        await ExecuteAsync(tenantId,
+            "insert into core.applied_config_package (tenant_id, applied_id, company_id, package_code, package_version, country_code, kind, state, manifest_digest, inputs_digest, requires_snapshot, " +
+            "item_count, created_count, applied_by) values (@t, @id, @c, @code, @v, @cty, @kind, @state, @md, @idg, @req, @n, @created, @by)", ct,
+            ("id", appliedId), ("c", company.CompanyId), ("code", packageCode), ("v", version), ("cty", company.Country), ("kind", (string)manifest["kind"]!), ("state", state),
+            ("md", manifestDigest), ("idg", digest), ("req", requires), ("n", items.Count), ("created", items.Count(i => i.Action == "CREATED")), ("by", Actor));
+        for (int n = 0; n < items.Count; n++)
+            await ExecuteAsync(tenantId,
+                "insert into core.applied_config_package_item (tenant_id, applied_id, item_no, item_id, entity_type, entity_id, action) values (@t, @id, @n, @item, @type, @eid, @action)", ct,
+                ("id", appliedId), ("n", n + 1), ("item", items[n].ItemId), ("type", items[n].EntityType), ("eid", (object?)items[n].EntityId ?? DBNull.Value), ("action", items[n].Action));
+        return new PackageApplyResult(packageCode, version, state, items, appliedId);
+    }
+
+    /// <summary>The applies that a company has had, the newest first (18, 7.2 `config-packages:list-applied`).</summary>
+    public async Task<IReadOnlyList<AppliedPackageInfo>> ListAppliedAsync(Guid tenantId, Guid companyId, CancellationToken ct = default)
+    {
+        var list = new List<AppliedPackageInfo>();
+        await using NpgsqlConnection c = await source.OpenConnectionAsync(ct);
+        await using NpgsqlTransaction tx = await c.BeginTransactionAsync(ct);
+        await SetTenantAsync(c, tx, tenantId, ct);
+        await using var cmd = new NpgsqlCommand(
+            "select applied_id, package_code, package_version, state, item_count, created_count, applied_at, applied_by from core.applied_config_package " +
+            "where tenant_id = @t and company_id = @c order by applied_at desc, applied_id", c, tx);
+        cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("c", companyId);
+        await using var r = await cmd.ExecuteReaderAsync(ct);
+        while (await r.ReadAsync(ct))
+            list.Add(new AppliedPackageInfo(r.GetGuid(0), r.GetString(1), r.GetString(2), r.GetString(3), r.GetInt32(4), r.GetInt32(5), r.GetDateTime(6), r.GetString(7)));
+        return list;
+    }
+
+    /// <summary>The document types of the VAT content whose number series assignment the package carries.</summary>
+    private static readonly string[] VatDocumentTypes = ["VAT_SETTLE"];
+
+    private static string EntityOf(object? value)
+    {
+        if (value is null) return null!;
+        foreach (string name in new[] { "EntityId", "RuleId", "AssignmentId" })
+            if (value.GetType().GetProperty(name)?.GetValue(value) is Guid id) return id.ToString("D");
+        return null!;
+    }
+
+    /// <summary>SHA-256 over package.json and the files of core/ in name order (18, 4.1 content_digest, for the core files).</summary>
+    private static string ManifestDigest(string dir)
+    {
+        using var all = new MemoryStream();
+        foreach (string file in new[] { Path.Combine(dir, "package.json") }.Concat(Directory.GetFiles(Path.Combine(dir, "core"), "*.json").Order(StringComparer.Ordinal)))
+        {
+            all.Write(Encoding.UTF8.GetBytes(Path.GetFileName(file) + "\n"));
+            all.Write(SHA256.HashData(File.ReadAllBytes(file)));
+        }
+        return Convert.ToHexString(SHA256.HashData(all.ToArray())).ToLowerInvariant();
     }
 
     /// <summary>The codes of the chosen business type, and the special codes (profile 5) on request (package.json, inputs).</summary>

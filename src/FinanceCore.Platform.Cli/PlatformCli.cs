@@ -23,6 +23,7 @@ public sealed class PlatformCli(PlatformProvisioner provisioner, TextWriter outp
           company activate --tenant <code> --company <code>
           rate add        --tenant <code> --from <DKK> --to <EUR> --date <yyyy-MM-dd> --rate <0.134> [--type SPOT|CLOSING]
           package list
+          package list-applied --tenant <code> --company <code>
           package apply-vat --tenant <code> --company <code> --dir <country-packages> --package <DK> --vat-id <DK12345678>
                           --filing-frequency <MONTHLY|QUARTERLY|HALF_YEARLY> --vat-profile <1-4> --first-fiscal-year-start <yyyy-MM-dd>
                           [--currency <DKK>] [--ec-list-frequency <MONTHLY|QUARTERLY>] [--correction-method <ADJUST_NEXT|SUPPLEMENTARY|REPLACEMENT>]
@@ -52,6 +53,7 @@ public sealed class PlatformCli(PlatformProvisioner provisioner, TextWriter outp
                 case "rate add": return await RateAdd(options, ct);
                 case "package list": return PackageList();
                 case "package apply-vat": return await PackageApplyVat(options, flags, ct);
+                case "package list-applied": return await PackageListApplied(options, ct);
                 case "db status": return await DbStatus(options, ct);
                 case "db migrate": return await DbMigrate(options, flags, ct);
                 default:
@@ -170,6 +172,18 @@ public sealed class PlatformCli(PlatformProvisioner provisioner, TextWriter outp
             output.WriteLine($"{group.Key,-24} " + string.Join(", ", group.GroupBy(i => i.Action).Select(a => $"{a.Count()} {a.Key}")));
         output.WriteLine($"package {result.PackageCode} {result.Version} ({result.State}) applied to {company.Code}: {result.Items.Count(i => i.Action == "CREATED")} created, {result.Items.Count(i => i.Action != "CREATED")} not created");
         if (result.State != "RELEASED") output.WriteLine("the package is not RELEASED: no PRODUCTION tenant accepts it (18, 6)");
+        return 0;
+    }
+
+    private async Task<int> PackageListApplied(Dictionary<string, string> o, CancellationToken ct)
+    {
+        CountryPackageApplier packages = applier ?? throw new UsageException("this command needs a database");
+        Guid tenantId = await provisioner.RequireTenantAsync(Req(o, "tenant"), ct);
+        CompanyInfo company = await provisioner.RequireCompanyAsync(tenantId, Req(o, "company"), ct);
+        var applies = await packages.ListAppliedAsync(tenantId, company.CompanyId, ct);
+        if (applies.Count == 0) output.WriteLine("no package applied");
+        foreach (var a in applies)
+            output.WriteLine($"{a.AppliedAt:yyyy-MM-dd HH:mm}  {a.PackageCode} {a.PackageVersion} ({a.State})  {a.CreatedCount} created of {a.ItemCount} items  {a.AppliedBy}  ({a.AppliedId})");
         return 0;
     }
 

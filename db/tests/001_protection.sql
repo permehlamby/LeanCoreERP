@@ -954,6 +954,32 @@ select pg_temp.expect_error('change_log: a hard-closed period is logged for evid
     $t$insert into core.change_log (tenant_id, change_set_id, company_id, entity_type, document_id, field_name, value_type, old_value, new_value, lock_class, period_status, reason_code, changed_by, changed_at, correlation_id, idempotency_key)
        values ('11111111-1111-4111-8111-111111111111', gen_random_uuid(), '22222222-2222-4222-8222-222222222201', 'DOCUMENT', gen_random_uuid(), 'header_text', 'TEXT', null, 'x', 'L2', 'HARD_CLOSED', 'CORRECTION', 't', now(), 'c', 'k')$t$, '%violates check constraint%');
 
+-- ---------------------------------------------------------------------------------------------------------
+-- The record of a package apply (0028, 18, 7.1)
+-- ---------------------------------------------------------------------------------------------------------
+select pg_temp.expect_ok('applied package: a record and its item',
+    $t$set constraints all deferred; insert into core.applied_config_package (tenant_id, applied_id, company_id, package_code, package_version, country_code, kind, state, manifest_digest, inputs_digest, item_count, created_count, applied_by)
+       values ('11111111-1111-4111-8111-111111111111', 'dd000000-0000-4000-8000-000000000001', '22222222-2222-4222-8222-222222222201', 'DK', '0.4.1', 'DK', 'COUNTRY', 'DRAFT', repeat('a', 64), repeat('b', 8), 1, 1, 't');
+       insert into core.applied_config_package_item (tenant_id, applied_id, item_no, item_id, entity_type, entity_id, action)
+       values ('11111111-1111-4111-8111-111111111111', 'dd000000-0000-4000-8000-000000000001', 1, 'DK-TAX-S01', 'TAX_CODE', null, 'CREATED')$t$);
+select pg_temp.expect_error('applied package: the action is one of five',
+    $t$insert into core.applied_config_package_item (tenant_id, applied_id, item_no, item_id, entity_type, action)
+       values ('11111111-1111-4111-8111-111111111111', 'dd000000-0000-4000-8000-000000000001', 2, 'X', 'TAX_CODE', 'GUESSED')$t$, '%violates check constraint%');
+select pg_temp.expect_error('applied package: an item belongs to a record',
+    $t$insert into core.applied_config_package_item (tenant_id, applied_id, item_no, item_id, entity_type, action)
+       values ('11111111-1111-4111-8111-111111111111', gen_random_uuid(), 1, 'X', 'TAX_CODE', 'CREATED')$t$, '%foreign key%');
+select pg_temp.expect_error('applied package: a record is never changed', $t$update core.applied_config_package set item_count = 0$t$, '%append-only%');
+select pg_temp.expect_error('applied package: an item is never deleted', $t$delete from core.applied_config_package_item$t$, '%append-only%');
+select pg_temp.expect_error('applied package: a command role cannot write a record',
+    $t$set local role cmd_config; insert into core.applied_config_package (tenant_id, company_id, package_code, package_version, country_code, kind, state, manifest_digest, inputs_digest, item_count, created_count, applied_by)
+       values ('11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222201', 'DK', '0.4.1', 'DK', 'COUNTRY', 'DRAFT', 'a', 'b', 0, 0, 't')$t$, '%permission denied%');
+select pg_temp.expect_count('applied package: a command role reads the records of its tenant',
+    $t$select pg_temp.count_as('cmd_read', 'select (select count(*) from core.applied_config_package) + (select count(*) from core.applied_config_package_item)')$t$, 2);
+select set_config('app.tenant_id', '99999999-9999-4999-8999-999999999999', false);
+select pg_temp.expect_count('applied package: tenant B sees none of A''s records',
+    $t$select pg_temp.count_as('cmd_read', 'select count(*) from core.applied_config_package')$t$, 0);
+select set_config('app.tenant_id', '11111111-1111-4111-8111-111111111111', false);
+
         -- Result
         -- ---------------------------------------------------------------------------------------------------------
         select name, case when ok then 'PASS' else 'FAIL' end as result, detail from test_result order by seq;

@@ -194,6 +194,7 @@ public static class ErrorCatalog
         "PACKAGE.INPUT_INVALID",
         "PACKAGE.NOT_FOUND",
         "PACKAGE.NOT_RELEASED",
+        "PACKAGE.REFERENCE_UNRESOLVED",
         "PACKAGE.STEP_FAILED",
         "RATE.EXISTS",
         "TENANT.CODE_EXISTS",

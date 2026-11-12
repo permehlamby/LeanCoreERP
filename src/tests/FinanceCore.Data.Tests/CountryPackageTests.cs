@@ -47,9 +47,24 @@ public class CountryPackageTests
         Assert.Equal("S01", await t.ScalarAsync<string>("select c.code from core.tax_determination_rule r join core.tax_code c on c.tenant_id = r.tenant_id and c.tax_code_id = r.tax_code_id where r.tenant_id = @t and r.transaction_type = 'SALES'", ("t", t.TenantId)));
         Assert.Equal(2L, await t.ScalarAsync<long>("select count(*) from core.tax_determination_alternative where tenant_id = @t and rule_id = (select rule_id from core.tax_determination_rule where tenant_id = @t and transaction_type = 'SALES')", ("t", t.TenantId)));
 
+        // the settlement series and the record of the apply (18, 7.1)
+        Assert.Equal(1, Count(r, "NUMBER_SERIES_ASSIGNMENT"));
+        Assert.Equal("GL-JRN", await t.ScalarAsync<string>("select s.series_code from core.number_series_assignment a join core.number_series s on s.tenant_id = a.tenant_id and s.series_id = a.series_id where a.tenant_id = @t and a.document_type = 'VAT_SETTLE'", ("t", t.TenantId)));
+        Assert.NotEqual(Guid.Empty, r.AppliedId);
+        Assert.Equal((r.Items.Count, r.Items.Count(i => i.Action == "CREATED")), (
+            (int)await t.ScalarAsync<int>("select item_count from core.applied_config_package where tenant_id = @t and applied_id = @a", ("t", t.TenantId), ("a", r.AppliedId)),
+            (int)await t.ScalarAsync<int>("select created_count from core.applied_config_package where tenant_id = @t and applied_id = @a", ("t", t.TenantId), ("a", r.AppliedId))));
+        Assert.Equal((long)r.Items.Count, await t.ScalarAsync<long>("select count(*) from core.applied_config_package_item where tenant_id = @t and applied_id = @a", ("t", t.TenantId), ("a", r.AppliedId)));
+        Assert.Equal(64, (await t.ScalarAsync<string>("select manifest_digest from core.applied_config_package where tenant_id = @t", ("t", t.TenantId))).Length);
+        Assert.Equal("DK-TAX-S01", await t.ScalarAsync<string>("select item_id from core.applied_config_package_item where tenant_id = @t and applied_id = @a and entity_type = 'TAX_CODE' and action = 'CREATED' and item_id = 'DK-TAX-S01'", ("t", t.TenantId), ("a", r.AppliedId)));
+        await Assert.ThrowsAnyAsync<Exception>(() => t.ExecuteAsync("update core.applied_config_package set item_count = 0 where tenant_id = @t", ("t", t.TenantId)));
+
         // applied again, also with other inputs, it creates nothing: an object that exists is never changed (18, 7)
         var again = await Apply(t, Inputs());
         Assert.True(again.Items.All(i => i.Action != "CREATED"), string.Join(";", again.Items.Where(i => i.Action == "CREATED").Select(i => i.ItemId)));
+        var applies = await new CountryPackageApplier(TestTenant.AdminSource).ListAppliedAsync(t.TenantId, t.CompanyId);
+        Assert.Equal(2, applies.Count);
+        Assert.Equal((0, r.Items.Count(i => i.Action == "CREATED")), (applies[0].CreatedCount, applies[1].CreatedCount));
         var other = await Apply(t, Inputs(vatId: "DK87654321", filing: "MONTHLY"));
         Assert.True(other.Items.All(i => i.Action != "CREATED"), string.Join(";", other.Items.Where(i => i.Action == "CREATED").Select(i => i.ItemId)));
         Assert.Equal("QUARTERLY", await t.ScalarAsync<string>("select filing_frequency from core.company_vat_registration where tenant_id = @t", ("t", t.TenantId)));
@@ -87,6 +102,11 @@ public class CountryPackageTests
         var ret = await new VatReturnCommands(t.App).PrepareAsync(t.TenantId, t.Context("prep", "vat.prepare"), new(registration, "STANDARD", 2026, 1));
         Assert.True(ret.Status == CommandStatus.Ok, Describe(ret));
         Assert.Equal(250m, ret.Value!.Lines.Single(l => l.BoxCode == "DK_SALES_VAT").TaxAmount);
+
+        // the package assigned the series of the settlement document: the return is settled against the role of the package
+        var settled = await new VatSettlement(t.App).SettleAsync(t.TenantId, t.Context("settle", "vat.settle"), new(ret.Value.ReturnId, null));
+        Assert.True(settled.Status == CommandStatus.Ok, Describe(settled));
+        Assert.Equal("7840", await t.ScalarAsync<string>("select a.account_no from core.journal_line l join core.gl_account a on a.tenant_id = l.tenant_id and a.account_id = l.account_id where l.tenant_id = @t and l.document_id = @d and l.amount_lc < 0", ("t", t.TenantId), ("d", settled.Value!.Document.DocumentId)));
     }
 
     [Fact]
