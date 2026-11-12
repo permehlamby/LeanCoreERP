@@ -2,7 +2,7 @@
 
 PostgreSQL schema of the finance core, first slice: organisation, currency and chart of accounts, fiscal calendar, number series, the ledger (documents, lines, chain heads), the command log and the outbox. It implements spec 20 (ADR-208, ADR-209, ADR-210) and the tables of specs 02, 04, 06, 07 and 15.
 
-Status: DRAFT, 2026-10-21. Tested against PGlite (PostgreSQL in WebAssembly), not yet against Supabase or a server PostgreSQL. Nothing here is verified against production behaviour.
+Status: DRAFT, 2026-11-12. 28 migrations (0001 to 0028). Tested against PGlite and, from 0001 to 0028, against Supabase (the SQL tests, 256 checks, and the migration runner). The VAT domain is built in the phases V1 to V5 and the VAT content of the DK package (07, 13.2k to 13.2p). Nothing here is verified against production behaviour, and the DK package is DRAFT with nothing verified by a legal reviewer.
 
 ## Files
 
