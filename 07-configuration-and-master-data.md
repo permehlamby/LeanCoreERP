@@ -805,6 +805,16 @@ For the resources `gl-accounts`, `business-partners` (with PII, company relation
 
 These deltas are applied in 02 and 06 with this spec.
 
+### 13.2u The orders without fulfilment (F-IMPL-49, 2026-11-18)
+
+PROPOSED, written down so that spec and code agree. It is the first slice of 11 (4 and 6.1 to 6.2): the orders and their amendments, with nothing delivered, received or invoiced.
+
+1. **Built.** `sales-orders` and `purchase-orders` with `:create`, `:change`, `:add-line`, `:close-line`, `:cancel`, `:change-line-dates` (permission `sales.order` or `purchase.order`) and `:get` and `:list` (`read.orders`), and `company-order-settings:create-version` (`write.config`). Migration 0037, role `cmd_order`. Each command locks the order row, checks `expected_version`, writes `order_change_log` and `order_event` and the outbox event of 15, 6 (`order.created`, `order.changed`, `order.line_closed`, `order.cancelled`, `order.date_changed`) in its transaction, and raises `row_version` once.
+2. **Request.** `fields` (the header, with `company_id`) and `lines` (dictionaries). A line takes the fields of 6.2; `confirmed_date` on create or add-line is `ORDER.CONFIRMED_DATE_ON_CREATE`. `:change` takes header fields and `lines` of `{line_no, fields}`, `:close-line` a `line_no` and a `reason_code`, `:cancel` a `reason_code` and an optional `line_no` (none cancels the order), `:change-line-dates` lines of `{line_no, fields}` with `requested_date` and `confirmed_date` (the latter needs `order.promise`, dates 1900 to 2200, `ORDER.DATE_INVALID`).
+3. **Derived by the core.** Base quantity through the unit conversion of 10, 3.4 (`INVENTORY.UNIT_CONVERSION_MISSING`, `INVENTORY.QUANTITY_SCALE_EXCEEDED`), net amount at the scale of the order currency, the defaults of the line (fulfilment type and invoice policy by item type, tolerances and match mode from the settings in force at the order date, the tax class of the item, the origin country from the warehouse, the company or the supplier). `destination_country` must be given on a sales line until the address snapshot exists.
+4. **Checks.** The partner has an ACTIVE relation of the right kind in the company and is not restricted (`MASTER.PARTNER_RESTRICTED`), the currency is enabled, the item is active, not blocked and activated in the company, a stock sales line is a goods item with a warehouse of the company, a purchase line of a goods item has a receiving warehouse, TWO_WAY on a stock item needs `allow_invoice_before_receipt`. An order or line that is not open is `ORDER.ORDER_NOT_OPEN` or `ORDER.LINE_NOT_OPEN`. An order with no open line is CLOSED when a line was closed and CANCELLED when every line was cancelled.
+5. **Not built.** The rules that need progress (the floor of a quantity, the lock of price, warehouse, geography and match mode, the cancel of a part), address snapshots, reservations, dropship, intercompany and migrated orders, and 5 to 8 (deliveries, receipts, returns, invoices, GR/IR and the other reads). A dropship line is `LIMIT.ORDER_DROPSHIP_NOT_BUILT`.
+
 ### 13.2t The account determination of inventory and order events (F-IMPL-48, 2026-11-18)
 
 PROPOSED, written down so that spec and code agree. It is the second slice of 10 and builds 3.9 on the pattern of the tax determination rules (8.4).

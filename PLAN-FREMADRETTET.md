@@ -16,7 +16,7 @@ Oprettet 2026-11-12, efter at momsområdet (V1–V5) og DK-pakkens momsindhold e
 | Outbox-jobs, eksport, anonymisering, tenant-sletning | Ikke bygget (hændelser skrives, men ingen jobs) |
 | Migration (13) | To slices bygget (F-IMPL-44, F-IMPL-46): åbningsbalancer og åbne poster fra åbning til seal, rollback, four-eyes (commit, seal, approve) og læsninger. Mangler historik (HISTORY-chunk, historieår, CLOSING), lager, ordrer, legacy_tax_summary, legacy_id_map, VALIDATE-tilstand |
 | Lager (10) | To slices bygget (F-IMPL-47, F-IMPL-48): enheder, varegrupper, varer, lagre, lokationer, konverteringer, vare pr. selskab og lager, og kontobestemmelse med resolver. Mangler lagerbogen, værdiansættelse, sporing, reservationer, landed cost og læsninger |
-| Ordrer (11) | Kun spec |
+| Ordrer (11) | Første slice bygget (F-IMPL-49): salgs- og indkøbsordrer med linjer, ændringer, lukning, annullering, linjedatoer, indstillinger og læsninger. Mangler levering, modtagelse, returvarer, fakturering, GR/IR, adressesnapshots, reservationer og dropship |
 | Fakturering og betaling (22), konsolidering (23) | Kun spec |
 | API-hærdning (mTLS, rate limits, pagination) | Ikke bygget |
 
