@@ -10,10 +10,10 @@ namespace FinanceCore.Data;
 /// The read side of the ledger (09): journal-documents:get and :list, balances:query, trial-balances:query, account-ledgers:query, open-items:query and
 /// partner-balances:query. Every read runs in one repeatable-read transaction of the read role, so a response is one consistent snapshot (09, 2.2), and
 /// carries the ledger position it is consistent with. A caller that needs to see its own posting passes min_ledger_seq (READ.STALE_SNAPSHOT otherwise).
-/// Not built: company access beyond the tenant, several companies and groups, extensions, personal data and the read log, sort and filter on every field,
-/// the other reports of 4.5, 4.7 and 4.8. Amounts are decimals, not strings, as everywhere in this API.
+/// The second slice adds aging:query and documents:get-context (LedgerReads.Aging.cs, LedgerReads.Context.cs). Not built: company access beyond the tenant,
+/// several companies and groups, extensions, sort and filter on every field. Amounts are decimals, not strings, as everywhere in this API.
 /// </summary>
-public sealed class LedgerReads(NpgsqlDataSource source)
+public sealed partial class LedgerReads(NpgsqlDataSource source)
 {
     public const string Permission = "read.ledger";
 
@@ -442,7 +442,7 @@ public sealed class LedgerReads(NpgsqlDataSource source)
     /// <summary>The open items as of a date from the line amounts and the clearing items up to the date, not from the cache (05, A1). The columns: 0 to 21, see Read.</summary>
     private const string OpenItemSql =
         "select l.document_id, l.line_no, d.document_number, l.account_id, o.partner_id, l.posting_date, o.due_date, d.transaction_currency, " +
-        "l.amount_tc, coalesce(c.tc, 0), l.amount_lc, coalesce(c.lc, 0), l.amount_gc, coalesce(c.gc, 0), coalesce(l.amount_rc, 0), coalesce(c.rc, 0), o.clearing_status " +
+        "l.amount_tc, coalesce(c.tc, 0), l.amount_lc, coalesce(c.lc, 0), l.amount_gc, coalesce(c.gc, 0), coalesce(l.amount_rc, 0), coalesce(c.rc, 0), o.clearing_status, o.baseline_date, d.document_date " +
         "from core.journal_line_open_item o " +
         "join core.journal_line l on l.tenant_id = o.tenant_id and l.company_id = o.company_id and l.document_id = o.document_id and l.line_no = o.line_no " +
         "join core.journal_document d on d.tenant_id = l.tenant_id and d.company_id = l.company_id and d.document_id = l.document_id " +

@@ -31,6 +31,19 @@ public class ContractTests
     }
 
     [Fact]
+    public void TheReadsOfTheSecondSliceOfPhase09AreRegisteredWithTheirPermissionsOfSection23()
+    {
+        var catalog = new CommandCatalog();
+        new ReadModule().Register(catalog);
+        var expected = new Dictionary<string, string>
+        {
+            ["aging:query"] = "read.ledger", ["documents:get-context"] = "read.ledger", ["chains:status"] = "read.audit", ["audit-events:query"] = "read.audit",
+            ["read-access-log:list"] = "read.audit", ["business-partners:get"] = "read.config", ["business-partners:list"] = "read.config"
+        };
+        foreach (var (name, permission) in expected) Assert.Equal(permission, catalog.Find(name)?.Permission);
+    }
+
+    [Fact]
     public void EveryCommandOfTheApiHasItsPermissionForTheEndpointAndTheOpenApiDocument()
     {
         CommandCatalog catalog = Production();

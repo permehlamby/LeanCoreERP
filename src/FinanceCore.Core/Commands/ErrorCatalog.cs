@@ -160,6 +160,7 @@ public static class ErrorCatalog
         "READ.INVALID_FILTER",
         "READ.LIMIT_EXCEEDED",
         "READ.NOT_FOUND",
+        "READ.PARTNER_RESTRICTED",
         "READ.RESULT_TOO_LARGE",
         "READ.STALE_SNAPSHOT",
         "RETENTION.NO_RULE",

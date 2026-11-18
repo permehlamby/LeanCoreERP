@@ -12,7 +12,7 @@ Oprettet 2026-11-12, efter at momsområdet (V1–V5) og DK-pakkens momsindhold e
 | Landepakkeformat (18) | Signering bygget (F-IMPL-43: signeret arkiv, tillidssæt, verifikation, PRODUCTION kun signeret). Delvist: DK-pakkens momsindhold installeres med `package apply-vat`, og kørslerne registreres. VALIDATE-tilstand og `config-packages:diff` mangler |
 | Revaluering og årsafslutning (05) | Bygget (0029, F-IMPL-40): revaluering med rerun, årsafslutning og genåbning, forældelsestjek ved hard-close. Mangler: SQL-checks, kørsel mod Supabase, historik-variant (migration), tidsstempeljob for anchors |
 | Anchors (`chain_anchor`) og RFC 3161-tidsstempel | Ikke bygget |
-| Læse-API'er og søgning (09) | Ikke bygget, bortset fra `chains:verify` og `vat-returns:get`/`:list` |
+| Læse-API'er og søgning (09) | To slices bygget (F-IMPL-41, F-IMPL-45): dokumenter, saldi, kontoudtog, åbne poster, aging, dokumentkontekst, kædestatus, revisionshændelser, partnerlæsning med PII-log (migration 0033). Mangler søgning (`contains`), flere selskaber, extensions, `vat-positions:get`, læselogtømning og `access.summary` |
 | Outbox-jobs, eksport, anonymisering, tenant-sletning | Ikke bygget (hændelser skrives, men ingen jobs) |
 | Migration (13) | Første slice bygget (F-IMPL-44): åbningsbalancer og åbne poster fra åbning til seal. Mangler historik, rollback, lager, ordrer, legacy_tax_summary, legacy_id_map, four-eyes |
 | Lager (10), ordrer (11) | Kun spec |
