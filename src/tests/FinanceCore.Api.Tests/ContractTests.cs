@@ -54,7 +54,11 @@ public class ContractTests
             foreach (string verb in new[] { "get", "list" }) Assert.Equal("read.config", catalog.Find($"{resource}:{verb}")?.Permission);
         }
         Assert.Equal("read.config", catalog.Find("units:list")?.Permission);
-        Assert.Equal(8 * 6 + 1, catalog.All.Count);
+        Assert.Equal("write.config", catalog.Find("account-determinations:create")?.Permission);
+        Assert.Equal("write.config", catalog.Find("account-determinations:create-version")?.Permission);
+        Assert.Equal("read.config", catalog.Find("account-determinations:list")?.Permission);
+        Assert.Null(catalog.Find("account-determinations:get"));
+        Assert.Equal(8 * 6 + 1 + 3, catalog.All.Count);
     }
 
     [Fact]

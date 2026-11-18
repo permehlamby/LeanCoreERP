@@ -21,9 +21,11 @@ public sealed class InventoryModule : ICommandModule
         foreach (MasterReadSpec spec in MasterReads.InventorySpecs)
         {
             MasterReadSpec s = spec;
-            catalog.Add<GetMasterRequest, MasterRowResult>(s.Resource + ":get", MasterReads.Permission, (sp, t, c, req, ct) => sp.GetRequiredService<MasterReads>().GetAsync(t, c, s, req, ct));
+            if (!s.Versioned) catalog.Add<GetMasterRequest, MasterRowResult>(s.Resource + ":get", MasterReads.Permission, (sp, t, c, req, ct) => sp.GetRequiredService<MasterReads>().GetAsync(t, c, s, req, ct));
             catalog.Add<ListMasterRequest, MasterRowList>(s.Resource + ":list", MasterReads.Permission, (sp, t, c, req, ct) => sp.GetRequiredService<MasterReads>().ListAsync(t, c, s, req, ct));
         }
+        catalog.Add<CreateAccountDeterminationRequest, AccountDeterminationResult>("account-determinations:create", write, (sp, t, c, req, ct) => sp.GetRequiredService<AccountDeterminationCommands>().CreateAsync(t, c, req, ct));
+        catalog.Add<CreateAccountDeterminationVersionRequest, AccountDeterminationResult>("account-determinations:create-version", write, (sp, t, c, req, ct) => sp.GetRequiredService<AccountDeterminationCommands>().CreateVersionAsync(t, c, req, ct));
         catalog.Add<ListMasterRequest, MasterRowList>("units:list", MasterReads.Permission, (sp, t, c, req, ct) => sp.GetRequiredService<MasterReads>().ListUnitsAsync(t, c, req, ct));
     }
 }

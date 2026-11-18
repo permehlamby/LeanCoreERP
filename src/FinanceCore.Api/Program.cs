@@ -20,6 +20,7 @@ builder.Services.AddSingleton(sp => new PaymentTermsCommands(sp.GetRequiredServi
 builder.Services.AddSingleton(sp => new DimensionCommands(sp.GetRequiredService<NpgsqlDataSource>()));
 builder.Services.AddSingleton(sp => new TaxCommands(sp.GetRequiredService<NpgsqlDataSource>()));
 builder.Services.AddSingleton(sp => new InventoryMasterCommands(sp.GetRequiredService<NpgsqlDataSource>()));
+builder.Services.AddSingleton(sp => new AccountDeterminationCommands(sp.GetRequiredService<NpgsqlDataSource>()));
 builder.Services.AddSingleton(sp => new MasterReads(sp.GetRequiredService<NpgsqlDataSource>()));
 builder.Services.AddSingleton(sp => new TaxDeterminationCommands(sp.GetRequiredService<NpgsqlDataSource>()));
 builder.Services.AddSingleton(sp => new VatReturnCommands(sp.GetRequiredService<NpgsqlDataSource>()));

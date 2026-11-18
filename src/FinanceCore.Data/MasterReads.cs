@@ -7,7 +7,7 @@ using Npgsql;
 namespace FinanceCore.Data;
 
 /// <summary>What a master resource lets a caller read (09, 3): its table, its key, the columns a `filter` may name (equal to) and whether the table is the tenant's.</summary>
-public sealed record MasterReadSpec(string Resource, string Table, string IdColumn, string[] Filterable, string OrderBy, bool TenantTable = true);
+public sealed record MasterReadSpec(string Resource, string Table, string IdColumn, string[] Filterable, string OrderBy, bool TenantTable = true, bool Versioned = false);
 
 /// <summary>
 /// The generic get and list of the master data (09, 3, permission read.config): the row as JSON with its typed values, `active` = true by default and `include_inactive` for all
@@ -27,7 +27,9 @@ public sealed class MasterReads(NpgsqlDataSource source)
         new("warehouses", "warehouse", "warehouse_id", ["company_id", "code", "country_code"], "company_id, code"),
         new("warehouse-locations", "warehouse_location", "location_id", ["company_id", "warehouse_id", "location_code", "location_type"], "warehouse_id, location_code"),
         new("item-companies", "item_company", "item_company_id", ["company_id", "item_id", "valuation_method"], "company_id, item_id"),
-        new("item-warehouses", "item_warehouse", "item_warehouse_id", ["company_id", "warehouse_id", "item_id"], "warehouse_id, item_id")
+        new("item-warehouses", "item_warehouse", "item_warehouse_id", ["company_id", "warehouse_id", "item_id"], "warehouse_id, item_id"),
+        // pattern V: every version is a row and there is no active flag, so the list shows all versions and there is no get by key
+        new("account-determinations", "account_determination", "determination_id", ["company_id", "role_code", "item_group_id", "warehouse_id", "partner_id", "item_id", "determination_id"], "company_id, role_code, determination_id, valid_from", Versioned: true)
     ];
 
     private static CommandError Error(string code, string phase, string path, params (string Key, object? Value)[] parameters) =>
@@ -64,8 +66,8 @@ public sealed class MasterReads(NpgsqlDataSource source)
         string where = string.Concat(filter.Keys.Select((f, n) => $" and (to_jsonb(x) ->> '{f}') = @f{n}"));
         await using TenantTransaction tx = await TenantTransaction.BeginAsync(source, tenantId, CommandRole.Read, ct: ct, snapshot: true);
         await using var cmd = tx.Command(
-            $"select (to_jsonb(x) - 'tenant_id')::text from core.{spec.Table} x where x.tenant_id = @t and (@all or x.active){where} order by {spec.OrderBy} offset @o limit @n");
-        cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("all", req.IncludeInactive); cmd.Parameters.AddWithValue("o", offset); cmd.Parameters.AddWithValue("n", limit + 1);
+            $"select (to_jsonb(x) - 'tenant_id')::text from core.{spec.Table} x where x.tenant_id = @t{(spec.Versioned ? "" : " and (@all or x.active)")}{where} order by {spec.OrderBy} offset @o limit @n");
+        cmd.Parameters.AddWithValue("t", tenantId); if (!spec.Versioned) cmd.Parameters.AddWithValue("all", req.IncludeInactive); cmd.Parameters.AddWithValue("o", offset); cmd.Parameters.AddWithValue("n", limit + 1);
         int k = 0;
         foreach (string value in filter.Values) cmd.Parameters.AddWithValue($"f{k++}", value);
         var items = new List<JsonElement>();

@@ -805,6 +805,16 @@ For the resources `gl-accounts`, `business-partners` (with PII, company relation
 
 These deltas are applied in 02 and 06 with this spec.
 
+### 13.2t The account determination of inventory and order events (F-IMPL-48, 2026-11-18)
+
+PROPOSED, written down so that spec and code agree. It is the second slice of 10 and builds 3.9 on the pattern of the tax determination rules (8.4).
+
+1. **Built.** `account-determinations:create` (a new determination of a company) and `:create-version` (a later version of one), permission `write.config`, and `account-determinations:list` (`read.config`, filters on company, role, the four keys and the determination id, all versions). Migration 0036. The stock and order commands resolve through `AccountDeterminationResolver`.
+2. **A version.** Role (the fifteen roles of 3.9), the keys item group, warehouse, partner and item (null means any), `valid_from`, `valid_to`, `priority` (0 or more) and the account. Versions are insert-only. A version needs a `valid_from` after the latest of its determination (`CONFIG.VALID_FROM_NOT_LATER`) and holds until its `valid_to` or the day before the next version starts.
+3. **Rules built.** The account has the open-item mode of the role: GL_OPEN_ITEM for `GR_IR` and `DROPSHIP_CLEARING`, CONTROL for `AR_CONTROL` and `AP_CONTROL`, NONE for the others (`CONFIG.ROLE_ACCOUNT_RULE_VIOLATED`, rule OPEN_ITEM_MODE). The keys and the account must exist, and a warehouse belongs to the company. Equal role, keys and priority over an overlapping time are `CONFIG.OVERLAPPING_RULE`.
+4. **Resolution.** The versions that hold at the posting date and whose keys are null or equal; the most specific key set first, then the lowest priority number, then the lowest determination id. `DROPSHIP_CLEARING` falls back to the rules of `GR_IR` when it has none (11, 5.3). No match is the caller's `INVENTORY.ACCOUNT_DETERMINATION_MISSING`.
+5. **Not built.** Company readiness (11.3) does not yet check that a role has a catch-all rule, and the account and determination id are not yet stored on a journal line (no stock journal exists). `item_tracking`, the stock ledger, reservations, landed costs and the stock reads are the next slices of 10.
+
 ### 13.2s The master data of items and warehouses (F-IMPL-47, 2026-11-18)
 
 PROPOSED, written down so that spec and code agree. It is the first slice of 10 and builds the tables of 10, 3.1 to 3.7 on the generic master commands of 11.1.
