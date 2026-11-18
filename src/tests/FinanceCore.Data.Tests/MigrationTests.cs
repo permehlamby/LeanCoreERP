@@ -270,14 +270,163 @@ public class MigrationTests
         Assert.Equal(["CONFIG.ROLE_NOT_ASSIGNED"], Codes(await noRole.Cmds.OpenAsync(noRole.T.TenantId, Manage(noRole.T, "o"), OpenReq(noRole.T))));
     }
 
+    private static CommandContext As(TestTenant t, string actor, string key, params string[] permissions) =>
+        new(key, "corr-" + key, actor, new HashSet<string>(permissions));
+
+    private static async Task<string> StatusOf(TestTenant t, Guid batch) =>
+        await t.ScalarAsync<string>("select status from core.migration_batch where tenant_id = @t and batch_id = @b", ("b", batch));
+
     [Fact]
-    public async Task AProductionTenantNeedsTheFourEyesThatAreNotBuilt()
+    public async Task AProductionTenantNeedsASecondIdentityForTheCommitAndTheSeal()
     {
         var s = await SetupAsync();
         var t = s.T;
         Guid batch = await ReadyBatchAsync(s);
         await t.ExecuteAsync("update platform.tenant set purpose = 'PRODUCTION' where tenant_id = @t");
-        Assert.Equal(["LIMIT.MIGRATION_FOUR_EYES_NOT_BUILT"], Codes(await s.Cmds.CommitAsync(t.TenantId, Commit(t, "c"), new(batch))));
-        Assert.Equal("RECONCILED", await t.ScalarAsync<string>("select status from core.migration_batch where tenant_id = @t and batch_id = @b", ("b", batch)));
+
+        // nothing is requested yet, and a request that is not there cannot be approved
+        Assert.Equal(["MIGRATION.NO_PENDING_REQUEST"], Codes(await s.Cmds.ApproveAsync(t.TenantId, Commit(t, "a0"), new(batch))));
+
+        var request = await s.Cmds.CommitAsync(t.TenantId, Commit(t, "c1"), new(batch));
+        Assert.True(request.Status == CommandStatus.Ok, Describe(request));
+        Assert.Equal(("COMMIT", "tester", "RECONCILED"), (request.Value!.PendingApproval, request.Value.RequestedBy, request.Value.Status));
+        Assert.Empty(request.Value.Chunks!);
+        Assert.Equal(0L, await t.ScalarAsync<long>("select count(*) from core.journal_document where tenant_id = @t"));
+        Assert.Equal("COMMIT", (await s.Cmds.CommitAsync(t.TenantId, Commit(t, "c2"), new(batch))).Value!.PendingApproval);   // a second call only repeats the request
+        Assert.Equal(["MIGRATION.APPROVER_NOT_DISTINCT"], Codes(await s.Cmds.ApproveAsync(t.TenantId, Commit(t, "a1"), new(batch))));
+        Assert.Equal(["AUTH.PERMISSION_MISSING"], Codes(await s.Cmds.ApproveAsync(t.TenantId, As(t, "second", "a2", "migration.manage"), new(batch))));
+
+        var committed = await s.Cmds.ApproveAsync(t.TenantId, As(t, "second", "a3", "migration.commit"), new(batch));
+        Assert.True(committed.Status == CommandStatus.Ok, Describe(committed));
+        Assert.Equal(("COMMITTED", 3, null), (committed.Value!.Status, committed.Value.Documents, committed.Value.PendingApproval));
+        Assert.Equal("second", await t.ScalarAsync<string>("select commit_approved_by from core.migration_batch where tenant_id = @t and batch_id = @b", ("b", batch)));
+        Assert.True((await s.Cmds.ApproveAsync(t.TenantId, As(t, "second", "a3", "migration.commit"), new(batch))).IdempotentReplay);
+
+        var sealRequest = await s.Cmds.SealAsync(t.TenantId, Commit(t, "s1"), new(batch));
+        Assert.Equal(("SEAL", "COMMITTED"), (sealRequest.Value!.PendingApproval, sealRequest.Value.Status));
+        Assert.Equal(["MIGRATION.APPROVER_NOT_DISTINCT"], Codes(await s.Cmds.ApproveAsync(t.TenantId, Commit(t, "a4"), new(batch))));
+        var sealedBatch = await s.Cmds.ApproveAsync(t.TenantId, As(t, "second", "a5", "migration.commit"), new(batch));
+        Assert.True(sealedBatch.Status == CommandStatus.Ok && sealedBatch.Value!.Status == "SEALED", Describe(sealedBatch));
+        Assert.Equal(1L, await t.ScalarAsync<long>("select count(*) from core.outbox_event where tenant_id = @t and event_type = 'migration.sealed'"));
+        Assert.Equal("second", await t.ScalarAsync<string>("select seal_approved_by from core.migration_batch where tenant_id = @t and batch_id = @b", ("b", batch)));
+        // the database holds the rule too: an approver is never the requester
+        await Assert.ThrowsAnyAsync<Exception>(() => t.ExecuteAsync("update core.migration_batch set seal_approved_by = seal_requested_by where tenant_id = @t"));
+    }
+
+    [Fact]
+    public async Task ARequestIsCancelledByAChangedRecordAndOtherTenantsNeedNoApproval()
+    {
+        var s = await SetupAsync();
+        var t = s.T;
+        Guid batch = await ReadyBatchAsync(s);
+        await t.ExecuteAsync("update platform.tenant set purpose = 'PRODUCTION' where tenant_id = @t");
+        Assert.Equal("COMMIT", (await s.Cmds.CommitAsync(t.TenantId, Commit(t, "c1"), new(batch))).Value!.PendingApproval);
+
+        // a changed record takes the batch back to OPEN and the request with it (13, Q13)
+        Assert.Equal(CommandStatus.Ok, (await s.Cmds.StageAsync(t.TenantId, Stage(t, "restage"), new(batch, [Bal("2000", -10000m, -1340.2m, "BAL-2000")]))).Status);
+        Assert.Equal("OPEN", await StatusOf(t, batch));
+        Assert.Equal(0L, await t.ScalarAsync<long>("select count(*) from core.migration_batch where tenant_id = @t and batch_id = @b and commit_requested_by is not null", ("b", batch)));
+        Assert.Equal(["MIGRATION.NO_PENDING_REQUEST"], Codes(await s.Cmds.ApproveAsync(t.TenantId, As(t, "second", "a1", "migration.commit"), new(batch))));
+
+        // a rehearsal tenant needs one identity, and there is nothing to approve
+        await t.ExecuteAsync("update platform.tenant set purpose = 'REHEARSAL' where tenant_id = @t");
+        Assert.Equal(CommandStatus.Ok, (await s.Cmds.ValidateAsync(t.TenantId, Manage(t, "v2"), new(batch))).Status);
+        Assert.Equal(CommandStatus.Ok, (await s.Cmds.ReconcileAsync(t.TenantId, Manage(t, "r2"), new(batch))).Status);
+        var direct = await s.Cmds.CommitAsync(t.TenantId, Commit(t, "c3"), new(batch));
+        Assert.Equal(("COMMITTED", null), (direct.Value!.Status, direct.Value.PendingApproval));
+        Assert.Equal(["MIGRATION.NO_PENDING_REQUEST"], Codes(await s.Cmds.ApproveAsync(t.TenantId, As(t, "second", "a2", "migration.commit"), new(batch))));
+    }
+
+    [Fact]
+    public async Task ARollbackReversesEveryDocumentOfTheBatchAndFreesTheCompanyForANewBatch()
+    {
+        var s = await SetupAsync();
+        var t = s.T;
+        Guid batch = await ReadyBatchAsync(s);
+        Assert.Equal(["MIGRATION.ROLLBACK_NOT_ALLOWED"], Codes(await s.Cmds.RollbackAsync(t.TenantId, Commit(t, "early"), new(batch))));   // nothing is committed
+        Assert.Equal(["AUTH.PERMISSION_MISSING"], Codes(await s.Cmds.RollbackAsync(t.TenantId, Manage(t, "x"), new(batch))));
+        Assert.Equal(CommandStatus.Ok, (await s.Cmds.CommitAsync(t.TenantId, Commit(t, "commit"), new(batch))).Status);
+        Assert.Equal(1900m, await Balance(t, "1300"));
+
+        var rolled = await s.Cmds.RollbackAsync(t.TenantId, Commit(t, "rollback"), new(batch));
+        Assert.True(rolled.Status == CommandStatus.Ok, Describe(rolled));
+        Assert.Equal(("ROLLED_BACK", 3), (rolled.Value!.Status, rolled.Value.Documents));
+        Assert.True((await s.Cmds.RollbackAsync(t.TenantId, Commit(t, "rollback"), new(batch))).IdempotentReplay);
+
+        // the mirrors keep the type, carry the reason CORRECTION, the origin and the batch, and the originals are marked reversed
+        Assert.Equal(6L, await t.ScalarAsync<long>("select count(*) from core.journal_document where tenant_id = @t and migration_batch_id = @b and origin = 'MIGRATION'", ("b", batch)));
+        Assert.Equal(3L, await t.ScalarAsync<long>(
+            "select count(*) from core.journal_document m join core.journal_document o on o.tenant_id = m.tenant_id and o.document_id = m.reversal_of_document_id " +
+            "where m.tenant_id = @t and m.reversal_reason_code = 'CORRECTION' and m.document_type = o.document_type and m.migration_batch_id = @b and o.status = 'reversed' and o.reversed_by_document_id = m.document_id", ("b", batch)));
+        foreach (string account in new[] { "1000", "1300", "1900", "2000", "1800" }) Assert.Equal(0m, await Balance(t, account));
+        // the open items of the originals and of the mirrors are cleared against each other: none stays open
+        Assert.Equal(6L, await t.ScalarAsync<long>("select count(*) from core.journal_line_open_item where tenant_id = @t and clearing_status = 'CLEARED'"));
+        Assert.Equal(0L, await t.ScalarAsync<long>("select count(*) from core.journal_line_open_item where tenant_id = @t and clearing_status <> 'CLEARED'"));
+        Assert.Equal(3L, await t.ScalarAsync<long>("select count(*) from core.clearing where tenant_id = @t and clearing_method = 'REVERSAL' and command_name = 'migration-batches:rollback'"));
+        Assert.Equal(0L, await t.ScalarAsync<long>("select count(*) from core.outbox_event where tenant_id = @t and event_type like 'ledger.%'"));
+        await AssertLedgerOk(t);
+        var clearingChain = await new ChainVerification(t.App).VerifyAsync(t.TenantId, t.Context("verify2", "chain.verify"), new(t.CompanyId, "CLEARING"));
+        Assert.True(clearingChain.Status == CommandStatus.Ok && clearingChain.Value!.Ok, Describe(clearingChain));
+        Assert.Equal("ROLLED_BACK", await StatusOf(t, batch));
+        Assert.Equal(["MIGRATION.ROLLBACK_NOT_ALLOWED"], Codes(await s.Cmds.RollbackAsync(t.TenantId, Commit(t, "again"), new(batch))));
+        Assert.Equal(["MIGRATION.ABORT_NOT_ALLOWED"], Codes(await s.Cmds.AbortAsync(t.TenantId, Manage(t, "abort"), new(batch))));
+
+        // a new batch can be opened, staged and committed: the targeting sees the ledger at zero
+        var second = await s.Cmds.OpenAsync(t.TenantId, Manage(t, "open2"), OpenReq(t));
+        Assert.True(second.Status == CommandStatus.Ok, Describe(second));
+        Guid batch2 = second.Value!.BatchId;
+        Assert.Equal(CommandStatus.Ok, (await s.Cmds.DeclareTotalsAsync(t.TenantId, Manage(t, "totals2"), new(batch2, GoodTotals()))).Status);
+        Assert.Equal(CommandStatus.Ok, (await s.Cmds.StageAsync(t.TenantId, Stage(t, "stage2"), new(batch2, GoodRecords()))).Status);
+        Assert.Equal(CommandStatus.Ok, (await s.Cmds.ValidateAsync(t.TenantId, Manage(t, "validate2"), new(batch2))).Status);
+        Assert.Equal("RECONCILED", (await s.Cmds.ReconcileAsync(t.TenantId, Manage(t, "reconcile2"), new(batch2))).Value!.Status);
+        var again = await s.Cmds.CommitAsync(t.TenantId, Commit(t, "commit2"), new(batch2));
+        Assert.True(again.Status == CommandStatus.Ok, Describe(again));
+        Assert.Equal(8000m, await Balance(t, "1000"));
+        Assert.Equal(1900m, await Balance(t, "1300"));
+        Assert.Equal(0m, await Balance(t, "1800"));
+        var sealed2 = await s.Cmds.SealAsync(t.TenantId, Commit(t, "seal2"), new(batch2));
+        Assert.True(sealed2.Status == CommandStatus.Ok && sealed2.Value!.Status == "SEALED", Describe(sealed2));
+        Assert.Equal(["MIGRATION.ROLLBACK_NOT_ALLOWED"], Codes(await s.Cmds.RollbackAsync(t.TenantId, Commit(t, "late"), new(batch2))));   // the seal is final
+        await AssertLedgerOk(t);
+    }
+
+    [Fact]
+    public async Task TheBatchTheRecordsAndTheRunsCanBeReadWithReadAudit()
+    {
+        var s = await SetupAsync();
+        var t = s.T;
+        Guid batch = await ReadyBatchAsync(s);
+        Assert.Equal(CommandStatus.Ok, (await s.Cmds.CommitAsync(t.TenantId, Commit(t, "commit"), new(batch))).Status);
+        var reads = new MigrationReads(t.App);
+        CommandContext Audit(string key) => t.Context(key, "read.audit");
+
+        var detail = await reads.GetBatchAsync(t.TenantId, Audit("g1"), new(batch));
+        Assert.True(detail.Status == CommandStatus.Ok, Describe(detail));
+        var d = detail.Value!;
+        Assert.Equal(("COMMITTED", "LEGACY", 5, 0, 3), (d.Batch.Status, d.Batch.SourceSystem, d.RecordCount, d.InvalidCount, d.Documents));
+        Assert.Equal(6, d.ControlTotals.Count);
+        Assert.Equal([("OPENING_GL", "DONE"), ("OPEN_ITEMS", "DONE")], d.Chunks.Select(c => (c.Area, c.Status)).ToArray());
+        var run = Assert.Single(d.Reconciliations);
+        Assert.Equal((0, d.Batch.AcceptedReconciliationId), (run.Failures, (Guid?)run.ReconciliationId));
+        Assert.NotNull(d.Batch.CommittedAt);
+
+        var list = await reads.ListBatchesAsync(t.TenantId, Audit("l1"), new(t.CompanyId, "COMMITTED"));
+        Assert.Equal([batch], list.Value!.Items.Select(i => i.BatchId).ToArray());
+        Assert.Empty((await reads.ListBatchesAsync(t.TenantId, Audit("l2"), new(Status: "SEALED"))).Value!.Items);
+        Assert.Equal(["READ.INVALID_FILTER"], Codes(await reads.ListBatchesAsync(t.TenantId, Audit("l3"), new(Status: "NOPE"))));
+
+        var records = await reads.ListRecordsAsync(t.TenantId, Audit("r1"), new(batch, Limit: 2));
+        Assert.Equal((2, true), (records.Value!.Items.Count, records.Value.Page.NextCursor is not null));
+        Assert.Equal("OPENING_BALANCE", records.Value.Items[0].RecordType);
+        Assert.Equal("1000", records.Value.Items[0].Payload.GetProperty("account_no").GetString());
+        var rest = await reads.ListRecordsAsync(t.TenantId, Audit("r2"), new(batch, Limit: 10, Cursor: records.Value.Page.NextCursor));
+        Assert.Equal((3, null), (rest.Value!.Items.Count, rest.Value.Page.NextCursor));
+        Assert.Equal(2, (await reads.ListRecordsAsync(t.TenantId, Audit("r3"), new(batch, RecordType: "OPEN_ITEM"))).Value!.Items.Count);
+        Assert.Empty((await reads.ListRecordsAsync(t.TenantId, Audit("r4"), new(batch, Status: "INVALID"))).Value!.Items);
+
+        Assert.Equal(["READ.NOT_FOUND"], Codes(await reads.GetBatchAsync(t.TenantId, Audit("g2"), new(Guid.NewGuid()))));
+        Assert.Equal(["READ.NOT_FOUND"], Codes(await reads.ListRecordsAsync(t.TenantId, Audit("r5"), new(Guid.NewGuid()))));
+        Assert.Equal(["AUTH.PERMISSION_MISSING"], Codes(await reads.GetBatchAsync(t.TenantId, t.Context("g3", "read.ledger"), new(batch))));
+        Assert.Equal(["READ.CURSOR_INVALID"], Codes(await reads.ListRecordsAsync(t.TenantId, Audit("r6"), new(batch, Cursor: "garbage"))));
     }
 }

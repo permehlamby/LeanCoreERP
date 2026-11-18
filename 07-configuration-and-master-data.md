@@ -805,6 +805,16 @@ For the resources `gl-accounts`, `business-partners` (with PII, company relation
 
 These deltas are applied in 02 and 06 with this spec.
 
+### 13.2r The second slice of the migration batch (F-IMPL-46, 2026-11-18)
+
+PROPOSED, written down so that spec and code agree. It completes 13.2q's list of what 13 leaves open for the first slice (F-IMPL-44).
+
+1. **Built (13).** `migration-batches:rollback` and `:approve` (permission `migration.commit`), the four-eyes columns of 3.1 (migration 0034), and the reads `migration-batches:get`, `:list` and `migration-records:list` (permission `read.audit`).
+2. **Rollback.** Only in COMMITTING with a chunk DONE, or COMMITTED, and only while the company is DRAFT (`MIGRATION.ROLLBACK_NOT_ALLOWED`, `MIGRATION.COMPANY_NOT_DRAFT`). Every document of the batch that is still posted is reversed in reverse chain order: the mirror keeps the type, has the reason `CORRECTION`, the origin `MIGRATION` and the batch id, and the original is marked reversed. The open items of an original and of its mirror are cleared against each other by a clearing of method `REVERSAL` (03, 5.7), so no pair of open items stays behind. Each document is one transaction of the clearing role; a repeated call resumes, and the last transaction sets ROLLED_BACK, which frees the company. A document that cannot be reversed is `MIGRATION.ROLLBACK_FAILED` with the document and the failure code. The rows of `migration_commit_chunk` are kept.
+3. **Four-eyes (Q13).** In a PRODUCTION tenant `commit` and `seal` by one identity only record the request (`commit_requested_by`, `seal_requested_by`) and return the batch with `pending_approval` = COMMIT or SEAL. A repeated request keeps the first requester. `approve` by another identity with `migration.commit` carries out the request: the commit from RECONCILED, the seal from COMMITTED. The same identity is `MIGRATION.APPROVER_NOT_DISTINCT`, no request is `MIGRATION.NO_PENDING_REQUEST`. A change of a record or a total takes the batch back to OPEN and clears the commit request. A commit that has begun resumes without a new approval. REHEARSAL and TEST tenants commit and seal with one identity. The database refuses an approver equal to the requester.
+4. **Reads.** `migration-batches:get` returns the batch with its four-eyes marks, the latest declared total per kind and key, the reconciliation runs with their checks, the chunks and the counts. `migration-records:list` takes `batch_id`, `record_type`, `status` and `include_superseded`, in `record_no` order with a cursor.
+5. **Not built from 13.** History (the HISTORY chunk, `fiscal-years:open-history`, the CLOSING documents, the history guards and the seal variant of year close), `legacy_id_map`, `legacy_tax_summary`, stock, orders and fulfilment, VALIDATE mode, and the lists of control totals, reconciliations and chunks as resources of their own.
+
 ### 13.2q The second slice of the read APIs (F-IMPL-45, 2026-11-18)
 
 PROPOSED, written down so that spec and code agree. It completes 13.2i, point 6, for the reads of personal data. F-IMPL-40 to F-IMPL-44 are in `db/README.md` and have no paragraph here yet.

@@ -10,7 +10,7 @@ namespace FinanceCore.Data;
 
 /// <summary>
 /// The migration batch (13): open, declare control totals, stage records, validate, reconcile, commit in chunks, seal and abort. First slice: the opening balances and the open
-/// items of the general ledger, without history, stock, orders, legacy tax, four-eyes and rollback. A batch posts its documents (OPENING and OPENING_ITEMS, origin MIGRATION, the
+/// items of the general ledger, without history, stock, orders and legacy tax. The second slice adds rollback and the four-eyes request and approval (F-IMPL-46). A batch posts its documents (OPENING and OPENING_ITEMS, origin MIGRATION, the
 /// batch id on each) as the migration role into a company that is still DRAFT, at the cutover date, with the amounts as supplied and DERIVED rates (13, 6). Every status change of
 /// a batch writes one outbox event and the seal writes migration.sealed, none per record (E6).
 /// </summary>
@@ -20,7 +20,9 @@ public sealed class MigrationCommands(NpgsqlDataSource source)
     private const int MaxStageRecords = 5000;
     private const string BatchEntity = "MIGRATION_BATCH";
 
-    private sealed record BatchRow(Guid BatchId, Guid CompanyId, string Status, DateOnly CutoverDate, string SourceSystem, Guid? AcceptedReconciliationId);
+    private sealed record BatchRow(
+        Guid BatchId, Guid CompanyId, string Status, DateOnly CutoverDate, string SourceSystem, Guid? AcceptedReconciliationId,
+        string? CommitRequestedBy = null, bool CommitApproved = false, string? SealRequestedBy = null, bool SealApproved = false);
 
     private static CommandError Error(string code, string phase, string path, params (string Key, object? Value)[] p) => JournalDocumentPoster.Error(code, phase, path, p);
     private static CommandResult<MigrationBatchResult> Reject(CommandError e) => CommandResult<MigrationBatchResult>.Rejected([e]);
@@ -63,10 +65,15 @@ public sealed class MigrationCommands(NpgsqlDataSource source)
     // ---------------------------------------------------------------------------------------------------------
     private static async Task<BatchRow?> ReadBatchAsync(TenantTransaction tx, Guid tenantId, Guid batchId, bool forUpdate, CancellationToken ct)
     {
-        await using var cmd = tx.Command("select company_id, status, cutover_date, source_system, accepted_reconciliation_id from core.migration_batch where tenant_id = @t and batch_id = @b" + (forUpdate ? " for update" : ""));
+        await using var cmd = tx.Command(
+            "select company_id, status, cutover_date, source_system, accepted_reconciliation_id, commit_requested_by, commit_approved_by is not null, seal_requested_by, seal_approved_by is not null " +
+            "from core.migration_batch where tenant_id = @t and batch_id = @b" + (forUpdate ? " for update" : ""));
         cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("b", batchId);
         await using var r = await cmd.ExecuteReaderAsync(ct);
-        return await r.ReadAsync(ct) ? new BatchRow(batchId, r.GetGuid(0), r.GetString(1), r.GetFieldValue<DateOnly>(2), r.GetString(3), r.IsDBNull(4) ? null : r.GetGuid(4)) : null;
+        return await r.ReadAsync(ct)
+            ? new BatchRow(batchId, r.GetGuid(0), r.GetString(1), r.GetFieldValue<DateOnly>(2), r.GetString(3), r.IsDBNull(4) ? null : r.GetGuid(4),
+                r.IsDBNull(5) ? null : r.GetString(5), r.GetBoolean(6), r.IsDBNull(7) ? null : r.GetString(7), r.GetBoolean(8))
+            : null;
     }
 
     private static async Task<long> CountAsync(TenantTransaction tx, string sql, Guid tenantId, Guid batchId, CancellationToken ct)
@@ -97,7 +104,9 @@ public sealed class MigrationCommands(NpgsqlDataSource source)
         TenantTransaction tx, Guid tenantId, CommandContext ctx, BatchRow batch, string status, bool clearAccepted, bool committed, bool sealedNow, CancellationToken ct, bool writeEvent = true)
     {
         await using (var cmd = tx.Command(
-            "update core.migration_batch set status = @s, row_version = row_version + 1" + (clearAccepted ? ", accepted_reconciliation_id = null" : "") +
+            "update core.migration_batch set status = @s, row_version = row_version + 1" +
+            // a changed record or total needs a new reconciliation, and a new request for the commit (13, Q13)
+            (clearAccepted ? ", accepted_reconciliation_id = null, commit_requested_by = null, commit_requested_at = null, commit_approved_by = null, commit_approved_at = null" : "") +
             (committed ? ", committed_at = now(), committed_by = @by" : "") + (sealedNow ? ", sealed_at = now(), sealed_by = @by" : "") + " where tenant_id = @t and batch_id = @b"))
         {
             cmd.Parameters.AddWithValue("s", status); cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("b", batch.BatchId);
@@ -501,24 +510,53 @@ public sealed class MigrationCommands(NpgsqlDataSource source)
         var (denied, shape) = Gate(ctx, CommitPermission);
         if (denied is not null) return denied;
         if (shape.Count > 0) return CommandResult<MigrationBatchResult>.Rejected(shape);
-        byte[] fingerprint = MigrationRecords.Fingerprint("migration-batches:commit", req);
+        return await CommitCoreAsync(tenantId, ctx, req, MigrationRecords.Fingerprint("migration-batches:commit", req), "migration-batches:commit", false, ct);
+    }
 
+    /// <summary>The commit, for the command itself and for `approve` (which has the approval of a second identity behind it). In a PRODUCTION tenant a commit that is not approved
+    /// only records the request (13, Q13): nothing is planned and nothing is posted.</summary>
+    private async Task<CommandResult<MigrationBatchResult>> CommitCoreAsync(
+        Guid tenantId, CommandContext ctx, BatchRef req, byte[] fingerprint, string commandName, bool approved, CancellationToken ct)
+    {
         // the plan: the status and the chunks, in one transaction
         Guid companyId;
         var pending = new List<(int No, string Area)>();
+        bool requestOnly = false;
         var planned = await RunAsync(async () =>
         {
+            requestOnly = false;
+            pending.Clear();
             await using TenantTransaction tx = await TenantTransaction.BeginAsync(source, tenantId, CommandRole.Migration, ct: ct);
             if (await ReplayAsync(tx, tenantId, ctx, fingerprint, ct) is { } replay) return replay;
             BatchRow? batch = await ReadBatchAsync(tx, tenantId, req.BatchId, true, ct);
             if (batch is null) return Reject(Error("MIGRATION.BATCH_NOT_FOUND", "P2", "batch_id"));
             if (batch.Status is not ("RECONCILED" or "COMMITTING"))
                 return batch.Status is "OPEN" or "VALIDATED" ? Reject(Error("MIGRATION.RECONCILIATION_MISSING", "P3", "batch_id", ("status", batch.Status))) : StatusInvalid(batch, "RECONCILED", "COMMITTING");
-            if (await IsProductionAsync(tx, tenantId, ct)) return Reject(Error("LIMIT.MIGRATION_FOUR_EYES_NOT_BUILT", "P3", "batch_id"));
             var company = await JournalDocumentPoster.ReadCompanyAsync(tx, tenantId, batch.CompanyId, ct);
             if (company is null || company.Status != "DRAFT") return Reject(Error("MIGRATION.COMPANY_NOT_DRAFT", "P2", "batch_id", ("status", company?.Status)));
+            // four-eyes (13, Q13): a PRODUCTION tenant needs a second identity for the start of the commit. A commit that has begun (COMMITTING) is resumed without a new approval.
+            if (batch.Status == "RECONCILED" && !approved && await IsProductionAsync(tx, tenantId, ct))
+            {
+                if (batch.CommitRequestedBy is null)
+                    await using (var cmd = tx.Command("update core.migration_batch set commit_requested_by = @by, commit_requested_at = now() where tenant_id = @t and batch_id = @b"))
+                    {
+                        cmd.Parameters.AddWithValue("by", ctx.Actor); cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("b", batch.BatchId);
+                        await cmd.ExecuteNonQueryAsync(ct);
+                    }
+                Guid requestLog = await CommandSupport.WriteLogAsync(tx, tenantId, batch.CompanyId, ctx, commandName, fingerprint, BatchEntity, batch.BatchId, ct);
+                MigrationBatchResult requested = await SummaryAsync(tx, tenantId, batch.BatchId, ct: ct) with { PendingApproval = "COMMIT", RequestedBy = batch.CommitRequestedBy ?? ctx.Actor };
+                await tx.CommitAsync(ct);
+                requestOnly = true;
+                return CommandResult<MigrationBatchResult>.Ok(requested, requestLog);
+            }
             if (batch.Status == "RECONCILED")
             {
+                if (approved)
+                    await using (var cmd = tx.Command("update core.migration_batch set commit_approved_by = @by, commit_approved_at = now() where tenant_id = @t and batch_id = @b"))
+                    {
+                        cmd.Parameters.AddWithValue("by", ctx.Actor); cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("b", batch.BatchId);
+                        await cmd.ExecuteNonQueryAsync(ct);
+                    }
                 int n = 0;
                 foreach (string area in Areas)
                 {
@@ -538,7 +576,7 @@ public sealed class MigrationCommands(NpgsqlDataSource source)
             await tx.CommitAsync(ct);
             return CommandResult<MigrationBatchResult>.Ok(summary, Guid.Empty);
         });
-        if (planned.Status != CommandStatus.Ok || planned.IdempotentReplay) return planned;
+        if (planned.Status != CommandStatus.Ok || planned.IdempotentReplay || requestOnly) return planned;
         companyId = planned.Value!.CompanyId;
 
         foreach (var (no, area) in pending)
@@ -556,7 +594,7 @@ public sealed class MigrationCommands(NpgsqlDataSource source)
             await using TenantTransaction tx = await TenantTransaction.BeginAsync(source, tenantId, CommandRole.Migration, ct: ct);
             BatchRow batch = (await ReadBatchAsync(tx, tenantId, req.BatchId, true, ct))!;
             await SetStatusAsync(tx, tenantId, ctx, batch, "COMMITTED", false, true, false, ct);
-            Guid logId = await CommandSupport.WriteLogAsync(tx, tenantId, companyId, ctx, "migration-batches:commit", fingerprint, BatchEntity, batch.BatchId, ct);
+            Guid logId = await CommandSupport.WriteLogAsync(tx, tenantId, companyId, ctx, commandName, fingerprint, BatchEntity, batch.BatchId, ct);
             long documents = await CountAsync(tx, "select count(*) from core.journal_document where tenant_id = @t and migration_batch_id = @b", tenantId, batch.BatchId, ct);
             MigrationBatchResult result = await SummaryAsync(tx, tenantId, batch.BatchId, null, null, (int)documents, ct);
             await tx.CommitAsync(ct);
@@ -687,7 +725,13 @@ public sealed class MigrationCommands(NpgsqlDataSource source)
         var (denied, shape) = Gate(ctx, CommitPermission);
         if (denied is not null) return denied;
         if (shape.Count > 0) return CommandResult<MigrationBatchResult>.Rejected(shape);
-        byte[] fingerprint = MigrationRecords.Fingerprint("migration-batches:seal", req);
+        return await SealCoreAsync(tenantId, ctx, req, MigrationRecords.Fingerprint("migration-batches:seal", req), "migration-batches:seal", false, ct);
+    }
+
+    /// <summary>The seal, for the command and for `approve`. In a PRODUCTION tenant a seal that is not approved only records the request (13, Q13), and none of the checks run.</summary>
+    private async Task<CommandResult<MigrationBatchResult>> SealCoreAsync(
+        Guid tenantId, CommandContext ctx, BatchRef req, byte[] fingerprint, string commandName, bool approved, CancellationToken ct)
+    {
         return await RunAsync(async () =>
         {
             await using TenantTransaction tx = await TenantTransaction.BeginAsync(source, tenantId, CommandRole.Migration, ct: ct);
@@ -695,7 +739,19 @@ public sealed class MigrationCommands(NpgsqlDataSource source)
             BatchRow? batch = await ReadBatchAsync(tx, tenantId, req.BatchId, true, ct);
             if (batch is null) return Reject(Error("MIGRATION.BATCH_NOT_FOUND", "P2", "batch_id"));
             if (batch.Status != "COMMITTED") return StatusInvalid(batch, "COMMITTED");
-            if (await IsProductionAsync(tx, tenantId, ct)) return Reject(Error("LIMIT.MIGRATION_FOUR_EYES_NOT_BUILT", "P3", "batch_id"));
+            if (!approved && await IsProductionAsync(tx, tenantId, ct))
+            {
+                if (batch.SealRequestedBy is null)
+                    await using (var cmd = tx.Command("update core.migration_batch set seal_requested_by = @by, seal_requested_at = now() where tenant_id = @t and batch_id = @b"))
+                    {
+                        cmd.Parameters.AddWithValue("by", ctx.Actor); cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("b", batch.BatchId);
+                        await cmd.ExecuteNonQueryAsync(ct);
+                    }
+                Guid requestLog = await CommandSupport.WriteLogAsync(tx, tenantId, batch.CompanyId, ctx, commandName, fingerprint, BatchEntity, batch.BatchId, ct);
+                MigrationBatchResult requested = await SummaryAsync(tx, tenantId, batch.BatchId, ct: ct) with { PendingApproval = "SEAL", RequestedBy = batch.SealRequestedBy ?? ctx.Actor };
+                await tx.CommitAsync(ct);
+                return CommandResult<MigrationBatchResult>.Ok(requested, requestLog);
+            }
             Guid companyId = batch.CompanyId;
             var company = (await JournalDocumentPoster.ReadCompanyAsync(tx, tenantId, companyId, ct))!;
             bool hasRc = company.ReportingCurrency is not null;
@@ -771,6 +827,12 @@ public sealed class MigrationCommands(NpgsqlDataSource source)
                 await r.ReadAsync(ct);
                 first = r.GetInt64(0); last = r.GetInt64(1);
             }
+            if (approved)
+                await using (var cmd = tx.Command("update core.migration_batch set seal_approved_by = @by, seal_approved_at = now() where tenant_id = @t and batch_id = @b"))
+                {
+                    cmd.Parameters.AddWithValue("by", ctx.Actor); cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("b", batch.BatchId);
+                    await cmd.ExecuteNonQueryAsync(ct);
+                }
             await SetStatusAsync(tx, tenantId, ctx, batch, "SEALED", false, false, true, ct, writeEvent: false);
             await CommandSupport.WriteOutboxAsync(tx, tenantId, companyId, ctx, "migration.sealed", BatchEntity, $"{companyId:D}/{batch.BatchId:D}", "STATUS", DateTime.UtcNow, isAudit: true, null,
                 JsonSerializer.Serialize(new Dictionary<string, object?>
@@ -778,10 +840,172 @@ public sealed class MigrationCommands(NpgsqlDataSource source)
                     ["batch_id"] = batch.BatchId, ["status"] = "SEALED", ["documents"] = documents, ["lines"] = lines, ["open_items"] = openItems,
                     ["chain_ranges"] = new[] { new Dictionary<string, object?> { ["chain_type"] = "LEDGER", ["scope"] = ledgerId.ToString("D"), ["first_seq"] = first, ["last_seq"] = last } }
                 }), ct);
-            Guid logId = await CommandSupport.WriteLogAsync(tx, tenantId, companyId, ctx, "migration-batches:seal", fingerprint, BatchEntity, batch.BatchId, ct);
+            Guid logId = await CommandSupport.WriteLogAsync(tx, tenantId, companyId, ctx, commandName, fingerprint, BatchEntity, batch.BatchId, ct);
             MigrationBatchResult result = await SummaryAsync(tx, tenantId, batch.BatchId, null, null, (int)documents, ct);
             await tx.CommitAsync(ct);
             return CommandResult<MigrationBatchResult>.Ok(result, logId);
         });
+    }
+
+    // ---------------------------------------------------------------------------------------------------------
+    // migration-batches:approve (13, 7, Q13)
+    // ---------------------------------------------------------------------------------------------------------
+    /// <summary>
+    /// The second identity of the four-eyes rule: it carries out the commit or the seal that another identity requested in a PRODUCTION tenant. The request that is pending
+    /// follows from the status: RECONCILED with a commit request, or COMMITTED with a seal request. The approver is not the requester.
+    /// </summary>
+    public async Task<CommandResult<MigrationBatchResult>> ApproveAsync(Guid tenantId, CommandContext ctx, BatchRef req, CancellationToken ct = default)
+    {
+        var (denied, shape) = Gate(ctx, CommitPermission);
+        if (denied is not null) return denied;
+        if (shape.Count > 0) return CommandResult<MigrationBatchResult>.Rejected(shape);
+        byte[] fingerprint = MigrationRecords.Fingerprint("migration-batches:approve", req);
+        string? kind = null;
+        var decision = await RunAsync(async () =>
+        {
+            kind = null;
+            await using TenantTransaction tx = await TenantTransaction.BeginAsync(source, tenantId, CommandRole.Migration, ct: ct);
+            if (await ReplayAsync(tx, tenantId, ctx, fingerprint, ct) is { } replay) return replay;
+            BatchRow? batch = await ReadBatchAsync(tx, tenantId, req.BatchId, false, ct);
+            if (batch is null) return Reject(Error("MIGRATION.BATCH_NOT_FOUND", "P2", "batch_id"));
+            string? requester;
+            if (batch.Status == "RECONCILED" && batch.CommitRequestedBy is not null && !batch.CommitApproved) { kind = "COMMIT"; requester = batch.CommitRequestedBy; }
+            else if (batch.Status == "COMMITTED" && batch.SealRequestedBy is not null && !batch.SealApproved) { kind = "SEAL"; requester = batch.SealRequestedBy; }
+            else return Reject(Error("MIGRATION.NO_PENDING_REQUEST", "P3", "batch_id", ("status", batch.Status)));
+            if (string.Equals(requester, ctx.Actor, StringComparison.Ordinal))
+                return Reject(Error("MIGRATION.APPROVER_NOT_DISTINCT", "P3", "batch_id", ("request", kind)));
+            return CommandResult<MigrationBatchResult>.Ok(await SummaryAsync(tx, tenantId, batch.BatchId, ct: ct), Guid.Empty);
+        });
+        if (decision.Status != CommandStatus.Ok || decision.IdempotentReplay || kind is null) return decision;
+        return kind == "COMMIT"
+            ? await CommitCoreAsync(tenantId, ctx, req, fingerprint, "migration-batches:approve", true, ct)
+            : await SealCoreAsync(tenantId, ctx, req, fingerprint, "migration-batches:approve", true, ct);
+    }
+
+    // ---------------------------------------------------------------------------------------------------------
+    // migration-batches:rollback (13, 7)
+    // ---------------------------------------------------------------------------------------------------------
+    /// <summary>
+    /// The owning command of the documents of a batch (D1, ADR-145): it reverses every document of the batch that is still posted, in reverse chain order, as mirror documents that keep the
+    /// type, with the reason CORRECTION, the origin MIGRATION and the batch id. A document with open items is reversed together with the automatic clearing of its mirror (03, 5.7). Each
+    /// document is one transaction of the clearing role, so a rollback that stops half way resumes on a repeated call: a document that is reversed is skipped. The last transaction sets the
+    /// status ROLLED_BACK, which frees the company for a new batch. Only in COMMITTING (with a chunk DONE) and COMMITTED, and only while the company is DRAFT.
+    /// </summary>
+    public async Task<CommandResult<MigrationBatchResult>> RollbackAsync(Guid tenantId, CommandContext ctx, BatchRef req, CancellationToken ct = default)
+    {
+        var (denied, shape) = Gate(ctx, CommitPermission);
+        if (denied is not null) return denied;
+        if (shape.Count > 0) return CommandResult<MigrationBatchResult>.Rejected(shape);
+        byte[] fingerprint = MigrationRecords.Fingerprint("migration-batches:rollback", req);
+
+        var documents = new List<(Guid DocumentId, long ChainSeq)>();
+        var planned = await RunAsync(async () =>
+        {
+            documents.Clear();
+            await using TenantTransaction tx = await TenantTransaction.BeginAsync(source, tenantId, CommandRole.Migration, ct: ct);
+            if (await ReplayAsync(tx, tenantId, ctx, fingerprint, ct) is { } replay) return replay;
+            BatchRow? batch = await ReadBatchAsync(tx, tenantId, req.BatchId, false, ct);
+            if (batch is null) return Reject(Error("MIGRATION.BATCH_NOT_FOUND", "P2", "batch_id"));
+            long done = await CountAsync(tx, "select count(*) from core.migration_commit_chunk where tenant_id = @t and batch_id = @b and status = 'DONE'", tenantId, batch.BatchId, ct);
+            if (batch.Status is not ("COMMITTING" or "COMMITTED") || done == 0)
+                return Reject(Error("MIGRATION.ROLLBACK_NOT_ALLOWED", "P3", "batch_id", ("status", batch.Status), ("chunks_done", done)));
+            var company = await JournalDocumentPoster.ReadCompanyAsync(tx, tenantId, batch.CompanyId, ct);
+            if (company is null || company.Status != "DRAFT") return Reject(Error("MIGRATION.COMPANY_NOT_DRAFT", "P2", "batch_id", ("status", company?.Status)));
+            await using (var cmd = tx.Command(
+                "select document_id, chain_seq from core.journal_document where tenant_id = @t and migration_batch_id = @b and status = 'posted' and reversal_of_document_id is null order by chain_seq desc"))
+            {
+                cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("b", batch.BatchId);
+                await using var r = await cmd.ExecuteReaderAsync(ct);
+                while (await r.ReadAsync(ct)) documents.Add((r.GetGuid(0), r.GetInt64(1)));
+            }
+            return CommandResult<MigrationBatchResult>.Ok(await SummaryAsync(tx, tenantId, batch.BatchId, ct: ct), Guid.Empty);
+        });
+        if (planned.Status != CommandStatus.Ok || planned.IdempotentReplay) return planned;
+        Guid companyId = planned.Value!.CompanyId;
+
+        foreach (var (documentId, chainSeq) in documents)
+        {
+            ChunkFailure? failure = await ReverseBatchDocumentAsync(tenantId, ctx, req.BatchId, documentId, chainSeq, ct);
+            if (failure is not null)
+                return Reject(Error("MIGRATION.ROLLBACK_FAILED", "P7", "batch_id", ("document_id", documentId), ("failure_codes", failure.Code)));
+        }
+
+        return await RunAsync(async () =>
+        {
+            await using TenantTransaction tx = await TenantTransaction.BeginAsync(source, tenantId, CommandRole.Migration, ct: ct);
+            BatchRow batch = (await ReadBatchAsync(tx, tenantId, req.BatchId, true, ct))!;
+            if (batch.Status is "COMMITTING" or "COMMITTED")
+            {
+                long left = await CountAsync(tx, "select count(*) from core.journal_document where tenant_id = @t and migration_batch_id = @b and status = 'posted' and reversal_of_document_id is null", tenantId, batch.BatchId, ct);
+                if (left > 0) return Reject(Error("MIGRATION.ROLLBACK_FAILED", "P7", "batch_id", ("failure_codes", "documents of the batch are still posted"), ("count", left)));
+                await SetStatusAsync(tx, tenantId, ctx, batch, "ROLLED_BACK", true, false, false, ct);
+            }
+            Guid logId = await CommandSupport.WriteLogAsync(tx, tenantId, companyId, ctx, "migration-batches:rollback", fingerprint, BatchEntity, batch.BatchId, ct);
+            long mirrors = await CountAsync(tx, "select count(*) from core.journal_document where tenant_id = @t and migration_batch_id = @b and reversal_of_document_id is not null", tenantId, batch.BatchId, ct);
+            MigrationBatchResult result = await SummaryAsync(tx, tenantId, batch.BatchId, null, null, (int)mirrors, ct);
+            await tx.CommitAsync(ct);
+            return CommandResult<MigrationBatchResult>.Ok(result, logId);
+        });
+    }
+
+    /// <summary>One document of a batch reversed in one transaction of the clearing role: the mirror, the status of the original and, for open items, the automatic clearing.</summary>
+    private async Task<ChunkFailure?> ReverseBatchDocumentAsync(Guid tenantId, CommandContext ctx, Guid batchId, Guid documentId, long chainSeq, CancellationToken ct)
+    {
+        try
+        {
+            await using TenantTransaction tx = await TenantTransaction.BeginAsync(source, tenantId, CommandRole.Clearing, ct: ct);
+            var found = await LedgerReader.ReadDocumentsAsync(tx, tenantId, documentId, null, null, ct);
+            if (found.Count == 0) return new ChunkFailure("REVERSAL.NOT_FOUND");
+            LedgerReader.StoredDocument original = found[0];
+            if (original.Status != "posted") return null;   // reversed by an earlier, interrupted run
+            string type = (string)original.Header["document_type"]!, currency = (string)original.Header["transaction_currency"]!;
+            Guid companyId = (Guid)original.Header["company_id"]!, ledgerId = (Guid)original.Header["ledger_id"]!;
+            DateOnly date = (DateOnly)original.Header["posting_date"]!;
+            var company = (await JournalDocumentPoster.ReadCompanyAsync(tx, tenantId, companyId, ct))!;
+            if (company.Status != "DRAFT") return new ChunkFailure("MIGRATION.COMPANY_NOT_DRAFT");
+            string? groupCurrency = await ClearingPoster.ReadGroupCurrencyAsync(tx, tenantId, companyId, date, ct);
+            if (groupCurrency is null) return new ChunkFailure("CONFIG.GROUP_MEMBERSHIP_MISSING");
+            var period = await JournalDocumentPoster.CheckPeriodAsync(tx, tenantId, companyId, date, ctx, false, ct);
+            if (period.Errors.Count > 0) return new ChunkFailure(period.Errors[0].Code);
+            var series = await JournalDocumentPoster.ReadSeriesAsync(tx, tenantId, companyId, type, date, ledgerId, ct);
+            if (series is null) return new ChunkFailure("SERIES.NO_ASSIGNMENT");
+
+            // the lock order of 04, 6.3: the counter, the LEDGER head, the CLEARING head
+            if (await ClosingDocuments.LockCountersAsync(tx, tenantId, companyId, [(series, period.FiscalYear!.Value)], ct) is { } missing) return new ChunkFailure(missing.Code);
+            ClosingLedger ledger = (await ClosingDocuments.OpenLedgerAsync(tx, tenantId, companyId, ledgerId, company, groupCurrency, ct))!;
+            long clearingSeq = 0; byte[] clearingHash = [];
+            if (original.OpenItems.Count > 0)
+                (clearingSeq, clearingHash, _) = await CommandSupport.LockOrCreateHeadAsync(
+                    tx, tenantId, companyId, ClearingHash2.ChainType, "", LedgerHash2.Genesis(tenantId, companyId, ClearingHash2.ChainType, ""), ct);
+            var recheck = await JournalDocumentPoster.CheckPeriodAsync(tx, tenantId, companyId, date, ctx, true, ct);
+            if (recheck.Errors.Count > 0) return new ChunkFailure(recheck.Errors[0].Code);
+
+            var lines = (await ClosingDocuments.MirrorLinesAsync(tx, tenantId, companyId, original, ct))
+                .Select(l => original.OpenItems.TryGetValue(l.ReversedLineNo!.Value, out var oi)
+                    ? l with { OpenItem = new OpenItemSpec(oi["partner_id"] as Guid?, original.OpenItemDueDates.GetValueOrDefault(l.ReversedLineNo!.Value), null, null, null, null) }
+                    : l).ToList();
+            string key = ctx.IdempotencyKey.Length > 80 ? ctx.IdempotencyKey[..80] : ctx.IdempotencyKey;
+            CommandContext dctx = ctx with { IdempotencyKey = $"{key}#R{chainSeq}" };
+            var posted = await ClosingDocuments.PostAsync(ledger, dctx,
+                new DocumentSpec(type, "migration-batches:rollback", series, period.FiscalYear!.Value, period.PeriodNo!.Value, recheck.SoftCloseOverride, date, dctx.IdempotencyKey,
+                    ReversalOf: documentId, ReasonCode: "CORRECTION", Origin: "MIGRATION", MigrationBatchId: batchId, TransactionCurrency: currency), lines, documentId, ct);
+            if (posted.Error is not null) return new ChunkFailure(posted.Error.Code);
+            await using (var cmd = tx.Command(
+                "update core.journal_document set status = 'reversed', reversed_by_document_id = @m where tenant_id = @t and company_id = @c and document_id = @d and status = 'posted'"))
+            {
+                cmd.Parameters.AddWithValue("m", posted.Document!.DocumentId); cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("c", companyId); cmd.Parameters.AddWithValue("d", documentId);
+                await cmd.ExecuteNonQueryAsync(ct);
+            }
+            // the open items of the mirror are cleared against those of the original, so no pair of open items stays behind (03, 5.7, B3)
+            if (original.OpenItems.Count > 0)
+                await DocumentReverser.ClearOpenItemsAsync(tx, tenantId, companyId, dctx, original, posted.Document.DocumentId, [], date, period.FiscalYear!.Value, period.PeriodNo!.Value,
+                    new DateTime(DateTime.UtcNow.Ticks / 10 * 10, DateTimeKind.Utc), clearingSeq, clearingHash, ct, "migration-batches:rollback");
+            await tx.CommitAsync(ct);
+            return null;
+        }
+        catch (PostgresException ex) when (ex.SqlState is not (PostgresErrorCodes.LockNotAvailable or PostgresErrorCodes.DeadlockDetected or PostgresErrorCodes.SerializationFailure))
+        {
+            return new ChunkFailure("DB." + ex.SqlState + ": " + ex.MessageText);
+        }
     }
 }

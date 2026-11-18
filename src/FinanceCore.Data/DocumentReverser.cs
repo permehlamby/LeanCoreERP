@@ -419,18 +419,20 @@ public sealed class DocumentReverser(NpgsqlDataSource source)
         return CommandResult<PostedDocument>.Ok(posted, logId, warnings);
     }
 
-    private sealed record AutoItem(Guid DocumentId, int LineNo, string Currency, decimal Tc, decimal Lc, decimal Gc, decimal? Rc);
-    private sealed record AutoClearing(Guid ClearingId, long Seq, byte[] RowHash, Guid AccountId, Guid? PartnerId, List<AutoItem> Items);
+    internal sealed record AutoItem(Guid DocumentId, int LineNo, string Currency, decimal Tc, decimal Lc, decimal Gc, decimal? Rc);
+    internal sealed record AutoClearing(Guid ClearingId, long Seq, byte[] RowHash, Guid AccountId, Guid? PartnerId, List<AutoItem> Items);
 
     /// <summary>
     /// The automatic clearing at reversal (03, 5.7, B3): per account and partner of the open item lines one clearing of method REVERSAL with
     /// an item for every original line and one for every mirror line, each for its full line amounts. The mirror reverses the lines 1:1, so
     /// the items net to zero in every currency and no difference can arise. The clearings take the next nodes of the CLEARING chain.
     /// </summary>
-    private static async Task<List<AutoClearing>> ClearOpenItemsAsync(
+    internal static async Task<List<AutoClearing>> ClearOpenItemsAsync(
         TenantTransaction tx, Guid tenantId, Guid companyId, CommandContext ctx, LedgerReader.StoredDocument original, Guid mirrorId,
-        List<Dictionary<string, object?>> mirrorLines, DateOnly date, int fiscalYear, int periodNo, DateTime clearedAt, long headSeq, byte[] headHash, CancellationToken ct)
+        List<Dictionary<string, object?>> mirrorLines, DateOnly date, int fiscalYear, int periodNo, DateTime clearedAt, long headSeq, byte[] headHash, CancellationToken ct,
+        string? commandName = null)
     {
+        string cmdName = commandName ?? CommandName;
         var result = new List<AutoClearing>();
         if (original.OpenItems.Count == 0) return result;
         string currency = (string)original.Header["transaction_currency"]!;
@@ -459,7 +461,7 @@ public sealed class DocumentReverser(NpgsqlDataSource source)
                 ["clearing_id"] = clearingId, ["clearing_type"] = "CLEAR", ["clearing_date"] = date, ["fiscal_year"] = fiscalYear, ["fiscal_period"] = periodNo,
                 ["cleared_at"] = clearedAt, ["account_id"] = g.Key.Item1, ["partner_id"] = g.Key.Item2, ["document_id"] = null, ["reset_of_clearing_id"] = null,
                 ["clearing_method"] = "REVERSAL", ["matching_ref"] = null, ["source_system"] = ctx.SourceSystem, ["idempotency_key"] = gctx.IdempotencyKey,
-                ["command_name"] = CommandName, ["cleared_by"] = ctx.Actor, ["correlation_id"] = ctx.CorrelationId
+                ["command_name"] = cmdName, ["cleared_by"] = ctx.Actor, ["correlation_id"] = ctx.CorrelationId
             };
             var itemRows = items.Select((i, k) => (IReadOnlyDictionary<string, object?>)new Dictionary<string, object?>
             {
@@ -470,7 +472,7 @@ public sealed class DocumentReverser(NpgsqlDataSource source)
             byte[] rowHash = ClearingHash2.RowHash(tenantId, companyId, seq, prev, body, ClearingHash2.ItemsDigest(itemRows), null);
 
             var synthetic = new PostClearingRequest(companyId, g.Key.Item1, g.Key.Item2, date, "REVERSAL", null, null, []);
-            await ClearingPoster.InsertClearingAsync(tx, tenantId, synthetic, gctx, clearingId, null, seq, fiscalYear, periodNo, clearedAt, prev, rowHash, "CLEAR", null, CommandName, ct);
+            await ClearingPoster.InsertClearingAsync(tx, tenantId, synthetic, gctx, clearingId, null, seq, fiscalYear, periodNo, clearedAt, prev, rowHash, "CLEAR", null, cmdName, ct);
             for (int k = 0; k < items.Count; k++)
             {
                 AutoItem i = items[k];

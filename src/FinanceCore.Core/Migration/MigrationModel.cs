@@ -30,7 +30,36 @@ public sealed record ChunkResult(int ChunkNo, string Area, int DocumentCount, st
 
 public sealed record MigrationBatchResult(
     Guid BatchId, Guid CompanyId, string Status, DateOnly CutoverDate, string SourceSystem, int RecordCount, int InvalidCount, int TotalsCount,
-    IReadOnlyList<StagedRecordResult>? Records = null, IReadOnlyList<ReconciliationRow>? Reconciliation = null, IReadOnlyList<ChunkResult>? Chunks = null, int Documents = 0);
+    IReadOnlyList<StagedRecordResult>? Records = null, IReadOnlyList<ReconciliationRow>? Reconciliation = null, IReadOnlyList<ChunkResult>? Chunks = null, int Documents = 0,
+    string? PendingApproval = null, string? RequestedBy = null);
+
+// ---- migration-batches:get and :list, migration-records:list (13, 7, 09 section 3): read.audit
+public sealed record GetBatchRequest(Guid BatchId);
+
+public sealed record ListBatchesRequest(Guid? CompanyId = null, string? Status = null, int? Limit = null, string? Cursor = null);
+
+public sealed record MigrationBatchRead(
+    Guid BatchId, Guid CompanyId, string Status, DateOnly CutoverDate, string SourceSystem, string OpenedBy, DateTime OpenedAt, DateTime? CommittedAt, DateTime? SealedAt,
+    Guid? AcceptedReconciliationId, string? CommitRequestedBy, DateTime? CommitRequestedAt, string? CommitApprovedBy, DateTime? CommitApprovedAt,
+    string? SealRequestedBy, DateTime? SealRequestedAt, string? SealApprovedBy, DateTime? SealApprovedAt);
+
+public sealed record ControlTotalRead(int ControlNo, string ControlKind, string? Key1, string? Key2, decimal? AmountLc, decimal? AmountGc, decimal? AmountRc, DateTime DeclaredAt, string DeclaredBy);
+
+public sealed record ReconciliationRunRead(Guid ReconciliationId, DateTime RunAt, string RunBy, int Failures, int Warnings, IReadOnlyList<ReconciliationRow> Checks);
+
+public sealed record BatchDetail(
+    MigrationBatchRead Batch, IReadOnlyList<ControlTotalRead> ControlTotals, IReadOnlyList<ReconciliationRunRead> Reconciliations, IReadOnlyList<ChunkResult> Chunks,
+    int RecordCount, int InvalidCount, int Documents);
+
+public sealed record BatchList(IReadOnlyList<MigrationBatchRead> Items, FinanceCore.Core.Reads.ReadPage Page);
+
+public sealed record ListRecordsRequest(Guid BatchId, string? RecordType = null, string? Status = null, bool IncludeSuperseded = false, int? Limit = null, string? Cursor = null);
+
+public sealed record MigrationRecordRead(
+    long RecordNo, string RecordType, string LegacyRef, string Status, bool Superseded, DateTime ReceivedAt, string ReceivedBy, System.Text.Json.JsonElement Payload,
+    System.Text.Json.JsonElement? Errors);
+
+public sealed record MigrationRecordList(IReadOnlyList<MigrationRecordRead> Items, FinanceCore.Core.Reads.ReadPage Page);
 
 // ---- canonical records (13, 5): the first slice has the opening balance and the open items
 public static class RecordTypes

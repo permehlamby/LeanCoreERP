@@ -18,5 +18,12 @@ public sealed class MigrationModule : ICommandModule
         catalog.Add<BatchRef, MigrationBatchResult>("migration-batches:commit", commit, (sp, t, c, r, ct) => sp.GetRequiredService<MigrationCommands>().CommitAsync(t, c, r, ct));
         catalog.Add<BatchRef, MigrationBatchResult>("migration-batches:seal", commit, (sp, t, c, r, ct) => sp.GetRequiredService<MigrationCommands>().SealAsync(t, c, r, ct));
         catalog.Add<BatchRef, MigrationBatchResult>("migration-batches:abort", manage, (sp, t, c, r, ct) => sp.GetRequiredService<MigrationCommands>().AbortAsync(t, c, r, ct));
+        catalog.Add<BatchRef, MigrationBatchResult>("migration-batches:rollback", commit, (sp, t, c, r, ct) => sp.GetRequiredService<MigrationCommands>().RollbackAsync(t, c, r, ct));
+        catalog.Add<BatchRef, MigrationBatchResult>("migration-batches:approve", commit, (sp, t, c, r, ct) => sp.GetRequiredService<MigrationCommands>().ApproveAsync(t, c, r, ct));
+
+        const string audit = MigrationReads.Permission;
+        catalog.Add<GetBatchRequest, BatchDetail>("migration-batches:get", audit, (sp, t, c, r, ct) => sp.GetRequiredService<MigrationReads>().GetBatchAsync(t, c, r, ct));
+        catalog.Add<ListBatchesRequest, BatchList>("migration-batches:list", audit, (sp, t, c, r, ct) => sp.GetRequiredService<MigrationReads>().ListBatchesAsync(t, c, r, ct));
+        catalog.Add<ListRecordsRequest, MigrationRecordList>("migration-records:list", audit, (sp, t, c, r, ct) => sp.GetRequiredService<MigrationReads>().ListRecordsAsync(t, c, r, ct));
     }
 }
