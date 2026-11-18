@@ -15,10 +15,8 @@ namespace FinanceCore.Data;
 /// All status commands of a company take the head first, so they run one after the other and the checks that read other
 /// periods (predecessor, later hard-closed period) see a stable picture.
 ///
-/// Deviations from the specs, all in db/README.md: (F-IMPL-13) hard-close does not lock the LEDGER and CLEARING heads, because
-/// the period role may lock only its own chain (row-level security of 0006). A posting still cannot commit into a period that
-/// closes, because it holds the period row in share mode after its head locks and the close takes the row exclusively.
-/// No anchor request is written (no chain_anchor table yet) and the revaluation stale check does not run (no revaluation yet).
+/// A hard-close locks the LEDGER and CLEARING heads through core.lock_chain_heads (0029, F-IMPL-13: the period role may lock only its own chain),
+/// recomputes the revaluation and rejects when it differs from the ACTIVE run (05, 3.7), and writes the anchor requests of the company's chains (02, 9.5).
 /// </summary>
 public sealed class PeriodStatusCommands(NpgsqlDataSource source)
 {
@@ -125,10 +123,15 @@ public sealed class PeriodStatusCommands(NpgsqlDataSource source)
             return Reject(new CommandError("PERIOD.NOT_FOUND", "P2", "period_no",
                 new Dictionary<string, object?> { ["fiscal_year"] = p.FiscalYear, ["period_no"] = p.PeriodNo }));
 
-        // P7: PERIOD_EVENT head, then year and period rows exclusively (04, 6.3), then everything is read again under the locks
+        // P7: for a hard-close the LEDGER and CLEARING heads first, through the lock function of 0029 (F-IMPL-13), then the PERIOD_EVENT head,
+        // the other heads in share mode, then year and period rows exclusively (04, 6.3). Everything is read again under the locks.
+        if (kind == Kind.HardClose)
+            await using (var cmd = tx.Command("select core.lock_chain_heads(@c)")) { cmd.Parameters.AddWithValue("c", p.CompanyId); await cmd.ExecuteScalarAsync(ct); }
         byte[] genesis = LedgerHash2.Genesis(tenantId, p.CompanyId, PeriodEventHash2.ChainType, "");
         (long headSeq, byte[] headHash, _) = await CommandSupport.LockOrCreateHeadAsync(
             tx, tenantId, p.CompanyId, PeriodEventHash2.ChainType, "", genesis, ct);
+        if (kind == Kind.HardClose)
+            await using (var cmd = tx.Command("select core.lock_anchor_heads(@c)")) { cmd.Parameters.AddWithValue("c", p.CompanyId); await cmd.ExecuteScalarAsync(ct); }
 
         bool history; int specialCount; string yearStatus;
         await using (var cmd = tx.Command(
@@ -169,6 +172,9 @@ public sealed class PeriodStatusCommands(NpgsqlDataSource source)
                 Kind.HardClose => from is "OPEN" or "SOFT_CLOSED" ? await PredecessorErrorAsync(tx, tenantId, p, ct) : StatusInvalid(from, ["OPEN", "SOFT_CLOSED"]),
                 _ => await ReopenErrorAsync(tx, tenantId, p, from, target, yearStatus, ct)
             };
+        // The revaluation stale check at the hard-close of every period whose range holds a valuation date (05, 3.7, ADR-148), after the locks
+        if (error is null && kind == Kind.HardClose)
+            error = await RevaluationBasis.StaleCheckAsync(tx, tenantId, p.CompanyId, p.FiscalYear, p.PeriodNo, ct);
         if (error is not null) return Reject(error);
 
         // The event, its hash and the status change
@@ -236,6 +242,9 @@ public sealed class PeriodStatusCommands(NpgsqlDataSource source)
             cmd.Parameters.AddWithValue("c", p.CompanyId);
             await cmd.ExecuteNonQueryAsync(ct);
         }
+
+        // The anchor requests of a hard-close (02, 9.5, A2): every chain of the company, PENDING, in this transaction
+        if (kind == Kind.HardClose) await AnchorRequests.WriteAsync(tx, tenantId, p.CompanyId, ct);
 
         Guid logId = await CommandSupport.WriteLogAsync(tx, tenantId, p.CompanyId, ctx, CommandName(kind), fingerprint, "PERIOD_EVENT", eventId, ct);
 

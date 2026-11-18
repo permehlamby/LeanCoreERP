@@ -65,7 +65,7 @@ public class ConfigApiTests(ApiFixture api) : IClassFixture<ApiFixture>
         string valueId = value.Body.GetProperty("result").GetProperty("entity_id").GetString()!;
 
         var rule = await Send(t, "account-dimension-rules:create", D(("company_id", t.CompanyId), ("account_id", t.Revenue), ("dimension_type_id", typeId), ("rule", "MANDATORY")), "ar1", "write.config");
-        Assert.Equal(HttpStatusCode.OK, rule.Response.StatusCode);
+        Assert.True(rule.Response.StatusCode == HttpStatusCode.OK, rule.Body.ToString());
         Assert.Equal(HttpStatusCode.Forbidden, (await Send(t, "account-dimension-rules:create", D(("company_id", t.CompanyId), ("account_id", t.Revenue), ("dimension_type_id", typeId), ("rule", "FORBIDDEN")), "ar2", "write.master")).Response.StatusCode);
 
         object Lines(object? revenueDimensions) => new object[]
@@ -89,6 +89,48 @@ public class ConfigApiTests(ApiFixture api) : IClassFixture<ApiFixture>
             ("changes", new object[] { D(("entity_type", "LINE_DIMENSION"), ("line_no", 2), ("field_name", "dimension_value_id"), ("sub_key", typeId), ("expected_old_value", valueId), ("new_value", null)) })), "c1", "journal.change");
         Assert.Equal(HttpStatusCode.UnprocessableEntity, change.Response.StatusCode);
         Assert.Equal("ACCOUNT_RULE.DIMENSION_REQUIRED", Code(change.Body));
+    }
+
+    [Fact]
+    public async Task ATaxedDocumentIsPostedWithTheRuleOfItsDestinationOverHttp()
+    {
+        var t = await TestTenant.CreateReadyAsync();
+        Guid vatAccount = Guid.NewGuid();
+        await t.ExecuteAsync(
+            "insert into core.gl_account (tenant_id, company_id, account_id, account_no, name, account_type, tax_code_rule) values (@t, @c, @v, '2700', 'VAT', 'LIABILITY', 'FORBIDDEN'); " +
+            "update core.gl_account set tax_code_rule = 'MANDATORY' where tenant_id = @t and account_id = @r", ("c", t.CompanyId), ("v", vatAccount), ("r", t.Revenue));
+        var registration = await Send(t, "company-vat-registrations:create", D(("fields", D(("company_id", t.CompanyId), ("country_code", "DK"), ("vat_id", "DK12345678"), ("scheme", "STANDARD"),
+            ("filing_frequency", "QUARTERLY"), ("correction_method", "ADJUST_NEXT"), ("return_currency", "DKK"), ("valid_from", "2026-01-01")))), "vr1", "write.config");
+        string registrationId = registration.Body.GetProperty("result").GetProperty("entity_id").GetString()!;
+        var code = await Send(t, "tax-codes:create", D(("fields", D(("company_id", t.CompanyId), ("code", "U25"), ("description", "Output 25"), ("tax_type", "OUTPUT"), ("vat_registration_id", registrationId)))), "tc1", "write.config");
+        string codeId = code.Body.GetProperty("result").GetProperty("entity_id").GetString()!;
+        var version = await Send(t, "tax-codes:create-version", D(("tax_code_id", codeId), ("fields", D(("valid_from", "2026-01-01"), ("rate", 25), ("vat_account_id", vatAccount))), ("boxes", Array.Empty<object>())), "tv1", "write.config");
+        Assert.Equal(HttpStatusCode.OK, version.Response.StatusCode);
+
+        // a rule is created with its first version and its alternatives, and answers its id
+        var rule = await Send(t, "tax-determination-rules:create", D(("company_id", t.CompanyId), ("fields", D(("valid_from", "2026-01-01"), ("priority", 10), ("tax_code_id", codeId), ("destination_country", "DK"))),
+            ("alternatives", Array.Empty<object>())), "tr1", "write.config");
+        Assert.True(rule.Response.StatusCode == HttpStatusCode.OK, rule.Body.ToString());
+        Assert.Equal(0, rule.Body.GetProperty("result").GetProperty("alternative_count").GetInt32());
+        Assert.Equal(HttpStatusCode.Forbidden, (await Send(t, "tax-determination-rules:create", D(("company_id", t.CompanyId), ("fields", D())), "tr2", "write.master")).Response.StatusCode);
+
+        object Post(string? tax) => D(("company_id", t.CompanyId), ("document_type", "JOURNAL"), ("document_date", "2026-03-15"), ("posting_date", "2026-03-15"), ("transaction_currency", "DKK"),
+            ("origin_country", "DK"), ("destination_country", tax), ("lines", new object[]
+            {
+                D(("line_ref", "1"), ("account_id", t.Bank), ("amount_tc", "1250.00")),
+                D(("line_ref", "2"), ("account_id", t.Revenue), ("amount_tc", "-1000.00"), ("tax_code_id", codeId))
+            }));
+        var posted = await Send(t, "journal-documents:post", Post("DK"), "p1", "journal.post");
+        Assert.Equal(HttpStatusCode.OK, posted.Response.StatusCode);
+        var lines = posted.Body.GetProperty("result").GetProperty("lines");
+        Assert.Equal(3, lines.GetArrayLength());
+        Assert.Equal("TAX", lines[2].GetProperty("line_type").GetString());
+        Assert.Equal(-250m, decimal.Parse(lines[2].GetProperty("amount_tc").GetString()!, System.Globalization.CultureInfo.InvariantCulture));
+        Assert.Equal(codeId, lines[2].GetProperty("tax_code_id").GetString());
+
+        var noRule = await Send(t, "journal-documents:post", Post("SE"), "p2", "journal.post");
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, noRule.Response.StatusCode);
+        Assert.Equal("TAX.NO_RULE_MATCHED", Code(noRule.Body));
     }
 
     [Fact]
@@ -198,7 +240,7 @@ public class ConfigApiTests(ApiFixture api) : IClassFixture<ApiFixture>
 
         var rule = await Send(t, "retention-rules:create-version", D(("company_id", t.CompanyId), ("record_class", "LEDGER"), ("country_code", "DK"),
             ("retention_years", 5), ("start_event", "FISCAL_YEAR_END"), ("legal_basis", "Bogføringsloven")), "rr1", "retention.manage");
-        Assert.Equal(HttpStatusCode.OK, rule.Response.StatusCode);
+        Assert.True(rule.Response.StatusCode == HttpStatusCode.OK, rule.Body.ToString());
         Assert.True(rule.Body.GetProperty("result").GetProperty("new_rule").GetBoolean());
         var second = await Send(t, "retention-rules:create-version", D(("company_id", t.CompanyId), ("record_class", "LEDGER"), ("country_code", "DK"),
             ("retention_years", 10), ("start_event", "FISCAL_YEAR_END"), ("effective_from", "2099-01-01T00:00:00Z")), "rr2", "retention.manage");

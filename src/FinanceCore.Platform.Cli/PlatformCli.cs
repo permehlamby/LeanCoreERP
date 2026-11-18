@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Security.Cryptography;
 using FinanceCore.Core.Packages;
 using FinanceCore.Data;
 
@@ -9,7 +10,7 @@ namespace FinanceCore.Platform.Cli;
 /// works on the database with the migration role (FINANCECORE_ADMIN_DB) and is not part of the API (ADR-213, 12, 13). Exit code 0 is done, 1 is a
 /// refusal with a stable code, 2 is a usage error.
 /// </summary>
-public sealed class PlatformCli(PlatformProvisioner provisioner, TextWriter output, MigrationRunner? migrations = null)
+public sealed class PlatformCli(PlatformProvisioner provisioner, TextWriter output, MigrationRunner? migrations = null, CountryPackageApplier? applier = null)
 {
     public const string Usage = """
         financecore-platform <command> [options]
@@ -23,9 +24,18 @@ public sealed class PlatformCli(PlatformProvisioner provisioner, TextWriter outp
           company activate --tenant <code> --company <code>
           rate add        --tenant <code> --from <DKK> --to <EUR> --date <yyyy-MM-dd> --rate <0.134> [--type SPOT|CLOSING]
           package list
+          package list-applied --tenant <code> --company <code>
+          package keygen  --out <prefix> --key-id <id>
+          package pack    --dir <country-packages/DK> --key <private.pem> --key-id <id> --out <directory>
+          package verify  --archive <DK-0.4.1.tar> --trust <trust-set.json> [--purpose PRODUCTION|REHEARSAL|TEST]
+          package apply-vat --tenant <code> --company <code> (--dir <country-packages> | --archive-dir <directory> --trust <trust-set.json>) --package <DK> --vat-id <DK12345678>
+                          --filing-frequency <MONTHLY|QUARTERLY|HALF_YEARLY> --vat-profile <1-4> --first-fiscal-year-start <yyyy-MM-dd>
+                          [--currency <DKK>] [--ec-list-frequency <MONTHLY|QUARTERLY>] [--correction-method <ADJUST_NEXT|SUPPLEMENTARY|REPLACEMENT>]
+                          [--include-special-codes] [--pro-rata-rate <pct>] [--estimate-rate <pct>] [--sector-rate <pct>] [--area-rate <pct>]
           db status       [--dir <db/migrations>]
           db migrate      [--dir <db/migrations>] [--dry-run]
 
+        A PRODUCTION tenant takes signed archives only (--archive-dir). pack and keygen make development keys and archives: a release key lives in a KMS or an HSM (20, 11).
         The database comes from FINANCECORE_ADMIN_DB (a postgresql:// URI or an Npgsql connection string).
         db migrate applies the numbered files of db/migrations that the database has not recorded, once each and in order. The file
         db/dist/finance-core-schema.sql is for an empty database only.
@@ -47,6 +57,11 @@ public sealed class PlatformCli(PlatformProvisioner provisioner, TextWriter outp
                 case "company activate": return await CompanyActivate(options, ct);
                 case "rate add": return await RateAdd(options, ct);
                 case "package list": return PackageList();
+                case "package keygen": return PackageKeygen(options);
+                case "package pack": return PackagePack(options);
+                case "package verify": return PackageVerify(options);
+                case "package apply-vat": return await PackageApplyVat(options, flags, ct);
+                case "package list-applied": return await PackageListApplied(options, ct);
                 case "db status": return await DbStatus(options, ct);
                 case "db migrate": return await DbMigrate(options, flags, ct);
                 default:
@@ -60,6 +75,11 @@ public sealed class PlatformCli(PlatformProvisioner provisioner, TextWriter outp
             output.WriteLine();
             output.WriteLine(Usage);
             return 2;
+        }
+        catch (PackageException e)
+        {
+            output.WriteLine($"refused: {e.Code}: {e.Message}");
+            return 1;
         }
         catch (ProvisioningException e)
         {
@@ -147,6 +167,80 @@ public sealed class PlatformCli(PlatformProvisioner provisioner, TextWriter outp
         await provisioner.AddExchangeRateAsync(tenantId, Opt(o, "type", "SPOT").ToUpperInvariant(), Req(o, "from").ToUpperInvariant(), Req(o, "to").ToUpperInvariant(),
             date, rate, ct);
         output.WriteLine($"rate {Req(o, "from").ToUpperInvariant()}/{Req(o, "to").ToUpperInvariant()} {rate.ToString(CultureInfo.InvariantCulture)} added for {Req(o, "date")}");
+        return 0;
+    }
+
+    private async Task<int> PackageApplyVat(Dictionary<string, string> o, HashSet<string> flags, CancellationToken ct)
+    {
+        CountryPackageApplier packages = applier ?? throw new UsageException("this command needs a database");
+        decimal? Pct(string name) => o.TryGetValue(name, out var v) ? decimal.TryParse(v, NumberStyles.Number, CultureInfo.InvariantCulture, out var d) ? d : throw new UsageException($"--{name} is a number") : null;
+        var inputs = new PackageInputs(Req(o, "vat-id"), Req(o, "filing-frequency").ToUpperInvariant(), o.TryGetValue("ec-list-frequency", out var ec) ? ec.ToUpperInvariant() : null,
+            Opt(o, "correction-method", "ADJUST_NEXT").ToUpperInvariant(), int.TryParse(Req(o, "vat-profile"), NumberStyles.None, CultureInfo.InvariantCulture, out int profile) ? profile : throw new UsageException("--vat-profile is 1 to 4"),
+            flags.Contains("include-special-codes"), ParseDate(Req(o, "first-fiscal-year-start"), "first-fiscal-year-start"), Opt(o, "currency", "DKK").ToUpperInvariant(),
+            Pct("pro-rata-rate"), Pct("estimate-rate"), Pct("sector-rate"), Pct("area-rate"));
+        Guid tenantId = await provisioner.RequireTenantAsync(Req(o, "tenant"), ct);
+        CompanyInfo company = await provisioner.RequireCompanyAsync(tenantId, Req(o, "company"), ct);
+        PackageApplyResult result = o.TryGetValue("archive-dir", out string? archives)
+            ? await packages.ApplyVatFromArchivesAsync(tenantId, company, archives, Req(o, "package"), TrustSet.Parse(File.ReadAllText(Req(o, "trust"))), inputs, ct)
+            : await packages.ApplyVatAsync(tenantId, company, Req(o, "dir"), Req(o, "package"), inputs, ct);
+        foreach (var group in result.Items.GroupBy(i => i.EntityType))
+            output.WriteLine($"{group.Key,-24} " + string.Join(", ", group.GroupBy(i => i.Action).Select(a => $"{a.Count()} {a.Key}")));
+        output.WriteLine($"package {result.PackageCode} {result.Version} ({result.State}) applied to {company.Code}: {result.Items.Count(i => i.Action == "CREATED")} created, {result.Items.Count(i => i.Action != "CREATED")} not created");
+        if (result.State != "RELEASED") output.WriteLine("the package is not RELEASED: no PRODUCTION tenant accepts it (18, 6)");
+        return 0;
+    }
+
+
+    private int PackageKeygen(Dictionary<string, string> o)
+    {
+        string prefix = Req(o, "out"), keyId = Req(o, "key-id");
+        foreach (string f in new[] { prefix + ".private.pem", prefix + ".public.pem" })
+            if (File.Exists(f)) throw new ProvisioningException("PACKAGE.INPUT_INVALID", $"{f} exists: a key is never overwritten");
+        var (privatePem, publicPem) = PackageSigning.GenerateKey();
+        File.WriteAllText(prefix + ".private.pem", privatePem);
+        File.WriteAllText(prefix + ".public.pem", publicPem);
+        output.WriteLine($"key {keyId} written to {prefix}.private.pem (keep it out of the repository) and {prefix}.public.pem");
+        output.WriteLine($"trust set entry: {{ \"key_id\": \"{keyId}\", \"role\": \"development\", \"public_key_pem\": <the content of the public file> }}");
+        return 0;
+    }
+
+    private int PackagePack(Dictionary<string, string> o)
+    {
+        string dir = Req(o, "dir"), keyId = Req(o, "key-id"), outDir = Req(o, "out");
+        if (!File.Exists(Path.Combine(dir, "package.json"))) throw new ProvisioningException("PACKAGE.NOT_FOUND", $"No package.json in {dir}");
+        using var key = ECDsa.Create();
+        key.ImportFromPem(File.ReadAllText(Req(o, "key")));
+        var files = PackageSigning.ReadDirectory(dir);
+        byte[] manifest = PackageSigning.BuildManifest(files);
+        byte[] archive = PackageSigning.CreateArchive(files, manifest);
+        using var package = System.Text.Json.JsonDocument.Parse(files["package.json"]);
+        string name = package.RootElement.GetProperty("package_code").GetString() + "-" + package.RootElement.GetProperty("package_version").GetString();
+        Directory.CreateDirectory(outDir);
+        File.WriteAllBytes(Path.Combine(outDir, name + ".tar"), archive);
+        File.WriteAllText(Path.Combine(outDir, name + ".sig.json"), PackageSigning.SignatureJson(manifest, key, keyId));
+        output.WriteLine($"{name}.tar ({archive.Length} bytes, {files.Count} files) signed with {keyId}, state {package.RootElement.GetProperty("state").GetString()}");
+        return 0;
+    }
+
+    private int PackageVerify(Dictionary<string, string> o)
+    {
+        string archive = Req(o, "archive"), purpose = Opt(o, "purpose", "TEST").ToUpperInvariant();
+        string sig = Path.ChangeExtension(archive, ".sig.json");
+        if (!File.Exists(sig)) throw new ProvisioningException("PACKAGE.SIGNATURE_INVALID", $"No signature file {sig}");
+        VerifiedPackage v = PackageSigning.Verify(File.ReadAllBytes(archive), File.ReadAllText(sig), TrustSet.Parse(File.ReadAllText(Req(o, "trust"))), purpose, DateOnly.FromDateTime(DateTime.UtcNow));
+        output.WriteLine($"{v.PackageCode} {v.PackageVersion} ({v.State}) verified for a {purpose} tenant: signed by {v.SignerKeyId}, {v.Files.Count} files, archive {v.ArchiveSha256[..16]}");
+        return 0;
+    }
+
+    private async Task<int> PackageListApplied(Dictionary<string, string> o, CancellationToken ct)
+    {
+        CountryPackageApplier packages = applier ?? throw new UsageException("this command needs a database");
+        Guid tenantId = await provisioner.RequireTenantAsync(Req(o, "tenant"), ct);
+        CompanyInfo company = await provisioner.RequireCompanyAsync(tenantId, Req(o, "company"), ct);
+        var applies = await packages.ListAppliedAsync(tenantId, company.CompanyId, ct);
+        if (applies.Count == 0) output.WriteLine("no package applied");
+        foreach (var a in applies)
+            output.WriteLine($"{a.AppliedAt:yyyy-MM-dd HH:mm}  {a.PackageCode} {a.PackageVersion} ({a.State})  {a.CreatedCount} created of {a.ItemCount} items  {a.AppliedBy}  ({a.AppliedId})");
         return 0;
     }
 

@@ -86,7 +86,7 @@ public static class CommandEndpoint
         }
 
         string source = http.Request.Headers["X-Source-System"].FirstOrDefault() is { Length: > 0 and <= 50 } s ? s : caller.ClientId ?? "API";
-        var context = new CommandContext(key, correlation, caller.Actor, caller.Permissions, source);
+        var context = new CommandContext(key, correlation, caller.Actor, caller.Permissions, source, caller.AppCode);
         CommandOutcome outcome = await registration.Handler(new CommandInvocation(tenantId, context, body, services), ct);
 
         if (outcome.Status == CommandStatus.Ok)

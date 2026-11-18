@@ -17,7 +17,7 @@ if (settings.IsLocalTestDouble)
 await using NpgsqlDataSource source = NpgsqlDataSource.Create(settings.AdminConnection);
 try
 {
-    return await new PlatformCli(new PlatformProvisioner(source), Console.Out, new MigrationRunner(source)).RunAsync(args);
+    return await new PlatformCli(new PlatformProvisioner(source), Console.Out, new MigrationRunner(source), new CountryPackageApplier(source)).RunAsync(args);
 }
 catch (NpgsqlException e)
 {

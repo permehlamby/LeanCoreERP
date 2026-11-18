@@ -4,7 +4,7 @@ using Npgsql;
 namespace FinanceCore.Data;
 
 /// <summary>The command roles of 20, section 3. Names are fixed, never built from input.</summary>
-public enum CommandRole { Read, Config, Period, Post, Clearing }
+public enum CommandRole { Read, Config, Period, Post, Clearing, Closing, Retention, Migration }
 
 /// <summary>
 /// One database transaction of one command (ADR-209, ADR-210): it names its command role and its tenant first,
@@ -34,18 +34,21 @@ public sealed class TenantTransaction : IAsyncDisposable
         CommandRole.Period => "cmd_period",
         CommandRole.Post => "cmd_post",
         CommandRole.Clearing => "cmd_clearing",
+        CommandRole.Closing => "cmd_closing",
+        CommandRole.Retention => "cmd_retention",
+        CommandRole.Migration => "cmd_migration",
         _ => throw new ArgumentOutOfRangeException(nameof(role))
     };
 
     /// <summary>Opens a connection and a transaction, names the role and the tenant, sets the lock timeout.</summary>
     public static async Task<TenantTransaction> BeginAsync(
-        NpgsqlDataSource source, Guid tenantId, CommandRole role, int lockTimeoutMs = 5000, CancellationToken ct = default)
+        NpgsqlDataSource source, Guid tenantId, CommandRole role, int lockTimeoutMs = 5000, CancellationToken ct = default, bool snapshot = false)
     {
         if (tenantId == Guid.Empty) throw new ArgumentException("A tenant is required", nameof(tenantId));
         NpgsqlConnection connection = await source.OpenConnectionAsync(ct);
         try
         {
-            NpgsqlTransaction transaction = await connection.BeginTransactionAsync(ct);
+            NpgsqlTransaction transaction = snapshot ? await connection.BeginTransactionAsync(System.Data.IsolationLevel.RepeatableRead, ct) : await connection.BeginTransactionAsync(ct);
             // The role name is from the enum above, so it cannot carry anything else. SET LOCAL ends with the transaction.
             await using (var cmd = new NpgsqlCommand($"set local role {RoleName(role)}", connection, transaction))
                 await cmd.ExecuteNonQueryAsync(ct);

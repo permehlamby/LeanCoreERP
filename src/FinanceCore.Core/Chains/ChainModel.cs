@@ -14,7 +14,7 @@ public sealed record ChainVerificationResult(
 public static class ChainRules
 {
     public static readonly IReadOnlyList<string> ChainTypes = ["LEDGER", "CLEARING", "PERIOD_EVENT", "VAT_RETURN", "STOCK", "FULFILMENT"];
-    public static readonly IReadOnlyList<string> BuiltChainTypes = ["LEDGER", "CLEARING", "PERIOD_EVENT"];
+    public static readonly IReadOnlyList<string> BuiltChainTypes = ["LEDGER", "CLEARING", "PERIOD_EVENT", "VAT_RETURN"];
 
     /// <summary>The kind of break (06, 7.4) that a check belongs to.</summary>
     public static string KindOf(string code) => code switch

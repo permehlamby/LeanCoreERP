@@ -1,4 +1,4 @@
--- Finance core schema, generated from db/migrations (0001_foundation.sql, 0002_platform_reference.sql, 0003_organisation.sql, 0004_calendar_and_numbers.sql, 0005_ledger.sql, 0006_security_and_integrity.sql, 0007_posting_period_lock.sql, 0008_migration_role_membership.sql, 0009_config_outbox_head.sql, 0010_document_lookup.sql, 0011_account_roles.sql, 0012_change_logs.sql, 0013_l2_guard.sql, 0014_open_items.sql, 0015_clearing.sql, 0016_open_item_status.sql, 0017_business_partner.sql, 0018_open_item_partner.sql, 0019_retention_rule.sql, 0020_document_legal_snapshot.sql, 0021_posting_reads_partner.sql, 0022_dimensions.sql, 0023_vat_configuration.sql).
+-- Finance core schema, generated from db/migrations (0001_foundation.sql, 0002_platform_reference.sql, 0003_organisation.sql, 0004_calendar_and_numbers.sql, 0005_ledger.sql, 0006_security_and_integrity.sql, 0007_posting_period_lock.sql, 0008_migration_role_membership.sql, 0009_config_outbox_head.sql, 0010_document_lookup.sql, 0011_account_roles.sql, 0012_change_logs.sql, 0013_l2_guard.sql, 0014_open_items.sql, 0015_clearing.sql, 0016_open_item_status.sql, 0017_business_partner.sql, 0018_open_item_partner.sql, 0019_retention_rule.sql, 0020_document_legal_snapshot.sql, 0021_posting_reads_partner.sql, 0022_dimensions.sql, 0023_vat_configuration.sql, 0024_vat_determination_and_tax_lines.sql, 0025_vat_deduction_keys.sql, 0026_vat_returns_and_settlement.sql, 0027_tax_evidence.sql, 0028_applied_config_package.sql).
 -- Do not edit: change the numbered files and run db/tools/build-all.mjs.
 -- For an EMPTY database only. An existing database is brought up to date with financecore-platform db migrate (F-IMPL-32).
 
@@ -2991,4 +2991,810 @@ create trigger tax_code_version_box_guard before insert on core.tax_code_version
 
 insert into platform.schema_migration (version, description)
 values ('0023', 'VAT configuration: EU membership, tax classes, return boxes, VAT registrations, tax codes with versions and boxes')
+on conflict (version) do nothing;
+
+-- ==================== 0024_vat_determination_and_tax_lines.sql ====================
+-- 0024 VAT determination and tax lines (07, 8.4, 9.4, 02, 7.1 and 7.2, 08, 6.7): the VAT registrations of a partner, the rules that determine a tax code
+-- with their alternatives, and the tax lines of a document with the base lines they cover.
+-- Written by the commands of 07, 11.1 (write.config for the rules and the partner registrations) and by the posting commands (the tax lines).
+-- Not in this migration: the evidence rows of a tax line (08, 5.3), the deduction keys (07, 8.6), the return snapshots (08, 6). The columns of a tax line for
+-- partial deduction exist (hash_version 2 hashes them) and hold the values of "no partial deduction" until that is built.
+
+-- ---------------------------------------------------------------------------------------------------------
+-- partner_tax_registration (07, 9.4). A surrogate id is added to the key of the spec, so that the commands of a master table address a row by one id.
+-- ---------------------------------------------------------------------------------------------------------
+create table if not exists core.partner_tax_registration (
+    tenant_id                    uuid not null references platform.tenant (tenant_id),
+    partner_id                   uuid not null,
+    country_code                 char(2) not null references platform.ref_country (country_code),
+    valid_from                   date not null,
+    partner_tax_registration_id  uuid not null default gen_random_uuid(),
+    vat_status                   core.code not null check (vat_status in ('REGISTERED', 'NOT_REGISTERED')),
+    vat_id                       varchar(30),
+    valid_to                     date,
+    active                       boolean not null default true,
+    row_version                  bigint not null default 1,
+    created_at                   timestamptz not null default now(),
+    created_by                   varchar(100) not null,
+    updated_at                   timestamptz not null default now(),
+    updated_by                   varchar(100) not null,
+    primary key (tenant_id, partner_id, country_code, valid_from),
+    unique (tenant_id, partner_tax_registration_id),
+    foreign key (tenant_id, partner_id) references core.business_partner (tenant_id, partner_id),
+    check (valid_to is null or valid_to >= valid_from)
+);
+
+-- ---------------------------------------------------------------------------------------------------------
+-- tax_determination_rule (07, 8.4, V) and its alternatives. A rule is a rule_id with versions. Every key column is nullable, null means any.
+-- ---------------------------------------------------------------------------------------------------------
+create table if not exists core.tax_determination_rule (
+    tenant_id            uuid not null,
+    company_id           uuid not null,
+    rule_id              uuid not null,
+    valid_from           date not null,
+    valid_to             date,
+    transaction_type     core.code check (transaction_type in ('SALES', 'PURCHASE')),
+    origin_country       char(2) references platform.ref_country (country_code),
+    destination_country  char(2) references platform.ref_country (country_code),
+    origin_eu            boolean,
+    destination_eu       boolean,
+    partner_vat_status   core.code check (partner_vat_status in ('REGISTERED', 'NOT_REGISTERED')),
+    account_id           uuid,
+    tax_class_id         uuid,
+    priority             smallint not null check (priority >= 0),
+    tax_code_id          uuid not null,
+    created_at           timestamptz not null default now(),
+    created_by           varchar(100) not null,
+    primary key (tenant_id, company_id, rule_id, valid_from),
+    foreign key (tenant_id, company_id) references core.company (tenant_id, company_id),
+    foreign key (tenant_id, company_id, account_id) references core.gl_account (tenant_id, company_id, account_id),
+    foreign key (tenant_id, tax_class_id) references core.tax_class (tenant_id, tax_class_id),
+    foreign key (tenant_id, company_id, tax_code_id) references core.tax_code (tenant_id, company_id, tax_code_id),
+    check (valid_to is null or valid_to >= valid_from)
+);
+create index if not exists tdr_company_validity on core.tax_determination_rule (tenant_id, company_id, valid_from);
+
+create table if not exists core.tax_determination_alternative (
+    tenant_id        uuid not null,
+    company_id       uuid not null,
+    rule_id          uuid not null,
+    valid_from       date not null,
+    alt_tax_code_id  uuid not null,
+    primary key (tenant_id, company_id, rule_id, valid_from, alt_tax_code_id),
+    foreign key (tenant_id, company_id, rule_id, valid_from) references core.tax_determination_rule (tenant_id, company_id, rule_id, valid_from),
+    foreign key (tenant_id, company_id, alt_tax_code_id) references core.tax_code (tenant_id, company_id, tax_code_id)
+);
+
+-- ---------------------------------------------------------------------------------------------------------
+-- journal_line_tax (02, 7.1) and journal_line_tax_base (02, 7.2): L1 rows, written with the document, never changed
+-- ---------------------------------------------------------------------------------------------------------
+create table if not exists core.journal_line_tax (
+    tenant_id                uuid not null,
+    company_id               uuid not null,
+    document_id              uuid not null,
+    line_no                  int not null,
+    tax_code_id              uuid not null,
+    tax_code_version_id      uuid not null,
+    tax_type                 core.code not null check (tax_type in ('OUTPUT', 'INPUT', 'EXEMPT', 'ZERO_RATED')),
+    tax_rate                 core.rate not null check (tax_rate >= 0 and tax_rate <= 100),
+    base_amount_tc           core.amt not null,
+    base_amount_lc           core.amt not null,
+    base_amount_gc           core.amt not null,
+    base_amount_rc           core.amt,
+    determined_tax_code_id   uuid not null,
+    tax_class_id             uuid,
+    origin_country           char(2) not null,
+    destination_country      char(2) not null,
+    partner_vat_status       core.code check (partner_vat_status in ('REGISTERED', 'NOT_REGISTERED')),
+    tax_date                 date not null,
+    vat_currency             char(3) not null references platform.ref_currency (currency_code),
+    vat_base_amount          core.amt not null,
+    vat_tax_amount           core.amt not null,
+    vat_rate                 core.rate not null check (vat_rate > 0),
+    vat_rate_date            date,
+    is_override              boolean not null,
+    tax_amount_supplied_tc   core.amt,
+    rounding_mode            core.code not null check (rounding_mode in ('PER_DOCUMENT', 'PER_LINE')),
+    origin_eu                boolean not null,
+    destination_eu           boolean not null,
+    deductible_pct           core.rate not null check (deductible_pct >= 0 and deductible_pct <= 100),
+    deduction_key            core.code,
+    deduction_key_rate       core.rate,
+    deduction_share          core.rate not null check (deduction_share >= 0 and deduction_share <= 100),
+    deduction_cap_amount_tc  core.amt,
+    gross_tax_amount_tc      core.amt not null,
+    primary key (tenant_id, company_id, document_id, line_no),
+    foreign key (tenant_id, company_id, document_id, line_no) references core.journal_line (tenant_id, company_id, document_id, line_no),
+    foreign key (tenant_id, tax_code_version_id) references core.tax_code_version (tenant_id, tax_code_version_id),
+    foreign key (tenant_id, company_id, tax_code_id) references core.tax_code (tenant_id, company_id, tax_code_id),
+    foreign key (tenant_id, company_id, determined_tax_code_id) references core.tax_code (tenant_id, company_id, tax_code_id)
+);
+create index if not exists jlt_tax_date on core.journal_line_tax (tenant_id, company_id, tax_date);
+
+create table if not exists core.journal_line_tax_base (
+    tenant_id              uuid not null,
+    company_id             uuid not null,
+    document_id            uuid not null,
+    tax_line_no            int not null,
+    base_line_no           int not null,
+    base_amount_tc         core.amt not null,
+    nondeductible_tax_tc   core.amt not null default 0,
+    nondeductible_line_no  int,
+    primary key (tenant_id, company_id, document_id, tax_line_no, base_line_no),
+    foreign key (tenant_id, company_id, document_id, tax_line_no) references core.journal_line_tax (tenant_id, company_id, document_id, line_no),
+    foreign key (tenant_id, company_id, document_id, base_line_no) references core.journal_line (tenant_id, company_id, document_id, line_no)
+);
+
+-- ---------------------------------------------------------------------------------------------------------
+-- Security: forced RLS, read for the command roles, never delete. The rules and the partner registrations are written by the configuration role,
+-- the tax lines by the posting role.
+-- ---------------------------------------------------------------------------------------------------------
+do $$
+declare t text;
+begin
+    foreach t in array array['partner_tax_registration', 'tax_determination_rule', 'tax_determination_alternative', 'journal_line_tax', 'journal_line_tax_base'] loop
+        execute format('alter table core.%I enable row level security', t);
+        execute format('alter table core.%I force row level security', t);
+        if not exists (select 1 from pg_policies where schemaname = 'core' and tablename = t and policyname = 'tenant_isolation') then
+            execute format('create policy tenant_isolation on core.%I using (tenant_id = core.current_tenant_id()) with check (tenant_id = core.current_tenant_id())', t);
+        end if;
+        execute format('revoke all on core.%I from public', t);
+        execute format('drop trigger if exists %I on core.%I', t || '_no_delete', t);
+        execute format('create trigger %I before delete on core.%I for each row execute function core.reject_delete()', t || '_no_delete', t);
+        execute format('drop trigger if exists %I on core.%I', t || '_no_truncate', t);
+        execute format('create trigger %I before truncate on core.%I for each statement execute function core.reject_delete()', t || '_no_truncate', t);
+    end loop;
+    -- versions of a rule and the rows of a tax line are insert-only
+    foreach t in array array['tax_determination_rule', 'tax_determination_alternative', 'journal_line_tax', 'journal_line_tax_base'] loop
+        execute format('drop trigger if exists %I on core.%I', t || '_append_only', t);
+        execute format('create trigger %I before update on core.%I for each row execute function core.reject_change()', t || '_append_only', t);
+    end loop;
+end $$;
+grant select on core.partner_tax_registration, core.tax_determination_rule, core.tax_determination_alternative, core.journal_line_tax, core.journal_line_tax_base
+      to cmd_read, cmd_config, cmd_period, cmd_post, cmd_clearing, cmd_retention;
+grant insert on core.partner_tax_registration, core.tax_determination_rule, core.tax_determination_alternative to cmd_config;
+grant update (vat_status, vat_id, valid_to, active, row_version, updated_at, updated_by) on core.partner_tax_registration to cmd_config;
+grant insert on core.journal_line_tax, core.journal_line_tax_base to cmd_post;
+
+-- ---------------------------------------------------------------------------------------------------------
+-- Guards
+-- ---------------------------------------------------------------------------------------------------------
+-- a rule version starts after the latest one of its rule, and the code is a code of the company (07, 8.3)
+create or replace function core.guard_tax_determination_rule() returns trigger language plpgsql as $$
+declare v_latest date;
+begin
+    select max(valid_from) into v_latest from core.tax_determination_rule
+     where tenant_id = new.tenant_id and company_id = new.company_id and rule_id = new.rule_id;
+    if v_latest is not null and new.valid_from <= v_latest then
+        raise exception 'CONFIG.VALID_FROM_NOT_LATER: a version starts after the latest one (%)', v_latest using errcode = '23514';
+    end if;
+    return new;
+end $$;
+drop trigger if exists tax_determination_rule_guard on core.tax_determination_rule;
+create trigger tax_determination_rule_guard before insert on core.tax_determination_rule
+    for each row execute function core.guard_tax_determination_rule();
+
+-- a partner is registered for VAT in a country once at a time, and the VAT id of a private person is not kept here (07, 9.4, Q3)
+create or replace function core.guard_partner_tax_registration() returns trigger language plpgsql as $$
+begin
+    if new.vat_id is not null and exists (select 1 from core.business_partner p where p.tenant_id = new.tenant_id and p.partner_id = new.partner_id and p.partner_kind = 'PERSON') then
+        raise exception 'SCHEMA.INVALID_VALUE: the VAT id of a private person is personal data and is not kept in this table' using errcode = '23514';
+    end if;
+    return new;
+end $$;
+drop trigger if exists partner_tax_registration_guard on core.partner_tax_registration;
+create trigger partner_tax_registration_guard before insert or update on core.partner_tax_registration
+    for each row execute function core.guard_partner_tax_registration();
+
+-- a tax line is the detail of a TAX line, and its base rows lie in the same document (02, 7.1 and 7.2)
+create or replace function core.guard_journal_line_tax() returns trigger language plpgsql as $$
+begin
+    if not exists (select 1 from core.journal_line l where l.tenant_id = new.tenant_id and l.company_id = new.company_id and l.document_id = new.document_id
+                      and l.line_no = new.line_no and l.line_type = 'TAX') then
+        raise exception 'journal_line_tax: the line % is not a TAX line', new.line_no using errcode = '23514';
+    end if;
+    return new;
+end $$;
+drop trigger if exists journal_line_tax_guard on core.journal_line_tax;
+create trigger journal_line_tax_guard before insert on core.journal_line_tax
+    for each row execute function core.guard_journal_line_tax();
+
+-- every TAX line has its detail, checked at commit (the line is inserted before its detail)
+create or replace function core.check_tax_line_has_detail() returns trigger language plpgsql as $$
+begin
+    if new.line_type = 'TAX' and not exists (select 1 from core.journal_line_tax t where t.tenant_id = new.tenant_id and t.company_id = new.company_id
+                                                and t.document_id = new.document_id and t.line_no = new.line_no) then
+        raise exception 'journal_line: the TAX line % of the document has no tax detail', new.line_no using errcode = '23514';
+    end if;
+    return null;
+end $$;
+drop trigger if exists journal_line_tax_detail_check on core.journal_line;
+create constraint trigger journal_line_tax_detail_check after insert on core.journal_line
+    deferrable initially deferred for each row execute function core.check_tax_line_has_detail();
+
+-- an account that tax codes use accepts only tax lines (08, 6.7). The reversal of such a document carries the line type TAX too. The document types of the
+-- VAT settlement are added when they exist.
+create or replace function core.guard_tax_account_posting() returns trigger language plpgsql as $$
+begin
+    if new.line_type <> 'TAX' and exists (select 1 from core.gl_account a where a.tenant_id = new.tenant_id and a.company_id = new.company_id
+                                             and a.account_id = new.account_id and a.tax_account) then
+        raise exception 'ACCOUNT_RULE.TAX_ACCOUNT_DIRECT_POSTING: a tax account accepts only tax lines' using errcode = '23514';
+    end if;
+    return new;
+end $$;
+drop trigger if exists journal_line_tax_account_guard on core.journal_line;
+create trigger journal_line_tax_account_guard before insert on core.journal_line
+    for each row execute function core.guard_tax_account_posting();
+
+insert into platform.schema_migration (version, description)
+values ('0024', 'VAT determination rules, partner tax registrations and the tax lines of a document')
+on conflict (version) do nothing;
+
+-- ==================== 0025_vat_deduction_keys.sql ====================
+-- 0025 Deduction keys and rates (07, 8.6, 19, 3.2): a deduction key is a named variable rate of a VAT registration (pro rata, estimate, sector, area), a rate is
+-- a version of it. The core never computes a rate, it is loaded like an exchange rate. A tax code version that names a key needs a key of its registration.
+-- The columns of the split of an input tax line exist since 0024 (journal_line_tax, journal_line_tax_base) and are written from this migration on.
+
+-- ---------------------------------------------------------------------------------------------------------
+-- vat_deduction_key (M). A surrogate id is added to the key of the spec, so that the commands of a master table address a row by one id.
+-- ---------------------------------------------------------------------------------------------------------
+create table if not exists core.vat_deduction_key (
+    tenant_id          uuid not null references platform.tenant (tenant_id),
+    company_id         uuid not null,
+    registration_id    uuid not null,
+    key_code           core.code not null,
+    deduction_key_id   uuid not null default gen_random_uuid(),
+    kind               core.code not null check (kind in ('PRO_RATA', 'ESTIMATE', 'SECTOR', 'AREA')),   -- IAP once a rate of the key has been used
+    description        varchar(200),
+    active             boolean not null default true,
+    row_version        bigint not null default 1,
+    created_at         timestamptz not null default now(),
+    created_by         varchar(100) not null,
+    updated_at         timestamptz not null default now(),
+    updated_by         varchar(100) not null,
+    primary key (tenant_id, company_id, registration_id, key_code),
+    unique (tenant_id, deduction_key_id),
+    foreign key (tenant_id, company_id, registration_id) references core.company_vat_registration (tenant_id, company_id, registration_id)
+);
+
+-- ---------------------------------------------------------------------------------------------------------
+-- vat_deduction_rate (V, insert only)
+-- ---------------------------------------------------------------------------------------------------------
+create table if not exists core.vat_deduction_rate (
+    tenant_id        uuid not null,
+    company_id       uuid not null,
+    registration_id  uuid not null,
+    key_code         core.code not null,
+    valid_from       date not null,
+    valid_to         date,
+    rate_pct         core.rate not null check (rate_pct >= 0 and rate_pct <= 100),
+    rate_status      core.code not null check (rate_status in ('PROVISIONAL', 'FINAL')),
+    basis_note       varchar(200),
+    created_at       timestamptz not null default now(),
+    created_by       varchar(100) not null,
+    primary key (tenant_id, company_id, registration_id, key_code, valid_from),
+    foreign key (tenant_id, company_id, registration_id, key_code) references core.vat_deduction_key (tenant_id, company_id, registration_id, key_code),
+    check (valid_to is null or valid_to >= valid_from)
+);
+
+-- the non-deductible part of a base line is posted as a line of its own: the link is a key (02, 7.2)
+do $$ begin
+    if not exists (select 1 from pg_constraint where conname = 'journal_line_tax_base_nondeductible_fkey') then
+        alter table core.journal_line_tax_base add constraint journal_line_tax_base_nondeductible_fkey
+            foreign key (tenant_id, company_id, document_id, nondeductible_line_no) references core.journal_line (tenant_id, company_id, document_id, line_no);
+    end if;
+end $$;
+
+-- ---------------------------------------------------------------------------------------------------------
+-- Security
+-- ---------------------------------------------------------------------------------------------------------
+do $$
+declare t text;
+begin
+    foreach t in array array['vat_deduction_key', 'vat_deduction_rate'] loop
+        execute format('alter table core.%I enable row level security', t);
+        execute format('alter table core.%I force row level security', t);
+        if not exists (select 1 from pg_policies where schemaname = 'core' and tablename = t and policyname = 'tenant_isolation') then
+            execute format('create policy tenant_isolation on core.%I using (tenant_id = core.current_tenant_id()) with check (tenant_id = core.current_tenant_id())', t);
+        end if;
+        execute format('revoke all on core.%I from public', t);
+        execute format('drop trigger if exists %I on core.%I', t || '_no_delete', t);
+        execute format('create trigger %I before delete on core.%I for each row execute function core.reject_delete()', t || '_no_delete', t);
+        execute format('drop trigger if exists %I on core.%I', t || '_no_truncate', t);
+        execute format('create trigger %I before truncate on core.%I for each statement execute function core.reject_delete()', t || '_no_truncate', t);
+    end loop;
+end $$;
+drop trigger if exists vat_deduction_rate_append_only on core.vat_deduction_rate;
+create trigger vat_deduction_rate_append_only before update on core.vat_deduction_rate for each row execute function core.reject_change();
+grant select on core.vat_deduction_key, core.vat_deduction_rate to cmd_read, cmd_config, cmd_period, cmd_post, cmd_clearing, cmd_retention;
+grant insert on core.vat_deduction_key, core.vat_deduction_rate to cmd_config;
+grant update (kind, description, active, row_version, updated_at, updated_by) on core.vat_deduction_key to cmd_config;
+
+-- ---------------------------------------------------------------------------------------------------------
+-- Guards
+-- ---------------------------------------------------------------------------------------------------------
+-- the kind of a key is fixed once a rate of it exists (07, 8.6)
+create or replace function core.guard_vat_deduction_key() returns trigger language plpgsql as $$
+begin
+    if new.kind <> old.kind and exists (select 1 from core.vat_deduction_rate r where r.tenant_id = old.tenant_id and r.company_id = old.company_id
+                                           and r.registration_id = old.registration_id and r.key_code = old.key_code) then
+        raise exception 'CONFIG.DEDUCTION_KEY_REFERENCED: the kind of a key that has a rate cannot change' using errcode = '23000';
+    end if;
+    return new;
+end $$;
+drop trigger if exists vat_deduction_key_guard on core.vat_deduction_key;
+create trigger vat_deduction_key_guard before update on core.vat_deduction_key for each row execute function core.guard_vat_deduction_key();
+
+-- a rate version starts after the latest one of its key
+create or replace function core.guard_vat_deduction_rate() returns trigger language plpgsql as $$
+declare v_latest date;
+begin
+    select max(valid_from) into v_latest from core.vat_deduction_rate
+     where tenant_id = new.tenant_id and company_id = new.company_id and registration_id = new.registration_id and key_code = new.key_code;
+    if v_latest is not null and new.valid_from <= v_latest then
+        raise exception 'CONFIG.VALID_FROM_NOT_LATER: a rate starts after the latest one (%)', v_latest using errcode = '23514';
+    end if;
+    return new;
+end $$;
+drop trigger if exists vat_deduction_rate_guard on core.vat_deduction_rate;
+create trigger vat_deduction_rate_guard before insert on core.vat_deduction_rate for each row execute function core.guard_vat_deduction_rate();
+
+-- a version of a tax code that names a key needs the key of the registration of the code (07, 8.3, 8.6). The rest of the guard is that of 0023.
+create or replace function core.guard_tax_code_version() returns trigger language plpgsql security definer set search_path = pg_catalog, core as $$
+declare
+    v_type text;
+    v_registration uuid;
+    v_latest date;
+    a uuid;
+begin
+    select tax_type, vat_registration_id into v_type, v_registration from core.tax_code where tenant_id = new.tenant_id and company_id = new.company_id and tax_code_id = new.tax_code_id;
+    if v_type in ('EXEMPT', 'ZERO_RATED') and new.rate <> 0 then
+        raise exception 'SCHEMA.INVALID_VALUE: the rate of an exempt or zero-rated code is 0' using errcode = '23514';
+    end if;
+    if v_type <> 'INPUT' and (new.deductible_pct <> 100 or new.deduction_key is not null or new.deduction_cap <> 'NONE') then
+        raise exception 'CONFIG.DEDUCTION_ON_NON_INPUT_CODE: only an input code has a deductible share, a deduction key or a cap' using errcode = '23514';
+    end if;
+    if new.deduction_key is not null and not exists (select 1 from core.vat_deduction_key k where k.tenant_id = new.tenant_id and k.company_id = new.company_id
+                                                        and k.registration_id = v_registration and k.key_code = new.deduction_key and k.active) then
+        raise exception 'CONFIG.DEDUCTION_KEY_UNKNOWN: the registration of the code has no active key %', new.deduction_key using errcode = '23514';
+    end if;
+    select max(valid_from) into v_latest from core.tax_code_version
+     where tenant_id = new.tenant_id and company_id = new.company_id and tax_code_id = new.tax_code_id;
+    if v_latest is not null and new.valid_from <= v_latest then
+        raise exception 'CONFIG.VALID_FROM_NOT_LATER: a version starts after the latest one (%)', v_latest using errcode = '23514';
+    end if;
+    foreach a in array array[new.vat_account_id, new.reverse_charge_account_id] loop
+        continue when a is null;
+        if not exists (select 1 from core.gl_account g where g.tenant_id = new.tenant_id and g.company_id = new.company_id and g.account_id = a
+                          and g.account_type in ('ASSET', 'LIABILITY', 'EQUITY')) then
+            raise exception 'CONFIG.INVALID_REFERENCE: a VAT account is a balance sheet account' using errcode = '23514';
+        end if;
+        update core.gl_account set tax_account = true
+         where tenant_id = new.tenant_id and company_id = new.company_id and account_id = a and not tax_account;
+    end loop;
+    return new;
+end $$;
+
+insert into platform.schema_migration (version, description)
+values ('0025', 'VAT deduction keys and rates')
+on conflict (version) do nothing;
+
+-- ==================== 0026_vat_returns_and_settlement.sql ====================
+-- 0026 VAT returns and settlement (08, 6.3 to 6.7, 7.1 to 7.3a): the frozen snapshot of a return with its lines and tax lines, the VAT_RETURN
+-- chain, the line type of a settlement line, and the registration of the role VAT_SETTLEMENT.
+-- Written by the posting role (cmd_post): preparing a return, recording its filing, posting the VAT_SETTLE document and reversing it.
+-- Not in this migration: the EC list, OSS and IOSS rows (the table takes them, the commands build STANDARD only), the legacy tax summary of a
+-- migration (13, 3.6) and the tax evidence (5.3).
+
+-- ---------------------------------------------------------------------------------------------------------
+-- A settlement line is a line of its own type (08, 6.7, 7.3). Only a VAT_SETTLE document has such lines and has nothing else.
+-- ---------------------------------------------------------------------------------------------------------
+do $$
+declare c record;
+begin
+    for c in select conname from pg_constraint
+              where conrelid = 'core.journal_line'::regclass and contype = 'c' and pg_get_constraintdef(oid) like '%line_type%' loop
+        execute format('alter table core.journal_line drop constraint %I', c.conname);
+    end loop;
+    alter table core.journal_line add constraint journal_line_line_type_check check (line_type in (
+        'BASE', 'TAX', 'TAX_NONDEDUCTIBLE', 'ROUNDING', 'FX_REALISED', 'FX_UNREALISED', 'REVAL_ADJUSTMENT',
+        'TAX_ROUNDING', 'CLOSING', 'OPENING', 'CLEARING_DIFF', 'HISTORY_PL', 'VAT_SETTLEMENT'));
+end $$;
+
+create or replace function core.guard_tax_account_posting() returns trigger language plpgsql as $$
+begin
+    if new.line_type not in ('TAX', 'VAT_SETTLEMENT') and exists (select 1 from core.gl_account a where a.tenant_id = new.tenant_id and a.company_id = new.company_id
+                                             and a.account_id = new.account_id and a.tax_account) then
+        raise exception 'ACCOUNT_RULE.TAX_ACCOUNT_DIRECT_POSTING: a tax account accepts only tax lines and settlement lines' using errcode = '23514';
+    end if;
+    return new;
+end $$;
+
+create or replace function core.guard_vat_settlement_line() returns trigger language plpgsql as $$
+declare v_type text;
+begin
+    select document_type into v_type from core.journal_document where tenant_id = new.tenant_id and company_id = new.company_id and document_id = new.document_id;
+    if (new.line_type = 'VAT_SETTLEMENT') <> (v_type = 'VAT_SETTLE') then
+        raise exception 'journal_line: a VAT_SETTLEMENT line belongs to a VAT_SETTLE document and a VAT_SETTLE document has no other line' using errcode = '23514';
+    end if;
+    return new;
+end $$;
+drop trigger if exists journal_line_vat_settlement_guard on core.journal_line;
+create trigger journal_line_vat_settlement_guard before insert on core.journal_line
+    for each row execute function core.guard_vat_settlement_line();
+
+-- The role VAT_SETTLEMENT is per VAT registration (07, 6.3): now that the registrations exist the column has its key
+do $$ begin
+    if not exists (select 1 from pg_constraint where conname = 'account_role_assignment_vat_registration_fkey') then
+        alter table core.account_role_assignment add constraint account_role_assignment_vat_registration_fkey
+            foreign key (tenant_id, company_id, vat_registration_id) references core.company_vat_registration (tenant_id, company_id, registration_id);
+    end if;
+end $$;
+
+-- the account of a VAT_SETTLEMENT role becomes a tax account (08, 6.7): it takes only tax lines and settlement lines from now on
+create or replace function core.guard_vat_settlement_role() returns trigger language plpgsql as $$
+begin
+    if new.role_code = 'VAT_SETTLEMENT' then
+        if new.vat_registration_id is null then
+            raise exception 'CONFIG.ROLE_ACCOUNT_RULE_VIOLATED: VAT_SETTLEMENT is per VAT registration (VAT_REGISTRATION)' using errcode = '23514';
+        end if;
+        update core.gl_account set tax_account = true
+         where tenant_id = new.tenant_id and company_id = new.company_id and account_id = new.account_id and not tax_account;
+    end if;
+    return new;
+end $$;
+drop trigger if exists account_role_assignment_vat_settlement on core.account_role_assignment;
+create trigger account_role_assignment_vat_settlement before insert on core.account_role_assignment
+    for each row execute function core.guard_vat_settlement_role();
+
+-- ---------------------------------------------------------------------------------------------------------
+-- vat_return (08, 6.3): L1 columns never change, the S columns are set once (filing) or while the return lives (settlement, replacement)
+-- ---------------------------------------------------------------------------------------------------------
+create table if not exists core.vat_return (
+    tenant_id                  uuid not null,
+    company_id                 uuid not null,
+    return_id                  uuid not null default gen_random_uuid(),
+    registration_id            uuid not null,
+    return_type                core.code not null check (return_type in ('STANDARD', 'EC_LIST', 'OSS', 'IOSS')),
+    fiscal_year                int not null,
+    vat_period_no              smallint not null check (vat_period_no >= 1),
+    period_start_date          date not null,
+    period_end_date            date not null,
+    return_kind                core.code not null check (return_kind in ('ORIGINAL', 'SUPPLEMENTARY', 'REPLACEMENT')),
+    return_seq                 int not null check (return_seq >= 1),
+    replaces_return_id         uuid,
+    superseded_by_return_id    uuid,                                  -- S
+    prepared_at                timestamptz not null,
+    prepared_by                varchar(100) not null,
+    correlation_id             varchar(100) not null,
+    idempotency_key            varchar(100) not null,
+    tax_line_count             int not null check (tax_line_count >= 0),
+    late_line_count            int not null check (late_line_count >= 0),
+    snapshot_digest            core.hash32 not null,
+    chain_seq                  bigint not null check (chain_seq >= 1),
+    prev_hash                  core.hash32 not null,
+    row_hash                   core.hash32 not null,
+    hash_version               smallint not null check (hash_version = 2),
+    filing_reference           varchar(100),                          -- S
+    filed_at                   timestamptz,                           -- S
+    filed_by                   varchar(100),                          -- S
+    settled_document_id        uuid,                                  -- S
+    primary key (tenant_id, company_id, return_id),
+    unique (tenant_id, company_id, registration_id, return_type, fiscal_year, vat_period_no, return_seq),
+    unique (tenant_id, idempotency_key),
+    unique (tenant_id, company_id, chain_seq),
+    foreign key (tenant_id, company_id, registration_id) references core.company_vat_registration (tenant_id, company_id, registration_id),
+    foreign key (tenant_id, company_id, replaces_return_id) references core.vat_return (tenant_id, company_id, return_id),
+    foreign key (tenant_id, company_id, superseded_by_return_id) references core.vat_return (tenant_id, company_id, return_id),
+    foreign key (tenant_id, company_id, settled_document_id) references core.journal_document (tenant_id, company_id, document_id),
+    check (period_end_date >= period_start_date),
+    check ((return_kind = 'REPLACEMENT') = (replaces_return_id is not null)),
+    check ((return_kind = 'ORIGINAL') = (return_seq = 1)),
+    check ((filing_reference is null) = (filed_at is null) and (filed_at is null) = (filed_by is null))
+);
+create index if not exists vat_return_period on core.vat_return (tenant_id, company_id, registration_id, return_type, fiscal_year, vat_period_no);
+
+create table if not exists core.vat_return_line (
+    tenant_id           uuid not null,
+    company_id          uuid not null,
+    return_id           uuid not null,
+    line_no             int not null check (line_no >= 1),
+    row_type            core.code not null check (row_type in ('BOX', 'EC_LIST', 'OSS')),
+    box_code            core.code,
+    partner_id          uuid,
+    partner_vat_id      varchar(30),
+    country_code        char(2),
+    category            core.code check (category in ('GOODS', 'SERVICES', 'TRIANGULATION')),
+    rate                core.rate,
+    supply_kind         core.code check (supply_kind in ('GOODS', 'SERVICES')),
+    currency_code       char(3) not null references platform.ref_currency (currency_code),
+    base_amount         core.amt not null,
+    tax_amount          core.amt not null,
+    line_count          int not null check (line_count >= 1),
+    legacy_base_amount  core.amt not null default 0,
+    legacy_tax_amount   core.amt not null default 0,
+    primary key (tenant_id, company_id, return_id, line_no),
+    foreign key (tenant_id, company_id, return_id) references core.vat_return (tenant_id, company_id, return_id),
+    check (row_type <> 'BOX' or (box_code is not null and partner_id is null and partner_vat_id is null and country_code is null and category is null and rate is null and supply_kind is null)),
+    check (row_type <> 'EC_LIST' or (box_code is null and partner_id is not null and country_code is not null and category is not null and rate is null and supply_kind is null)),
+    check (row_type <> 'OSS' or (box_code is null and partner_id is null and partner_vat_id is null and country_code is not null and category is null and rate is not null and supply_kind is not null))
+);
+
+create table if not exists core.vat_return_tax_line (
+    tenant_id            uuid not null,
+    company_id           uuid not null,
+    return_id            uuid not null,
+    document_id          uuid not null,
+    line_no              int not null,
+    registration_id      uuid not null,
+    return_type          core.code not null,
+    tax_date             date not null,
+    is_late              boolean not null,
+    tax_code_version_id  uuid not null,
+    vat_base_amount      core.amt not null,
+    vat_tax_amount       core.amt not null,
+    is_current           boolean not null,                              -- S
+    primary key (tenant_id, company_id, return_id, document_id, line_no),
+    foreign key (tenant_id, company_id, return_id) references core.vat_return (tenant_id, company_id, return_id),
+    foreign key (tenant_id, company_id, document_id, line_no) references core.journal_line_tax (tenant_id, company_id, document_id, line_no),
+    foreign key (tenant_id, tax_code_version_id) references core.tax_code_version (tenant_id, tax_code_version_id)
+);
+-- A tax line is currently reported at most once per registration and return type (08, 6.5)
+create unique index if not exists vat_return_tax_line_current on core.vat_return_tax_line
+    (tenant_id, company_id, registration_id, return_type, document_id, line_no) where is_current;
+
+-- ---------------------------------------------------------------------------------------------------------
+-- Security: forced RLS, read for the command roles, written by the posting role, never deleted
+-- ---------------------------------------------------------------------------------------------------------
+do $$
+declare t text;
+begin
+    foreach t in array array['vat_return', 'vat_return_line', 'vat_return_tax_line'] loop
+        execute format('alter table core.%I enable row level security', t);
+        execute format('alter table core.%I force row level security', t);
+        if not exists (select 1 from pg_policies where schemaname = 'core' and tablename = t and policyname = 'tenant_isolation') then
+            execute format('create policy tenant_isolation on core.%I using (tenant_id = core.current_tenant_id()) with check (tenant_id = core.current_tenant_id())', t);
+        end if;
+        execute format('revoke all on core.%I from public', t);
+        execute format('grant select on core.%I to cmd_read, cmd_config, cmd_period, cmd_post, cmd_clearing', t);
+        execute format('drop trigger if exists %I on core.%I', t || '_no_delete', t);
+        execute format('create trigger %I before delete on core.%I for each row execute function core.reject_delete()', t || '_no_delete', t);
+        execute format('drop trigger if exists %I on core.%I', t || '_no_truncate', t);
+        execute format('create trigger %I before truncate on core.%I for each statement execute function core.reject_delete()', t || '_no_truncate', t);
+    end loop;
+end $$;
+grant insert on core.vat_return, core.vat_return_line, core.vat_return_tax_line to cmd_post;
+grant update (superseded_by_return_id, filing_reference, filed_at, filed_by, settled_document_id) on core.vat_return to cmd_post;
+grant update (is_current) on core.vat_return_tax_line to cmd_post;
+-- the settlement document is a journal document: the posting role already inserts documents and lines, takes numbers and moves the LEDGER head.
+-- It now also moves the VAT_RETURN head.
+drop policy if exists chain_head_post on core.chain_head;
+create policy chain_head_post on core.chain_head as restrictive for update to cmd_post
+    using (chain_type in ('LEDGER', 'VAT_RETURN')) with check (chain_type in ('LEDGER', 'VAT_RETURN'));
+
+-- The L1 columns of a return never change. The S columns: filing once, supersession once, settlement while the return lives.
+create or replace function core.guard_vat_return() returns trigger language plpgsql as $$
+declare s constant text[] := array['superseded_by_return_id', 'filing_reference', 'filed_at', 'filed_by', 'settled_document_id'];
+begin
+    if (to_jsonb(new) - s) is distinct from (to_jsonb(old) - s) then
+        raise exception 'vat_return: an L1 column cannot change' using errcode = '23000';
+    end if;
+    if old.filed_at is not null and (new.filing_reference is distinct from old.filing_reference or new.filed_at is distinct from old.filed_at
+                                     or new.filed_by is distinct from old.filed_by) then
+        raise exception 'VAT.ALREADY_FILED: a filing is recorded once' using errcode = '23000';
+    end if;
+    if old.superseded_by_return_id is not null and new.superseded_by_return_id is distinct from old.superseded_by_return_id then
+        raise exception 'vat_return: a return is superseded once' using errcode = '23000';
+    end if;
+    return new;
+end $$;
+drop trigger if exists vat_return_guard on core.vat_return;
+create trigger vat_return_guard before update on core.vat_return for each row execute function core.guard_vat_return();
+
+create or replace function core.guard_vat_return_tax_line() returns trigger language plpgsql as $$
+begin
+    if (to_jsonb(new) - 'is_current') is distinct from (to_jsonb(old) - 'is_current') then
+        raise exception 'vat_return_tax_line: only is_current changes' using errcode = '23000';
+    end if;
+    if new.is_current and not old.is_current then
+        raise exception 'vat_return_tax_line: a line that is no longer current does not become current again' using errcode = '23000';
+    end if;
+    return new;
+end $$;
+drop trigger if exists vat_return_tax_line_guard on core.vat_return_tax_line;
+create trigger vat_return_tax_line_guard before update on core.vat_return_tax_line for each row execute function core.guard_vat_return_tax_line();
+
+create or replace function core.guard_vat_return_line() returns trigger language plpgsql as $$
+begin
+    raise exception 'vat_return_line is append-only' using errcode = '23000';
+end $$;
+drop trigger if exists vat_return_line_guard on core.vat_return_line;
+create trigger vat_return_line_guard before update on core.vat_return_line for each row execute function core.guard_vat_return_line();
+
+-- The return chain (08, 6.6, 6.8): the head equals the newest return, a return links to its predecessor, sequence 1 starts at the genesis value
+create or replace function core.check_vat_return_chain() returns trigger language plpgsql as $$
+declare h core.chain_head%rowtype; max_seq bigint; max_hash bytea; expected_prev bytea;
+begin
+    select * into h from core.chain_head
+     where tenant_id = new.tenant_id and company_id = new.company_id and chain_type = 'VAT_RETURN' and scope_key = '';
+    if not found then
+        raise exception 'no VAT_RETURN chain head for company %', new.company_id using errcode = '23514';
+    end if;
+    select chain_seq, row_hash into max_seq, max_hash from core.vat_return
+     where tenant_id = new.tenant_id and company_id = new.company_id order by chain_seq desc limit 1;
+    if h.last_seq <> max_seq or h.last_hash <> max_hash then
+        raise exception 'VAT_RETURN chain head (seq %) does not match the newest return (seq %)', h.last_seq, max_seq using errcode = '23514';
+    end if;
+    if new.chain_seq = 1 then
+        expected_prev := sha256(convert_to('genesis|' || new.tenant_id::text || '|' || new.company_id::text || '|VAT_RETURN|', 'UTF8'));
+    else
+        select row_hash into expected_prev from core.vat_return
+         where tenant_id = new.tenant_id and company_id = new.company_id and chain_seq = new.chain_seq - 1;
+    end if;
+    if expected_prev is distinct from new.prev_hash then
+        raise exception 'vat return % does not link to its predecessor in the chain', new.return_id using errcode = '23514';
+    end if;
+    return null;
+end $$;
+drop trigger if exists vat_return_chain on core.vat_return;
+create constraint trigger vat_return_chain after insert on core.vat_return
+    deferrable initially deferred for each row execute function core.check_vat_return_chain();
+
+-- The tax_line_count and late_line_count of a return are what its tax line rows say (checked at commit)
+create or replace function core.check_vat_return_counts() returns trigger language plpgsql as $$
+declare r core.vat_return%rowtype; n int; l int;
+begin
+    select * into r from core.vat_return where tenant_id = new.tenant_id and company_id = new.company_id and return_id = new.return_id;
+    select count(*), count(*) filter (where is_late) into n, l from core.vat_return_tax_line
+     where tenant_id = r.tenant_id and company_id = r.company_id and return_id = r.return_id;
+    if n <> r.tax_line_count or l <> r.late_line_count then
+        raise exception 'vat return %: the counts (%, %) differ from its tax lines (%, %)', r.return_id, r.tax_line_count, r.late_line_count, n, l using errcode = '23514';
+    end if;
+    return null;
+end $$;
+drop trigger if exists vat_return_counts on core.vat_return;
+create constraint trigger vat_return_counts after insert on core.vat_return
+    deferrable initially deferred for each row execute function core.check_vat_return_counts();
+drop trigger if exists vat_return_tax_line_counts on core.vat_return_tax_line;
+create constraint trigger vat_return_tax_line_counts after insert on core.vat_return_tax_line
+    deferrable initially deferred for each row execute function core.check_vat_return_counts();
+
+insert into platform.schema_migration (version, description)
+values ('0026', 'VAT returns: the snapshot of a return, its chain, the settlement line type and the registration of the role VAT_SETTLEMENT')
+on conflict (version) do nothing;
+
+-- ==================== 0027_tax_evidence.sql ====================
+-- 0027 Tax evidence (08, 5.3): references that prove a tax line (customs declaration, proof of export, transport document, partner VAT check).
+-- An evidence row is added by journal-documents:change-open-fields (entity type TAX_EVIDENCE) after posting, in every period status, and is never
+-- changed or deleted. It is not part of any hash. Each field of a new row has its change_log row in the same transaction.
+
+create table if not exists core.journal_line_tax_evidence (
+    tenant_id      uuid not null,
+    company_id     uuid not null,
+    document_id    uuid not null,
+    line_no        int not null,                      -- the line number of the tax line
+    evidence_no    int not null check (evidence_no >= 1),
+    evidence_type  core.code not null check (evidence_type in ('CUSTOMS_DECLARATION', 'PROOF_OF_EXPORT', 'TRANSPORT_DOCUMENT', 'PARTNER_VAT_CHECK', 'OTHER')),
+    reference      varchar(100) not null,
+    evidence_date  date,
+    note           varchar(200),
+    created_at     timestamptz not null default now(),
+    primary key (tenant_id, company_id, document_id, line_no, evidence_no),
+    foreign key (tenant_id, company_id, document_id, line_no) references core.journal_line_tax (tenant_id, company_id, document_id, line_no)
+);
+
+alter table core.journal_line_tax_evidence enable row level security;
+alter table core.journal_line_tax_evidence force row level security;
+do $$ begin
+    if not exists (select 1 from pg_policies where schemaname = 'core' and tablename = 'journal_line_tax_evidence' and policyname = 'tenant_isolation') then
+        create policy tenant_isolation on core.journal_line_tax_evidence using (tenant_id = core.current_tenant_id()) with check (tenant_id = core.current_tenant_id());
+    end if;
+end $$;
+revoke all on core.journal_line_tax_evidence from public;
+grant select on core.journal_line_tax_evidence to cmd_read, cmd_config, cmd_period, cmd_post, cmd_clearing;
+grant insert on core.journal_line_tax_evidence to cmd_post;
+drop trigger if exists journal_line_tax_evidence_append_only on core.journal_line_tax_evidence;
+create trigger journal_line_tax_evidence_append_only before update or delete on core.journal_line_tax_evidence
+    for each row execute function core.reject_change();
+drop trigger if exists journal_line_tax_evidence_no_truncate on core.journal_line_tax_evidence;
+create trigger journal_line_tax_evidence_no_truncate before truncate on core.journal_line_tax_evidence
+    for each statement execute function core.reject_change();
+
+-- The next number of the tax line, and a change_log row of this transaction for the row (the L2 rule of 0013)
+create or replace function core.guard_journal_line_tax_evidence() returns trigger language plpgsql as $$
+declare v_max int;
+begin
+    select coalesce(max(evidence_no), 0) into v_max from core.journal_line_tax_evidence
+     where tenant_id = new.tenant_id and company_id = new.company_id and document_id = new.document_id and line_no = new.line_no;
+    if new.evidence_no <> v_max + 1 then
+        raise exception 'journal_line_tax_evidence: the next evidence_no of the tax line is %', v_max + 1 using errcode = '23514';
+    end if;
+    if not exists (select 1 from core.change_log c
+                    where c.tenant_id = new.tenant_id and c.company_id = new.company_id and c.document_id = new.document_id and c.line_no = new.line_no
+                      and c.entity_type = 'TAX_EVIDENCE' and c.sub_key = new.evidence_no::text and c.field_name = 'reference'
+                      and c.new_value = new.reference and c.changed_at = transaction_timestamp()) then
+        raise exception 'journal_line_tax_evidence: a row is added only with a change_log row in this transaction' using errcode = '23000';
+    end if;
+    return new;
+end $$;
+drop trigger if exists journal_line_tax_evidence_guard on core.journal_line_tax_evidence;
+create trigger journal_line_tax_evidence_guard before insert on core.journal_line_tax_evidence
+    for each row execute function core.guard_journal_line_tax_evidence();
+
+-- Evidence is added in a hard-closed period too (08, 5.3, a controlled exception to L3): the log row says so
+do $$
+declare c record;
+begin
+    for c in select conname from pg_constraint where conrelid = 'core.change_log'::regclass and contype = 'c' and pg_get_constraintdef(oid) like '%period_status%' loop
+        execute format('alter table core.change_log drop constraint %I', c.conname);
+    end loop;
+    alter table core.change_log add constraint change_log_period_status_check check (period_status in ('OPEN', 'SOFT_CLOSED', 'HARD_CLOSED', 'NONE'));
+    alter table core.change_log add constraint change_log_lock_class_period_check check (
+           (lock_class = 'L2' and reason_code <> 'SYSTEM' and (period_status in ('OPEN', 'SOFT_CLOSED') or (period_status = 'HARD_CLOSED' and entity_type = 'TAX_EVIDENCE')))
+        or (lock_class = 'L1*' and period_status = 'NONE' and reason_code = 'SYSTEM' and entity_type = 'LEGAL_SNAPSHOT'));
+end $$;
+
+insert into platform.schema_migration (version, description)
+values ('0027', 'tax evidence of a tax line, added by change-open-fields in every period status')
+on conflict (version) do nothing;
+
+-- ==================== 0028_applied_config_package.sql ====================
+-- 0028 The record of a package apply (18, 7.1, 07, 10.2): one row per apply of a package to a company and one row per object that the apply created or
+-- skipped. Insert-only: the record is the audit trail from an object to the package item it came from, and what a later version may extend.
+-- Written by the platform operation that applies a package (the migration role), read by every command role.
+
+create table if not exists core.applied_config_package (
+    tenant_id        uuid not null,
+    applied_id       uuid not null default gen_random_uuid(),
+    company_id       uuid not null,
+    package_code     core.code not null,
+    package_version  varchar(30) not null,
+    country_code     char(2) not null references platform.ref_country (country_code),
+    kind             core.code not null check (kind in ('STANDARD', 'REGIME', 'COUNTRY')),
+    state            core.code not null check (state in ('DRAFT', 'REVIEWED', 'RELEASED', 'DEPRECATED')),
+    manifest_digest  varchar(64) not null,       -- SHA-256 over package.json and the core files in fixed order
+    inputs_digest    varchar(64) not null,       -- the inputs are recorded by digest, never as content (18, 4.3)
+    requires_snapshot varchar(500),              -- the packages that were read besides this one: code and version
+    scope            core.code not null default 'VAT' check (scope in ('VAT')),   -- which content was applied: the VAT content only, so far
+    item_count       int not null check (item_count >= 0),
+    created_count    int not null check (created_count >= 0),
+    applied_at       timestamptz not null default now(),
+    applied_by       varchar(100) not null,
+    primary key (tenant_id, applied_id),
+    foreign key (tenant_id, company_id) references core.company (tenant_id, company_id)
+);
+create index if not exists applied_config_package_company on core.applied_config_package (tenant_id, company_id, applied_at);
+
+create table if not exists core.applied_config_package_item (
+    tenant_id    uuid not null,
+    applied_id   uuid not null,
+    item_no      int not null check (item_no >= 1),
+    item_id      varchar(100) not null,            -- the stable id of the package item, the key of its verification record
+    entity_type  core.code not null,
+    entity_id    varchar(100),                      -- the id of the object, where the command returned one
+    action       core.code not null check (action in ('CREATED', 'VERSIONED', 'SKIPPED_EXISTS', 'SKIPPED_MODIFIED', 'SKIPPED_NOT_SELECTED')),
+    primary key (tenant_id, applied_id, item_no),
+    foreign key (tenant_id, applied_id) references core.applied_config_package (tenant_id, applied_id)
+);
+
+do $$
+declare t text;
+begin
+    foreach t in array array['applied_config_package', 'applied_config_package_item'] loop
+        execute format('alter table core.%I enable row level security', t);
+        execute format('alter table core.%I force row level security', t);
+        if not exists (select 1 from pg_policies where schemaname = 'core' and tablename = t and policyname = 'tenant_isolation') then
+            execute format('create policy tenant_isolation on core.%I using (tenant_id = core.current_tenant_id()) with check (tenant_id = core.current_tenant_id())', t);
+        end if;
+        execute format('revoke all on core.%I from public', t);
+        execute format('grant select on core.%I to cmd_read, cmd_config, cmd_period, cmd_post, cmd_clearing', t);
+        execute format('drop trigger if exists %I on core.%I', t || '_append_only', t);
+        execute format('create trigger %I before update or delete on core.%I for each row execute function core.reject_change()', t || '_append_only', t);
+        execute format('drop trigger if exists %I on core.%I', t || '_no_truncate', t);
+        execute format('create trigger %I before truncate on core.%I for each statement execute function core.reject_change()', t || '_no_truncate', t);
+    end loop;
+end $$;
+
+insert into platform.schema_migration (version, description)
+values ('0028', 'the record of a package apply and its items')
 on conflict (version) do nothing;

@@ -158,15 +158,15 @@ public sealed class TaxCommands(NpgsqlDataSource source)
             }
 
             // the code, with the type and the country of its registration
-            Guid company; string type, country; bool active;
+            Guid company, registrationId; string type, country; bool active;
             await using (var cmd = tx.Command(
-                "select c.company_id, c.tax_type, r.country_code, c.active from core.tax_code c join core.company_vat_registration r on r.tenant_id = c.tenant_id " +
+                "select c.company_id, c.tax_type, r.country_code, c.active, c.vat_registration_id from core.tax_code c join core.company_vat_registration r on r.tenant_id = c.tenant_id " +
                 "and r.company_id = c.company_id and r.registration_id = c.vat_registration_id where c.tenant_id = @t and c.tax_code_id = @x"))
             {
                 cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("x", req.TaxCodeId);
                 await using var r = await cmd.ExecuteReaderAsync(ct);
                 if (!await r.ReadAsync(ct)) return RejectV(Error("CONFIG.INVALID_REFERENCE", "P2", "/tax_code_id", ("tax_code_id", req.TaxCodeId)));
-                company = r.GetGuid(0); type = r.GetString(1); country = r.GetString(2).Trim(); active = r.GetBoolean(3);
+                company = r.GetGuid(0); type = r.GetString(1); country = r.GetString(2).Trim(); active = r.GetBoolean(3); registrationId = r.GetGuid(4);
             }
             var problems = new List<CommandError>();
             if (!active) problems.Add(Error("CONFIG.INVALID_REFERENCE", "P2", "/tax_code_id", ("reason", "INACTIVE")));
@@ -196,7 +196,9 @@ public sealed class TaxCommands(NpgsqlDataSource source)
                 if (Get("deduction_key") is not null) problems.Add(Error("CONFIG.DEDUCTION_ON_NON_INPUT_CODE", "P2", "/fields/deduction_key"));
                 if (Get("deduction_cap") is { } cap && cap != "NONE") problems.Add(Error("CONFIG.DEDUCTION_ON_NON_INPUT_CODE", "P2", "/fields/deduction_cap"));
             }
-            if (Get("deduction_key") is not null) problems.Add(Error("LIMIT.DEDUCTION_KEY_NOT_BUILT", "P2", "/fields/deduction_key"));
+            if (Get("deduction_key") is { } deductionKey && !await ExistsAsync(tx, "select 1 from core.vat_deduction_key where tenant_id = @t and company_id = @c and registration_id = @r and key_code = @k and active", tenantId,
+                    ("c", company), ("r", registrationId), ("k", deductionKey)))
+                problems.Add(Error("CONFIG.DEDUCTION_KEY_UNKNOWN", "P2", "/fields/deduction_key", ("deduction_key", deductionKey)));
             foreach (string account in new[] { "vat_account_id", "reverse_charge_account_id" })
                 if (Get(account) is { } id)
                 {

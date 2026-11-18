@@ -87,8 +87,9 @@ public sealed class AccountRoleAssigner(NpgsqlDataSource source)
             if (await cmd.ExecuteScalarAsync(ct) is null) return Reject(Err("COMPANY.NOT_FOUND", "company_id"));
         }
 
-        if (role.PerVatRegistration)
-            errors.Add(Err("LIMIT.VAT_REGISTRATION_NOT_BUILT", "role_code", ("role_code", role.Code)));
+        if (role.PerVatRegistration && (req.VatRegistrationId is null || !await ExistsAsync(tx,
+                "select 1 from core.company_vat_registration where tenant_id = @t and company_id = '" + req.CompanyId.ToString("D") + "'::uuid and registration_id = @x", tenantId, req.VatRegistrationId ?? Guid.Empty, ct)))
+            errors.Add(Err("CONFIG.INVALID_REFERENCE", "vat_registration_id", ("vat_registration_id", req.VatRegistrationId)));
 
         if (req.CurrencyCode is not null && !await ExistsAsync(tx,
                 "select 1 from core.tenant_currency where tenant_id = @t and currency_code = @x and active", tenantId, req.CurrencyCode, ct))

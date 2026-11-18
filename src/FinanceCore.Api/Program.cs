@@ -19,13 +19,30 @@ builder.Services.AddSingleton(sp => new PartnerCommands(sp.GetRequiredService<Np
 builder.Services.AddSingleton(sp => new PaymentTermsCommands(sp.GetRequiredService<NpgsqlDataSource>()));
 builder.Services.AddSingleton(sp => new DimensionCommands(sp.GetRequiredService<NpgsqlDataSource>()));
 builder.Services.AddSingleton(sp => new TaxCommands(sp.GetRequiredService<NpgsqlDataSource>()));
+builder.Services.AddSingleton(sp => new TaxDeterminationCommands(sp.GetRequiredService<NpgsqlDataSource>()));
+builder.Services.AddSingleton(sp => new VatReturnCommands(sp.GetRequiredService<NpgsqlDataSource>()));
+builder.Services.AddSingleton(sp => new VatSettlement(sp.GetRequiredService<NpgsqlDataSource>()));
+builder.Services.AddSingleton(sp => new DeductionCommands(sp.GetRequiredService<NpgsqlDataSource>()));
 builder.Services.AddSingleton(sp => new AccountRoleAssigner(sp.GetRequiredService<NpgsqlDataSource>()));
 builder.Services.AddSingleton(sp => new RetentionRuleCommands(sp.GetRequiredService<NpgsqlDataSource>()));
 builder.Services.AddSingleton(sp => new FiscalYearOpener(sp.GetRequiredService<NpgsqlDataSource>()));
 builder.Services.AddSingleton(sp => new PeriodStatusCommands(sp.GetRequiredService<NpgsqlDataSource>()));
+builder.Services.AddSingleton(sp => new RevaluationCommands(sp.GetRequiredService<NpgsqlDataSource>()));
+builder.Services.AddSingleton(sp => new YearEndCommands(sp.GetRequiredService<NpgsqlDataSource>()));
+builder.Services.AddSingleton(sp => new LedgerReads(sp.GetRequiredService<NpgsqlDataSource>()));
+builder.Services.AddSingleton(sp => new EventFeed(sp.GetRequiredService<NpgsqlDataSource>()));
+builder.Services.AddSingleton(sp => new AuditReads(sp.GetRequiredService<NpgsqlDataSource>()));
+builder.Services.AddSingleton(sp => new PartnerReads(sp.GetRequiredService<NpgsqlDataSource>()));
+builder.Services.AddSingleton(sp => new MigrationReads(sp.GetRequiredService<NpgsqlDataSource>()));
+builder.Services.AddSingleton(sp => new MigrationCommands(sp.GetRequiredService<NpgsqlDataSource>()));
 builder.Services.AddSingleton(sp => new CompanyActivator(sp.GetRequiredService<NpgsqlDataSource>()));
 builder.Services.AddSingleton(sp => new ChainVerification(sp.GetRequiredService<NpgsqlDataSource>()));
 builder.Services.AddSingleton<ICommandModule, PostingModule>();
+builder.Services.AddSingleton<ICommandModule, VatModule>();
+builder.Services.AddSingleton<ICommandModule, ClosingModule>();
+builder.Services.AddSingleton<ICommandModule, ReadModule>();
+builder.Services.AddSingleton<ICommandModule, FeedModule>();
+builder.Services.AddSingleton<ICommandModule, MigrationModule>();
 builder.Services.AddSingleton<ICommandModule, ConfigModule>();
 builder.Services.AddSingleton<CommandCatalog>(sp =>
 {

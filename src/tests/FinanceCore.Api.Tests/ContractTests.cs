@@ -31,6 +31,32 @@ public class ContractTests
     }
 
     [Fact]
+    public void TheReadsOfTheSecondSliceOfPhase09AreRegisteredWithTheirPermissionsOfSection23()
+    {
+        var catalog = new CommandCatalog();
+        new ReadModule().Register(catalog);
+        var expected = new Dictionary<string, string>
+        {
+            ["aging:query"] = "read.ledger", ["documents:get-context"] = "read.ledger", ["chains:status"] = "read.audit", ["audit-events:query"] = "read.audit",
+            ["read-access-log:list"] = "read.audit", ["business-partners:get"] = "read.config", ["business-partners:list"] = "read.config"
+        };
+        foreach (var (name, permission) in expected) Assert.Equal(permission, catalog.Find(name)?.Permission);
+    }
+
+    [Fact]
+    public void TheMigrationCommandsOfTheSecondSliceAreRegisteredWithTheirPermissions()
+    {
+        var catalog = new CommandCatalog();
+        new MigrationModule().Register(catalog);
+        var expected = new Dictionary<string, string>
+        {
+            ["migration-batches:rollback"] = "migration.commit", ["migration-batches:approve"] = "migration.commit", ["migration-batches:get"] = "read.audit",
+            ["migration-batches:list"] = "read.audit", ["migration-records:list"] = "read.audit"
+        };
+        foreach (var (name, permission) in expected) Assert.Equal(permission, catalog.Find(name)?.Permission);
+    }
+
+    [Fact]
     public void EveryCommandOfTheApiHasItsPermissionForTheEndpointAndTheOpenApiDocument()
     {
         CommandCatalog catalog = Production();
@@ -189,7 +215,9 @@ public class ContractTests
     private static readonly string[] SliceOnly =
     [
         "API.COMMAND_NOT_FOUND", "AUTH.TENANT_MISMATCH", "AUTH.TENANT_MISSING", "AUTH.TOKEN_INVALID",
-        "CHAIN.DOCUMENT_WITHOUT_LINES", "NUMBER.GAP", "SYSTEM.FISCAL_YEAR_MISSING"
+        "CHAIN.DOCUMENT_WITHOUT_LINES", "NUMBER.GAP", "SYSTEM.FISCAL_YEAR_MISSING",
+        "EVENT.ACK_NOT_FORWARD", "EVENT.REWIND_NOT_BACKWARD",   // 15, 5.3 says "only forward" and "backward" without naming a code (F-IMPL-42)
+        "MIGRATION.ROLLBACK_FAILED"                              // 13, 7 has no code for a document of a rollback that does not reverse (F-IMPL-46)
     ];
 
     /// <summary>The index of 06 writes a code in full (`AREA.NAME`) or, inside the row of its area, as the bare name (`NAME`).</summary>

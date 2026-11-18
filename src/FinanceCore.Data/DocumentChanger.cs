@@ -95,7 +95,7 @@ public sealed class DocumentChanger(NpgsqlDataSource source)
             }
             if (!OpenFieldRules.EntityTypes.Contains(c.EntityType))
             {
-                Invalid($"{at}/entity_type", "DOCUMENT, LINE, LINE_OPEN_ITEM or LINE_DIMENSION");
+                Invalid($"{at}/entity_type", "DOCUMENT, LINE, LINE_OPEN_ITEM, LINE_DIMENSION or TAX_EVIDENCE");
                 continue;
             }
             if (c.EntityType == "DOCUMENT" && c.LineNo is not null) Invalid($"{at}/line_no", "a header change has no line_no");
@@ -106,7 +106,17 @@ public sealed class DocumentChanger(NpgsqlDataSource source)
                 if (c.SubKey is null || !Guid.TryParseExact(c.SubKey, "D", out Guid subType) || subType == Guid.Empty) Invalid($"{at}/sub_key", "the id of the dimension type");
                 if (c.FieldName != OpenFieldRules.FreeDimensionField) Invalid($"{at}/field_name", OpenFieldRules.FreeDimensionField);
             }
-            else if (c.SubKey is not null) Invalid($"{at}/sub_key", "only a LINE_DIMENSION change has a sub_key");
+            else if (c.EntityType == "TAX_EVIDENCE")
+            {
+                // an evidence row is added, never changed (08, 5.3): the sub_key is its number, the value is given, the old value is not
+                if (c.SubKey is null || !int.TryParse(c.SubKey, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out int no) || no < 1
+                    || no.ToString(System.Globalization.CultureInfo.InvariantCulture) != c.SubKey)
+                    Invalid($"{at}/sub_key", "the evidence_no, a number from 1");
+                if (c.NewValue is null) Invalid($"{at}/new_value", "required: evidence is added, not cleared");
+                if (c.FieldName == "evidence_type" && c.NewValue is not null && !OpenFieldRules.EvidenceTypes.Contains(c.NewValue))
+                    errors.Add(JournalDocumentPoster.Error("SCHEMA.INVALID_VALUE", "P1", $"{at}/new_value", ("allowed_values", OpenFieldRules.EvidenceTypes)));
+            }
+            else if (c.SubKey is not null) Invalid($"{at}/sub_key", "only a LINE_DIMENSION or TAX_EVIDENCE change has a sub_key");
             if (!seen.Add((c.EntityType, c.LineNo, c.FieldName + "|" + c.SubKey))) Invalid($"{at}/field_name", "the same field twice in one command");
 
             // A text field cannot be an empty string: null clears it. A value that does not fit its column or its kind (a date, an amount)
@@ -146,7 +156,7 @@ public sealed class DocumentChanger(NpgsqlDataSource source)
         if (header is null)
             return Reject(JournalDocumentPoster.Error("DOCUMENT.NOT_FOUND", "P2", "document_id"));
 
-        int[] lineNos = changes.Where(c => c.EntityType is "LINE" or "LINE_DIMENSION").Select(c => c.LineNo!.Value).Distinct().Order().ToArray();
+        int[] lineNos = changes.Where(c => c.EntityType is "LINE" or "LINE_DIMENSION" or "TAX_EVIDENCE").Select(c => c.LineNo!.Value).Distinct().Order().ToArray();
         Dictionary<int, Dictionary<string, string?>> lines = await LockLinesAsync(tx, tenantId, header.CompanyId, req.DocumentId, lineNos, ct);
         Dictionary<(int, Guid), string?> freeRows = await LockFreeDimensionsAsync(tx, tenantId, header.CompanyId, req.DocumentId, lineNos, ct);
         // All lines named by any change must exist, whether the change is on the line or on its open item
@@ -159,8 +169,11 @@ public sealed class DocumentChanger(NpgsqlDataSource source)
         // P3: the period of the document header. OPEN allows, SOFT_CLOSED needs change.soft_closed, HARD_CLOSED is L3.
         string? periodStatus = await LockPeriodAsync(tx, tenantId, header, ct);
         var errors = new List<CommandError>();
+        // Evidence is added in every period status (08, 5.3, a controlled exception to L3): a command of evidence only is not stopped by the period.
+        bool evidenceOnly = changes.All(c => c.EntityType == "TAX_EVIDENCE");
         if (periodStatus is null)
             errors.Add(JournalDocumentPoster.Error("PERIOD.NOT_FOUND", "P3", "document_id", ("fiscal_year", header.FiscalYear), ("period", header.FiscalPeriod)));
+        else if (evidenceOnly) { }
         else if (periodStatus == "HARD_CLOSED")
             errors.Add(JournalDocumentPoster.Error("LOCK.FIELD_LOCKED_L3", "P3", "document_id", ("fiscal_year", header.FiscalYear), ("period", header.FiscalPeriod)));
         else if (periodStatus == "SOFT_CLOSED" && !ctx.Permissions.Contains(SoftClosedPermission))
@@ -216,6 +229,32 @@ public sealed class DocumentChanger(NpgsqlDataSource source)
                 errors.Add(JournalDocumentPoster.Error("ACCOUNT_RULE.DUE_DATE_REQUIRED", "P4", $"/changes/{i}/new_value", ("line_no", c.LineNo)));
         }
         errors.AddRange(await CheckDimensionChangesAsync(tx, tenantId, header.CompanyId, req.DocumentId, changes, ct));
+
+        // Evidence: the line is a tax line, a row that exists is never changed, and the numbers are the next ones of the line
+        if (changes.Any(c => c.EntityType == "TAX_EVIDENCE"))
+        {
+            var evidence = await ReadEvidenceAsync(tx, tenantId, header.CompanyId, req.DocumentId, ct);
+            foreach (var byLine in changes.Select((c, i) => (c, i)).Where(x => x.c.EntityType == "TAX_EVIDENCE" && existingLines.Contains(x.c.LineNo!.Value)).GroupBy(x => x.c.LineNo!.Value))
+            {
+                if (!evidence.TaxLines.Contains(byLine.Key))
+                {
+                    errors.Add(JournalDocumentPoster.Error("DOCUMENT.TAX_LINE_NOT_FOUND", "P2", $"/changes/{byLine.First().i}/line_no", ("line_no", byLine.Key)));
+                    continue;
+                }
+                int max = evidence.MaxNo.GetValueOrDefault(byLine.Key);
+                var numbers = byLine.Select(x => int.Parse(x.c.SubKey!, System.Globalization.CultureInfo.InvariantCulture)).Where(n => n > max).Distinct().Order().ToArray();
+                foreach (var (c, i) in byLine)
+                    if (int.Parse(c.SubKey!, System.Globalization.CultureInfo.InvariantCulture) <= max)
+                        errors.Add(JournalDocumentPoster.Error("LOCK.FIELD_LOCKED_L1", "P2", $"/changes/{i}/sub_key", ("field_name", c.FieldName), ("reason", "evidence is append-only")));
+                // a new row has its type and its reference
+                foreach (var row in byLine.Where(x => int.Parse(x.c.SubKey!, System.Globalization.CultureInfo.InvariantCulture) > max).GroupBy(x => x.c.SubKey))
+                    foreach (string required in new[] { "evidence_type", "reference" })
+                        if (row.All(x => x.c.FieldName != required))
+                            errors.Add(JournalDocumentPoster.Error("SCHEMA.INVALID_VALUE", "P2", $"/changes/{row.First().i}/field_name", ("reason", $"evidence {row.Key} of line {byLine.Key} needs {required}")));
+                if (!numbers.SequenceEqual(Enumerable.Range(max + 1, numbers.Length)))
+                    errors.Add(JournalDocumentPoster.Error("SCHEMA.INVALID_VALUE", "P2", $"/changes/{byLine.First().i}/sub_key", ("reason", $"the next evidence_no of line {byLine.Key} is {max + 1}")));
+            }
+        }
         if (errors.Count > 0) return CommandResult<ChangedDocument>.Rejected(errors);
 
         // P6 under the locks: compare and set. All mismatches are reported, none is applied.
@@ -252,6 +291,12 @@ public sealed class DocumentChanger(NpgsqlDataSource source)
             await ApplyFreeDimensionAsync(tx, tenantId, header.CompanyId, req.DocumentId, c, freeRows.ContainsKey((c.LineNo!.Value, Guid.Parse(c.SubKey!))), ct);
         foreach (FieldChange c in effective.Where(c => c.EntityType == "LINE_OPEN_ITEM"))
             await UpdateAsync(tx, "journal_line_open_item", c.FieldName, c.NewValue, tenantId, req.DocumentId, c.LineNo, ct);
+        var addedEvidence = new List<(int LineNo, int EvidenceNo)>();
+        foreach (var row in effective.Where(c => c.EntityType == "TAX_EVIDENCE").GroupBy(c => (LineNo: c.LineNo!.Value, No: int.Parse(c.SubKey!, System.Globalization.CultureInfo.InvariantCulture))).OrderBy(g => g.Key.LineNo).ThenBy(g => g.Key.No))
+        {
+            await InsertEvidenceAsync(tx, tenantId, header.CompanyId, req.DocumentId, row.Key.LineNo, row.Key.No, row.ToDictionary(c => c.FieldName, c => c.NewValue), ct);
+            addedEvidence.Add((row.Key.LineNo, row.Key.No));
+        }
 
         Guid logId = await CommandSupport.WriteLogAsync(tx, tenantId, header.CompanyId, ctx, CommandName, fingerprint, "DOCUMENT", req.DocumentId, ct);
         DateTime now = DateTime.UtcNow;
@@ -263,6 +308,11 @@ public sealed class DocumentChanger(NpgsqlDataSource source)
                 ["changes"] = effective.Select(c => new Dictionary<string, object?>
                     { ["entity_type"] = c.EntityType, ["line_no"] = c.LineNo, ["field_name"] = c.FieldName, ["sub_key"] = c.SubKey }).ToArray()
             }), ct);
+
+        foreach (var (evidenceLine, evidenceNo) in addedEvidence)
+            await CommandSupport.WriteOutboxAsync(tx, tenantId, header.CompanyId, ctx, "vat.evidence_added", "DOCUMENT",
+                $"{header.CompanyId:D}/{req.DocumentId:D}", "EVIDENCE_ADDED", new DateTime(now.Ticks - now.Ticks % 10, DateTimeKind.Utc), isAudit: true, null,
+                JsonSerializer.Serialize(new Dictionary<string, object?> { ["document_id"] = req.DocumentId, ["line_no"] = evidenceLine, ["evidence_no"] = evidenceNo }), ct);
 
         await tx.CommitAsync(ct);
         var changed = effective.Select(c => new ChangedField(c.EntityType, c.LineNo, c.FieldName, c.ExpectedOldValue, c.NewValue, c.SubKey)).ToList();
@@ -279,6 +329,7 @@ public sealed class DocumentChanger(NpgsqlDataSource source)
             "DOCUMENT" => c.FieldName switch { "header_text" => header.HeaderText, _ => header.ExternalReference },
             "LINE" => lines[c.LineNo!.Value][c.FieldName],
             "LINE_DIMENSION" => freeRows.GetValueOrDefault((c.LineNo!.Value, Guid.Parse(c.SubKey!))),
+            "TAX_EVIDENCE" => null,
             _ => openItems[c.LineNo!.Value][c.FieldName]
         };
 
@@ -399,6 +450,35 @@ public sealed class DocumentChanger(NpgsqlDataSource source)
         cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("c", companyId); cmd.Parameters.AddWithValue("d", documentId);
         cmd.Parameters.AddWithValue("n", c.LineNo!.Value); cmd.Parameters.AddWithValue("ty", Guid.Parse(c.SubKey!));
         if (await cmd.ExecuteNonQueryAsync(ct) != 1) throw new InvalidOperationException("journal_line_dimension: the change of a free dimension changed no row");
+    }
+
+    private sealed record EvidenceState(HashSet<int> TaxLines, Dictionary<int, int> MaxNo);
+
+    /// <summary>The tax lines of the document and the highest evidence number of each.</summary>
+    private static async Task<EvidenceState> ReadEvidenceAsync(TenantTransaction tx, Guid tenantId, Guid companyId, Guid documentId, CancellationToken ct)
+    {
+        var state = new EvidenceState([], []);
+        await using var cmd = tx.Command(
+            "select t.line_no, coalesce((select max(e.evidence_no) from core.journal_line_tax_evidence e where e.tenant_id = t.tenant_id and e.company_id = t.company_id " +
+            "and e.document_id = t.document_id and e.line_no = t.line_no), 0) from core.journal_line_tax t where t.tenant_id = @t and t.company_id = @c and t.document_id = @d");
+        cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("c", companyId); cmd.Parameters.AddWithValue("d", documentId);
+        await using var r = await cmd.ExecuteReaderAsync(ct);
+        while (await r.ReadAsync(ct)) { state.TaxLines.Add(r.GetInt32(0)); state.MaxNo[r.GetInt32(0)] = r.GetInt32(1); }
+        return state;
+    }
+
+    private static async Task InsertEvidenceAsync(
+        TenantTransaction tx, Guid tenantId, Guid companyId, Guid documentId, int lineNo, int evidenceNo, Dictionary<string, string?> fields, CancellationToken ct)
+    {
+        await using var cmd = tx.Command(
+            "insert into core.journal_line_tax_evidence (tenant_id, company_id, document_id, line_no, evidence_no, evidence_type, reference, evidence_date, note) " +
+            "values (@t, @c, @d, @l, @n, @type, @ref, @date, @note)");
+        cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("c", companyId); cmd.Parameters.AddWithValue("d", documentId);
+        cmd.Parameters.AddWithValue("l", lineNo); cmd.Parameters.AddWithValue("n", evidenceNo);
+        cmd.Parameters.AddWithValue("type", fields["evidence_type"]!); cmd.Parameters.AddWithValue("ref", fields["reference"]!);
+        cmd.Parameters.Add(new NpgsqlParameter("date", NpgsqlDbType.Date) { Value = fields.GetValueOrDefault("evidence_date") is { } d ? DateOnly.Parse(d) : DBNull.Value });
+        cmd.Parameters.Add(new NpgsqlParameter("note", NpgsqlDbType.Text) { Value = (object?)fields.GetValueOrDefault("note") ?? DBNull.Value });
+        await cmd.ExecuteNonQueryAsync(ct);
     }
 
     private static async Task<HashSet<int>> ReadLineNosAsync(
