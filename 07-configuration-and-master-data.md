@@ -805,6 +805,16 @@ For the resources `gl-accounts`, `business-partners` (with PII, company relation
 
 These deltas are applied in 02 and 06 with this spec.
 
+### 13.2s The master data of items and warehouses (F-IMPL-47, 2026-11-18)
+
+PROPOSED, written down so that spec and code agree. It is the first slice of 10 and builds the tables of 10, 3.1 to 3.7 on the generic master commands of 11.1.
+
+1. **Built.** `item-groups`, `items`, `item-unit-conversions`, `unit-conversions`, `warehouses`, `warehouse-locations`, `item-companies` and `item-warehouses`, each with `:create`, `:update`, `:deactivate` and `:reactivate` (permission `write.config`) and `:get` and `:list` (`read.config`), and `units:list` for the global unit codes (migration 0035). The log is `master_change_log` and the events are `master.*`, as for every master table.
+2. **Addressing.** A row is addressed by `id`: `{id, expected_version, fields}` for an update, `{id, expected_version, reason_code}` for a deactivation. item_company, item_warehouse and item_unit_conversion keep the business key of 10 as a unique key and have a surrogate id.
+3. **Rules built.** Unique codes (`CONFIG.DUPLICATE_CODE`): item no, group code, warehouse code per company, location code per warehouse, one item company per company and item, one item warehouse, one conversion per item and unit, and one general conversion per pair of units, the inverse counting as the same pair. Units must exist and a general conversion joins units of one dimension. A service or non-stock item has tracking mode NONE, and only a lot has an expiry date. `quantity_scale` is 0 to 6. The base unit of an item converts with factor 1 and has no row. A default warehouse of an item company is an active warehouse of its company. Deactivation is `CONFIG.REFERENCED` while an active row refers to the row.
+4. **Not built.** The locks of 10 (item type, unit, scale and tracking, valuation method, location type) wait for the first stock movement. `item_tracking`, `account_determination`, the stock ledger, valuation, reservations, landed costs and the stock reads are the next slices of 10. 11 is not started.
+5. **Reads.** `{resource}:list` returns the active rows by default, `include_inactive` all of them (09, Q12), and takes a `filter` of equal-to on the columns the resource names (`READ.INVALID_FILTER` otherwise), `limit` and a cursor. `{resource}:get` finds a row whatever its active flag.
+
 ### 13.2r The second slice of the migration batch (F-IMPL-46, 2026-11-18)
 
 PROPOSED, written down so that spec and code agree. It completes 13.2q's list of what 13 leaves open for the first slice (F-IMPL-44).

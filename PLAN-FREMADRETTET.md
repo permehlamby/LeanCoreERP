@@ -15,7 +15,8 @@ Oprettet 2026-11-12, efter at momsområdet (V1–V5) og DK-pakkens momsindhold e
 | Læse-API'er og søgning (09) | To slices bygget (F-IMPL-41, F-IMPL-45): dokumenter, saldi, kontoudtog, åbne poster, aging, dokumentkontekst, kædestatus, revisionshændelser, partnerlæsning med PII-log (migration 0033). Mangler søgning (`contains`), flere selskaber, extensions, `vat-positions:get`, læselogtømning og `access.summary` |
 | Outbox-jobs, eksport, anonymisering, tenant-sletning | Ikke bygget (hændelser skrives, men ingen jobs) |
 | Migration (13) | To slices bygget (F-IMPL-44, F-IMPL-46): åbningsbalancer og åbne poster fra åbning til seal, rollback, four-eyes (commit, seal, approve) og læsninger. Mangler historik (HISTORY-chunk, historieår, CLOSING), lager, ordrer, legacy_tax_summary, legacy_id_map, VALIDATE-tilstand |
-| Lager (10), ordrer (11) | Kun spec |
+| Lager (10) | Første slice bygget (F-IMPL-47): enheder, varegrupper, varer, lagre, lokationer, konverteringer, vare pr. selskab og lager. Mangler lagerbogen, værdiansættelse, sporing, kontobestemmelse, reservationer, landed cost og læsninger |
+| Ordrer (11) | Kun spec |
 | Fakturering og betaling (22), konsolidering (23) | Kun spec |
 | API-hærdning (mTLS, rate limits, pagination) | Ikke bygget |
 

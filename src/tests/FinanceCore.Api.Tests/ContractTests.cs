@@ -44,6 +44,20 @@ public class ContractTests
     }
 
     [Fact]
+    public void TheInventoryMasterDataIsRegisteredWithWriteAndReadPermissions()
+    {
+        var catalog = new CommandCatalog();
+        new InventoryModule().Register(catalog);
+        foreach (string resource in InventoryMasterCommands.Resources)
+        {
+            foreach (string verb in new[] { "create", "update", "deactivate", "reactivate" }) Assert.Equal("write.config", catalog.Find($"{resource}:{verb}")?.Permission);
+            foreach (string verb in new[] { "get", "list" }) Assert.Equal("read.config", catalog.Find($"{resource}:{verb}")?.Permission);
+        }
+        Assert.Equal("read.config", catalog.Find("units:list")?.Permission);
+        Assert.Equal(8 * 6 + 1, catalog.All.Count);
+    }
+
+    [Fact]
     public void TheMigrationCommandsOfTheSecondSliceAreRegisteredWithTheirPermissions()
     {
         var catalog = new CommandCatalog();
