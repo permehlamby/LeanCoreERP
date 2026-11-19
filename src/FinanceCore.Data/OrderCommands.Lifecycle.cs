@@ -47,6 +47,26 @@ public sealed partial class OrderCommands
         return (decimal)(await cmd.ExecuteScalarAsync(ct))!;
     }
 
+    /// <summary>The invoiced base quantity of a sales order line: the invoice rows less the rows of their reversals (11, 4.3). Zero for a purchase line, whose invoices are not built.</summary>
+    private static async Task<decimal> InvoicedBaseAsync(TenantTransaction tx, OrderKind kind, Guid tenantId, Guid companyId, Guid orderId, int lineNo, CancellationToken ct)
+    {
+        if (kind.Kind != "SALES") return 0m;
+        await using var cmd = tx.Command(
+            "select coalesce(sum(l.base_quantity), 0) from core.sales_invoice_line l join core.sales_invoice h on h.tenant_id = l.tenant_id and h.company_id = l.company_id and h.sales_invoice_id = l.sales_invoice_id " +
+            "left join core.sales_invoice o on o.tenant_id = h.tenant_id and o.company_id = h.company_id and o.sales_invoice_id = h.reversal_of_sales_invoice_id " +
+            "where l.tenant_id = @t and l.company_id = @c and l.sales_order_id = @o and l.sales_order_line_no = @n and (h.invoice_kind = 'INVOICE' or (h.invoice_kind = 'REVERSAL' and o.invoice_kind = 'INVOICE'))");
+        cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("c", companyId); cmd.Parameters.AddWithValue("o", orderId); cmd.Parameters.AddWithValue("n", lineNo);
+        return (decimal)(await cmd.ExecuteScalarAsync(ct))!;
+    }
+
+    /// <summary>Whether an invoice line of any kind names the order line (11, 4.4: the price is locked as soon as one exists).</summary>
+    private static async Task<bool> HasInvoiceLineAsync(TenantTransaction tx, Guid tenantId, Guid companyId, Guid orderId, int lineNo, CancellationToken ct)
+    {
+        await using var cmd = tx.Command("select exists (select 1 from core.sales_invoice_line where tenant_id = @t and company_id = @c and sales_order_id = @o and sales_order_line_no = @n)");
+        cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("c", companyId); cmd.Parameters.AddWithValue("o", orderId); cmd.Parameters.AddWithValue("n", lineNo);
+        return (bool)(await cmd.ExecuteScalarAsync(ct))!;
+    }
+
     private static IReadOnlyList<(string, object)> LineKey(OrderKind kind, Guid tenantId, Guid companyId, Guid orderId, int lineNo) =>
         [("t", tenantId), ("c", companyId), ("o", orderId), ("n", lineNo)];
 
@@ -243,6 +263,12 @@ public sealed partial class OrderCommands
                 Patch? Of(string n) => changed.FirstOrDefault(p => p.Field.Name == n);
                 decimal quantity = Of("quantity")?.Value as decimal? ?? Num(line, "quantity"), price = Of("unit_price")?.Value as decimal? ?? Num(line, "unit_price");
                 decimal discount = Of("discount_pct")?.Value as decimal? ?? Num(line, "discount_pct");
+                // 4.4: the unit price and the discount change only while no invoice line exists for the line
+                if ((Of("unit_price") is not null || Of("discount_pct") is not null) && kind.Kind == "SALES" && await HasInvoiceLineAsync(tx, tenantId, h.CompanyId, req.Id, change.LineNo, ct))
+                    problems.Add(Error("ORDER.PRICE_LOCKED_INVOICED", "P4", $"/lines/{i}/fields/{(Of("unit_price") is not null ? "unit_price" : "discount_pct")}", ("line_no", change.LineNo)));
+                // 4.4: the tax geography changes only until the first invoice of the line
+                if ((Of("origin_country") is not null || Of("destination_country") is not null || Of("tax_class_id") is not null) && kind.Kind == "SALES" && await HasInvoiceLineAsync(tx, tenantId, h.CompanyId, req.Id, change.LineNo, ct))
+                    problems.Add(Error("ORDER.LINE_HAS_PROGRESS", "P4", $"/lines/{i}/fields/tax_geography", ("line_no", change.LineNo), ("reason", "the line is invoiced")));
                 if (Of("quantity") is not null)
                 {
                     if (Math.Round(quantity, 6) != quantity) problems.Add(Error("SCHEMA.INVALID_VALUE", "P1", $"/lines/{i}/fields/quantity", ("reason", "at most 6 fraction digits")));
@@ -251,9 +277,9 @@ public sealed partial class OrderCommands
                     if (item is null || factor is null) problems.Add(Error("INVENTORY.UNIT_CONVERSION_MISSING", "P2", $"/lines/{i}/fields/quantity", ("unit_code", Str(line, "unit_code"))));
                     else if (Math.Round(quantity * factor.Value, item.Scale) != quantity * factor.Value)
                         problems.Add(Error("INVENTORY.QUANTITY_SCALE_EXCEEDED", "P1", $"/lines/{i}/fields/quantity", ("base_quantity", quantity * factor.Value), ("quantity_scale", item.Scale)));
-                    else if (quantity * factor.Value < await FulfilledBaseAsync(tx, kind, tenantId, h.CompanyId, req.Id, change.LineNo, ct))
+                    else if (quantity * factor.Value < Math.Max(await FulfilledBaseAsync(tx, kind, tenantId, h.CompanyId, req.Id, change.LineNo, ct), await InvoicedBaseAsync(tx, kind, tenantId, h.CompanyId, req.Id, change.LineNo, ct)))
                         problems.Add(Error("ORDER.QUANTITY_BELOW_PROGRESS", "P4", $"/lines/{i}/fields/quantity", ("base_quantity", quantity * factor.Value),
-                            ("fulfilled", await FulfilledBaseAsync(tx, kind, tenantId, h.CompanyId, req.Id, change.LineNo, ct))));
+                            ("fulfilled", await FulfilledBaseAsync(tx, kind, tenantId, h.CompanyId, req.Id, change.LineNo, ct)), ("invoiced", await InvoicedBaseAsync(tx, kind, tenantId, h.CompanyId, req.Id, change.LineNo, ct))));
                     else
                     {
                         sets.Add(("base_quantity", NpgsqlDbType.Numeric, quantity * factor.Value));
@@ -401,8 +427,8 @@ public sealed partial class OrderCommands
 
             if (target == "CANCELLED")
                 foreach (int cancelLine in affected)
-                    if (await FulfilledBaseAsync(tx, kind, tenantId, h.CompanyId, id, cancelLine, ct) != 0m)
-                        return Reject(Error("ORDER.LINE_HAS_PROGRESS", "P4", "/line_no", ("line_no", cancelLine), ("reason", "a line with deliveries or receipts is short-closed, not cancelled")));
+                    if (await FulfilledBaseAsync(tx, kind, tenantId, h.CompanyId, id, cancelLine, ct) != 0m || (kind.Kind == "SALES" && await HasInvoiceLineAsync(tx, tenantId, h.CompanyId, id, cancelLine, ct)))
+                        return Reject(Error("ORDER.LINE_HAS_PROGRESS", "P4", "/line_no", ("line_no", cancelLine), ("reason", "a line with deliveries, receipts or invoices is short-closed, not cancelled")));
             DateTime at = Now();
             Guid changeSet = Guid.NewGuid();
             var field = new MasterField("line_status", MasterKind.Code, 50);

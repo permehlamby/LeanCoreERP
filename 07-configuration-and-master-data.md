@@ -805,6 +805,17 @@ For the resources `gl-accounts`, `business-partners` (with PII, company relation
 
 These deltas are applied in 02 and 06 with this spec.
 
+### 13.2aa Sales invoices from orders (F-IMPL-55, 2026-11-19)
+
+PROPOSED, written down so that spec and code agree. It is the first slice of invoicing in 11 (6.4, 6.9, 4.3, 4.4) and builds on 13.2w.
+
+1. **Built.** `sales-invoices:create` (`sales.invoice`), migration 0042. A request has the company, the invoice date, optional posting date and due date, and lines `{line_ref, sales_order_id, sales_order_line_no, quantity, unit_code, tax_code_id, delivery_line_refs, unit_price, discount_pct}`. The mode is the company setting in force: CORE_BUILDS takes the quantity (default what is open to invoice) and the price from the order and refuses a supplied price; APP_SUPPLIES needs the quantity, the price and the discount, and for a goods line with policy DELIVERED the delivery lines.
+2. **One transaction.** The order rows are locked first, the open quantity is computed under the lock (DELIVERED: delivered less invoiced, ORDERED: ordered plus over tolerance less invoiced), then the pipeline of 06 posts an `AR_INVOICE` with origin ORDER: a revenue line per invoice line (account by the REVENUE determination, tax from the tax class, origin, destination and tax point of the order line), the tax lines the pipeline derives, and the receivable (AR_CONTROL) as the balance, an open item with the customer and the due date. The link records are written in the same transaction and their digest is the detail_digest of the journal document.
+3. **Rules.** The orders of one invoice share customer, currency and payment terms; a restricted customer is refused; a cancelled order or line is refused; a dropship line is not built. The tax point is the delivery date of a goods line with a named delivery line, else the invoice date. A named delivery line gives at most its own quantity less what invoices take of it. The due date defaults to the invoice date when the order has no payment terms.
+4. **Price lock and the other rules of 4.4.** The unit price and the discount of a sales order line cannot change once an invoice line names it (ORDER.PRICE_LOCKED_INVOICED); a quantity cannot fall below the larger of delivered and invoiced; the tax geography is locked by the first invoice; a line with invoices is short-closed, not cancelled (ORDER.LINE_HAS_PROGRESS).
+   **Pre-invoicing** is the policy ORDERED of the order line (fixed at creation, both modes). A line with ORDERED is invoiced without delivery up to the ordered quantity plus the over tolerance; the default quantity is the ordered less the invoiced, the tolerance is only the ceiling. A line with DELIVERED defaults to the delivered less the invoiced.
+5. **Not built.** The reversal, credit notes, the protection of a delivery against reversal while an invoice names it, dropship, intercompany, purchase invoices and matching, GR/IR, the reads.
+
 ### 13.2z Reversal of returns (F-IMPL-54, 2026-11-19)
 
 PROPOSED, written down so that spec and code agree. It builds on 13.2x and 13.2y (11, 5.6).

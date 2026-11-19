@@ -515,6 +515,139 @@ public class FulfilmentTests
         Assert.Equal(["AUTH.PERMISSION_MISSING"], Codes(await returns.PostPurchaseReturnAsync(t.TenantId, Ctx(s, "pr4", "sales.return"), new(t.CompanyId, new DateOnly(2026, 3, 14), [new("R1", receipt.DocumentId, 1, 1, "C62", "X")]))));
     }
 
+    // ---- sales invoices (F-IMPL-55): sales-invoices:create
+
+    private sealed record Inv(Guid Revenue, Guid Receivable, Guid Vat, Guid Code);
+
+    /// <summary>The receivable control account, a revenue account that needs a tax code, a VAT registration with a code of 25 per cent and the rule for DK to DK, the determinations (the series of AR_INVOICE is the one of the test tenant).</summary>
+    private static async Task<Inv> InvoiceSetupAsync(S s)
+    {
+        var t = s.T;
+        Guid revenue = Guid.NewGuid(), receivable = Guid.NewGuid(), vat = Guid.NewGuid();
+        await t.ExecuteAsync(
+            "insert into core.gl_account (tenant_id, company_id, account_id, account_no, name, account_type, tax_code_rule, open_item_mode) values " +
+            "(@t, @c, @rev, 'INV-REV', 'Revenue', 'REVENUE', 'MANDATORY', 'NONE'), (@t, @c, @ar, 'INV-AR', 'Receivables', 'ASSET', 'FORBIDDEN', 'CONTROL'), (@t, @c, @vat, 'INV-VAT', 'VAT payable', 'LIABILITY', 'FORBIDDEN', 'NONE')",
+            ("rev", revenue), ("ar", receivable), ("vat", vat));
+        var det = new AccountDeterminationCommands(t.App);
+        foreach (var (role, account) in new[] { ("REVENUE", revenue), ("AR_CONTROL", receivable) })
+            Assert.Equal(CommandStatus.Ok, (await det.CreateAsync(t.TenantId, t.Context("det-" + role, "write.config"), new(t.CompanyId, D(("role_code", role), ("valid_from", "2026-01-01"), ("priority", 1), ("account_id", account))))).Status);
+        var tax = new TaxCommands(t.App);
+        var reg = await tax.CreateRegistrationAsync(t.TenantId, t.Context("w-reg", "write.config"), new(D(("company_id", t.CompanyId), ("country_code", "DK"), ("vat_id", "DK12345678"), ("scheme", "STANDARD"),
+            ("filing_frequency", "QUARTERLY"), ("correction_method", "ADJUST_NEXT"), ("return_currency", "DKK"), ("valid_from", "2026-01-01"))));
+        Assert.True(reg.Status == CommandStatus.Ok, Describe(reg));
+        var code = await tax.CreateCodeAsync(t.TenantId, t.Context("w-c", "write.config"), new(D(("company_id", t.CompanyId), ("code", "U25"), ("description", "U25"), ("tax_type", "OUTPUT"), ("vat_registration_id", reg.Value!.EntityId))));
+        Assert.True(code.Status == CommandStatus.Ok, Describe(code));
+        var version = await tax.CreateVersionAsync(t.TenantId, t.Context("w-v", "write.config"), new(code.Value!.EntityId, D(("valid_from", "2026-01-01"), ("vat_account_id", vat), ("rate", 25m)), []));
+        Assert.True(version.Status == CommandStatus.Ok, Describe(version));
+        var rule = await new TaxDeterminationCommands(t.App).CreateRuleAsync(t.TenantId, t.Context("w-r", "write.config"), new(t.CompanyId,
+            D(("valid_from", "2026-01-01"), ("priority", 10), ("tax_code_id", code.Value.EntityId), ("origin_country", "DK"), ("destination_country", "SE")), []));
+        Assert.True(rule.Status == CommandStatus.Ok, Describe(rule));
+        var rule2 = await new TaxDeterminationCommands(t.App).CreateRuleAsync(t.TenantId, t.Context("w-r2", "write.config"), new(t.CompanyId,
+            D(("valid_from", "2026-01-01"), ("priority", 10), ("tax_code_id", code.Value.EntityId), ("origin_country", "DK"), ("destination_country", "DK")), []));
+        Assert.True(rule2.Status == CommandStatus.Ok, Describe(rule2));
+        return new Inv(revenue, receivable, vat, code.Value.EntityId);
+    }
+
+    private static Task<CommandResult<SalesInvoiceResult>> Invoice(S s, string key, params SalesInvoiceLineInput[] lines) =>
+        new SalesInvoiceCommands(s.T.App).CreateAsync(s.T.TenantId, Ctx(s, key, "sales.invoice"), new(s.T.CompanyId, new DateOnly(2026, 3, 20), lines, SourceDocumentRef: "INV-REF"));
+
+    [Fact]
+    public async Task ASalesInvoiceIsBuiltFromTheOrderAndTheDeliveredQuantityAndBindsItsLinkRecords()
+    {
+        var s = await SetupAsync();
+        var t = s.T;
+        var inv = await InvoiceSetupAsync(s);
+        await ReceiveAsync(s, "r1", await PurchaseOrderAsync(s, "po", 100, 10), 100);
+        var so = await SalesOrderAsync(s, "so", GoodsLine(s, 30, 25));
+        Assert.Equal(["ORDER.INVOICE_EXCEEDS_OPEN"], Codes(await Invoice(s, "i0", new SalesInvoiceLineInput("L1", so.OrderId, 1))));   // nothing is delivered yet
+        var delivery = (await s.Cmds.PostDeliveryAsync(t.TenantId, Ctx(s, "d1", "sales.deliver"), new(t.CompanyId, new DateOnly(2026, 3, 12), [new("D1", so.OrderId, 1, 10, "C62")]))).Value!;
+
+        // the quantity defaults to what is open to invoice: 10 delivered at 25, tax 25 per cent
+        var r = await Invoice(s, "i1", new SalesInvoiceLineInput("L1", so.OrderId, 1, DeliveryLineRefs: [new(delivery.DocumentId, 1)]));
+        Assert.True(r.Status == CommandStatus.Ok, Describe(r));
+        var m = r.Value!;
+        Assert.Equal(("CORE_BUILDS", 250m, 62.5m, 312.5m, "GL-2026-000001"), (m.InvoiceMode, m.NetAmount, m.TaxAmount, m.GrossAmount, m.DocumentNumber));
+        var line = Assert.Single(m.Lines);
+        Assert.Equal((10m, 250m, delivery.DocumentId, 1, 1, inv.Code), (line.BaseQuantity, line.NetAmount, line.DeliveryId, line.DeliveryLineNo, line.JournalLineNo, line.TaxCodeId));
+        Assert.Equal((312.5m, -250m, -62.5m), (
+            await t.ScalarAsync<decimal>($"select coalesce(sum(amount_lc), 0) from core.journal_line where tenant_id = @t and document_id = '{m.JournalDocumentId}' and account_id = '{inv.Receivable}'"),
+            await t.ScalarAsync<decimal>($"select coalesce(sum(amount_lc), 0) from core.journal_line where tenant_id = @t and document_id = '{m.JournalDocumentId}' and account_id = '{inv.Revenue}'"),
+            await t.ScalarAsync<decimal>($"select coalesce(sum(amount_lc), 0) from core.journal_line where tenant_id = @t and document_id = '{m.JournalDocumentId}' and account_id = '{inv.Vat}'")));
+        Assert.Equal(("AR_INVOICE", "ORDER", "sales-invoices:create", true), (
+            await t.ScalarAsync<string>($"select document_type from core.journal_document where tenant_id = @t and document_id = '{m.JournalDocumentId}'"),
+            await t.ScalarAsync<string>($"select origin from core.journal_document where tenant_id = @t and document_id = '{m.JournalDocumentId}'"),
+            await t.ScalarAsync<string>($"select command_name from core.journal_document where tenant_id = @t and document_id = '{m.JournalDocumentId}'"),
+            await t.ScalarAsync<bool>($"select detail_digest is not null from core.journal_document where tenant_id = @t and document_id = '{m.JournalDocumentId}'")));
+        Assert.Equal(("OPEN", s.Customer), (await t.ScalarAsync<string>($"select clearing_status from core.journal_line_open_item where tenant_id = @t and document_id = '{m.JournalDocumentId}'"),
+            await t.ScalarAsync<Guid>($"select partner_id from core.journal_line_open_item where tenant_id = @t and document_id = '{m.JournalDocumentId}'")));
+        Assert.Equal(("2026-03-12", 1L), (await t.ScalarAsync<string>($"select tax_date::text from core.sales_invoice_line where tenant_id = @t and sales_invoice_id = '{m.SalesInvoiceId}'"),
+            await t.ScalarAsync<long>("select count(*) from core.sales_invoice where tenant_id = @t")));   // the tax point is the delivery date
+
+        // the open quantity is used up, a named delivery line gives only its own quantity, and the price of the line is locked
+        Assert.Equal(["ORDER.INVOICE_EXCEEDS_OPEN"], Codes(await Invoice(s, "i2", new SalesInvoiceLineInput("L1", so.OrderId, 1, 1))));
+        var more = (await s.Cmds.PostDeliveryAsync(t.TenantId, Ctx(s, "d2", "sales.deliver"), new(t.CompanyId, new DateOnly(2026, 3, 13), [new("D1", so.OrderId, 1, 5, "C62")]))).Value!;
+        Assert.Equal(["ORDER.INVOICE_EXCEEDS_OPEN"], Codes(await Invoice(s, "i3", new SalesInvoiceLineInput("L1", so.OrderId, 1, 6, DeliveryLineRefs: [new(more.DocumentId, 1)]))));
+        var five = await Invoice(s, "i4", new SalesInvoiceLineInput("L1", so.OrderId, 1, 5, DeliveryLineRefs: [new(more.DocumentId, 1)]));
+        Assert.True(five.Status == CommandStatus.Ok, Describe(five));
+        Assert.Equal(["ORDER.PRICE_LOCKED_INVOICED"], Codes(await s.Orders.ChangeAsync(OrderKind.Sales, t.TenantId, Ctx(s, "chg", "sales.order"), new(so.OrderId, so.RowVersion, null, [new(1, D(("unit_price", 26m)))]))));
+        var replay = await Invoice(s, "i1", new SalesInvoiceLineInput("L1", so.OrderId, 1, DeliveryLineRefs: [new(delivery.DocumentId, 1)]));
+        Assert.True(replay.IdempotentReplay);
+        Assert.Equal(m.SalesInvoiceId, replay.Value!.SalesInvoiceId);
+        var verify = await new ChainVerification(t.App).VerifyAsync(t.TenantId, t.Context("v", "chain.verify"), new(t.CompanyId, "LEDGER"));
+        Assert.True(verify.Status == CommandStatus.Ok && verify.Value!.Ok, Describe(verify));
+    }
+
+    [Fact]
+    public async Task AGoodsLineWithPolicyOrderedIsInvoicedBeforeDeliveryAtTheOrderedQuantityAndTheOverToleranceIsOnlyTheCeiling()
+    {
+        var s = await SetupAsync();
+        var t = s.T;
+        await InvoiceSetupAsync(s);
+        var so = await SalesOrderAsync(s, "so", W(GoodsLine(s, 30, 25, over: 10), "invoice_policy", "ORDERED"));
+
+        // no delivery and no delivery line: the default is the ordered quantity, not the quantity plus the tolerance
+        var first = await Invoice(s, "i1", new SalesInvoiceLineInput("L1", so.OrderId, 1));
+        Assert.True(first.Status == CommandStatus.Ok, Describe(first));
+        Assert.Equal((750m, 30m, true), (first.Value!.NetAmount, first.Value.Lines[0].BaseQuantity, first.Value.Lines[0].DeliveryId is null));
+        Assert.Equal("2026-03-20", await t.ScalarAsync<string>($"select tax_date::text from core.sales_invoice_line where tenant_id = @t and sales_invoice_id = '{first.Value.SalesInvoiceId}'"));   // the invoice date: nothing is delivered
+
+        // the tolerance is the ceiling: 3 more can be invoiced, 4 cannot, and then nothing is left as a default
+        Assert.Equal(["ORDER.INVOICE_EXCEEDS_OPEN"], Codes(await Invoice(s, "i2", new SalesInvoiceLineInput("L1", so.OrderId, 1, 4))));
+        Assert.Equal(["ORDER.INVOICE_EXCEEDS_OPEN"], Codes(await Invoice(s, "i3", new SalesInvoiceLineInput("L1", so.OrderId, 1))));   // ordered less invoiced is zero
+        var three = await Invoice(s, "i4", new SalesInvoiceLineInput("L1", so.OrderId, 1, 3));
+        Assert.True(three.Status == CommandStatus.Ok, Describe(three));
+
+        // 4.4: the quantity cannot fall below what is invoiced, and the tax geography is locked by the invoice
+        Assert.Equal(["ORDER.QUANTITY_BELOW_PROGRESS"], Codes(await s.Orders.ChangeAsync(OrderKind.Sales, t.TenantId, Ctx(s, "c1", "sales.order"), new(so.OrderId, so.RowVersion, null, [new(1, D(("quantity", 20)))]))));
+        Assert.Equal(["ORDER.LINE_HAS_PROGRESS"], Codes(await s.Orders.ChangeAsync(OrderKind.Sales, t.TenantId, Ctx(s, "c2", "sales.order"), new(so.OrderId, so.RowVersion, null, [new(1, D(("destination_country", "DK")))]))));
+    }
+
+    [Fact]
+    public async Task InAppSuppliesModeTheCallerSendsPriceAndDiscountAndTheOrderPriceIsKeptBesideThem()
+    {
+        var s = await SetupAsync();
+        var t = s.T;
+        await InvoiceSetupAsync(s);
+        await t.ExecuteAsync("insert into core.company_order_setting_version (tenant_id, company_id, effective_from, sales_invoice_mode, created_by) values (@t, @c, date '2026-01-01', 'APP_SUPPLIES', 'test')");
+        await ReceiveAsync(s, "r1", await PurchaseOrderAsync(s, "po", 100, 10), 100);
+        var so = await SalesOrderAsync(s, "so", GoodsLine(s, 30, 25), ServiceLine(s, 5, 400));
+        var delivery = (await s.Cmds.PostDeliveryAsync(t.TenantId, Ctx(s, "d1", "sales.deliver"), new(t.CompanyId, new DateOnly(2026, 3, 12), [new("D1", so.OrderId, 1, 10, "C62")]))).Value!;
+
+        Assert.Equal(["ORDER.INVOICE_LINE_REFERENCE_MISSING"], Codes(await Invoice(s, "i0", new SalesInvoiceLineInput("L1", so.OrderId, 1, 10))));
+        Assert.Equal(["ORDER.INVOICE_LINE_REFERENCE_MISSING"], Codes(await Invoice(s, "i1", new SalesInvoiceLineInput("L1", so.OrderId, 1, 10, UnitPrice: 30m, DiscountPct: 10m))));   // a goods line with policy DELIVERED needs a delivery line
+        Assert.Equal(["ORDER.INVOICE_LINE_REFERENCE_MISSING"], Codes(await Invoice(s, "i2", new SalesInvoiceLineInput("L1", so.OrderId, 1, 10, DiscountPct: 10m, DeliveryLineRefs: [new(delivery.DocumentId, 1)]))));
+        // a service line with policy ORDERED is invoiced before delivery and needs no reference; the goods line carries the sent price and the order price beside it
+        var r = await Invoice(s, "i3", new SalesInvoiceLineInput("L1", so.OrderId, 1, 10, UnitPrice: 30m, DiscountPct: 10m, DeliveryLineRefs: [new(delivery.DocumentId, 1)]), new SalesInvoiceLineInput("L2", so.OrderId, 2, 5, UnitPrice: 400m, DiscountPct: 0m));
+        Assert.True(r.Status == CommandStatus.Ok, Describe(r));
+        var m = r.Value!;
+        Assert.Equal(("APP_SUPPLIES", 270m + 2000m, 2, 2), (m.InvoiceMode, m.NetAmount, m.Lines.Count, m.Lines[1].JournalLineNo));
+        Assert.Equal((270m, 25m, 0m), (m.Lines[0].NetAmount, await s.T.ScalarAsync<decimal>($"select order_unit_price from core.sales_invoice_line where tenant_id = @t and sales_invoice_id = '{m.SalesInvoiceId}' and line_no = 1"),
+            await s.T.ScalarAsync<decimal>($"select order_discount_pct from core.sales_invoice_line where tenant_id = @t and sales_invoice_id = '{m.SalesInvoiceId}' and line_no = 1")));
+        Assert.Equal((true, 2000m), (await s.T.ScalarAsync<bool>($"select delivery_id is null from core.sales_invoice_line where tenant_id = @t and sales_invoice_id = '{m.SalesInvoiceId}' and line_no = 2"), m.Lines[1].NetAmount));
+        Assert.Equal(["SCHEMA.INVALID_VALUE"], Codes(await new SalesInvoiceCommands(t.App).CreateAsync(t.TenantId, Ctx(s, "i4", "sales.invoice"), new(t.CompanyId, new DateOnly(2026, 3, 20), [new("L1", so.OrderId, 1, 1, UnitPrice: -1m, DiscountPct: 0m)]))));
+        Assert.Equal(["AUTH.PERMISSION_MISSING"], Codes(await new SalesInvoiceCommands(t.App).CreateAsync(t.TenantId, Ctx(s, "i5", "sales.order"), new(t.CompanyId, new DateOnly(2026, 3, 20), [new("L1", so.OrderId, 1, 1)]))));
+    }
+
     // ---- reversal of returns (F-IMPL-54)
 
     [Fact]

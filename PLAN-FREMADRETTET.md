@@ -16,7 +16,7 @@ Oprettet 2026-11-12, efter at momsområdet (V1–V5) og DK-pakkens momsindhold e
 | Outbox-jobs, eksport, anonymisering, tenant-sletning | Ikke bygget (hændelser skrives, men ingen jobs) |
 | Migration (13) | To slices bygget (F-IMPL-44, F-IMPL-46): åbningsbalancer og åbne poster fra åbning til seal, rollback, four-eyes (commit, seal, approve) og læsninger. Mangler historik (HISTORY-chunk, historieår, CLOSING), lager, ordrer, legacy_tax_summary, legacy_id_map, VALIDATE-tilstand |
 | Lager (10) | Tre slices bygget (F-IMPL-47, 48, 50): stamdata, kontobestemmelse og lagerbogen med modtagelse, udlevering og regulering til glidende gennemsnit, bogføring og STOCK-kæde. Mangler FIFO, sporing, overførsler, returvarer, landed cost, reversering, reservationer og negativ beholdning |
-| Ordrer (11) | Fem slices bygget (F-IMPL-49, 51 til 54): salgs- og indkøbsordrer, levering/modtagelse mod ordrerne på lagerbogen med FULFILMENT-kæde og mængdelåse, tilbageførsel af lagerbilag, leveringer og modtagelser, og returvarer med tilbageførsel. Mangler fakturering og matchning, GR/IR-afskrivning, adressesnapshots, reservationer, dropship og koncernordrer |
+| Ordrer (11) | Seks slices bygget (F-IMPL-49, 51 til 55): salgs- og indkøbsordrer, levering/modtagelse mod ordrerne på lagerbogen med FULFILMENT-kæde og mængdelåse, tilbageførsel af lagerbilag, leveringer og modtagelser, returvarer med tilbageførsel, og salgsfaktura fra ordrer (sales-invoices:create, begge modes). Mangler salgsfaktura-tilbageførsel, kreditnotaer, leverandørfakturaer og matchning og matchning, GR/IR-afskrivning, adressesnapshots, reservationer, dropship og koncernordrer |
 | Fakturering og betaling (22), konsolidering (23) | Kun spec |
 | API-hærdning (mTLS, rate limits, pagination) | Ikke bygget |
 

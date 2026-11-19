@@ -137,6 +137,23 @@ public sealed class JournalDocumentPoster(NpgsqlDataSource source)
             }
         }
 
+        return await PostCoreAsync(tx, tenantId, ctx, req, fingerprint, null, ct);
+    }
+
+    /// <summary>
+    /// How an order command (11) embeds the posting of its finance document in its own transaction: the origin and command name of the document, the line of the request whose amount is
+    /// the balance of the others and the tax (the gross receivable of an invoice, known only once the tax is worked out), the detail_digest of the document (the digest of the link
+    /// records, ADR-052), whether the poster writes the command log and commits, and what runs once the document is inserted (the link records).
+    /// </summary>
+    internal sealed record PostEmbedding(
+        string CommandName, string Origin, string? BalancingLineRef, Func<EmbeddedFacts, byte[]?>? DetailDigest, bool WriteLog, bool Commit, Func<TenantTransaction, PostedDocument, EmbeddedFacts, Task>? After);
+
+    /// <summary>What the posting worked out that the order command needs for its link records: the request with the balancing amount in, and the tax plan.</summary>
+    internal sealed record EmbeddedFacts(PostJournalDocumentRequest Request, TaxPlan Tax);
+
+    internal async Task<CommandResult<PostedDocument>> PostCoreAsync(
+        TenantTransaction tx, Guid tenantId, CommandContext ctx, PostJournalDocumentRequest req, byte[] fingerprint, PostEmbedding? embedding, CancellationToken ct)
+    {
         var errors = new List<CommandError>();
         var warnings = new List<CommandError>();
 
@@ -228,6 +245,16 @@ public sealed class JournalDocumentPoster(NpgsqlDataSource source)
                 }
             }
             taxFailed = errors.Count > 0;
+        }
+
+        // an embedding names the line that balances the document: the gross receivable or payable is the rest of the base lines and the tax
+        if (embedding?.BalancingLineRef is { } balancing && errors.Count == 0)
+        {
+            int at = req.Lines.ToList().FindIndex(l => l.LineRef == balancing);
+            decimal others = req.Lines.Where((_, i) => i != at).Sum(l => l.AmountTc) + taxPlan.Lines.Sum(t => t.TaxTc + t.Nondeductible.Sum(n => n.Tc)) + taxPlan.RoundingTc;
+            var balanced = req.Lines.ToList();
+            balanced[at] = balanced[at] with { AmountTc = -others };
+            req = req with { Lines = balanced };
         }
 
         // P6 (TC balance) is cheap and independent, so it is reported with the other errors.
@@ -346,19 +373,20 @@ public sealed class JournalDocumentPoster(NpgsqlDataSource source)
         string number = PostingRules.FormatNumber(series.Prefix, series.IncludeFiscalYear, series.Separator, series.NumberLength, fiscalYear, sequenceNo);
         bool softOverride = recheck.SoftCloseOverride;
 
+        byte[]? detailDigest = embedding?.DetailDigest?.Invoke(new EmbeddedFacts(req, taxPlan));
         var header = new Dictionary<string, object?>
         {
             ["tenant_id"] = tenantId, ["company_id"] = req.CompanyId, ["document_id"] = documentId, ["ledger_id"] = ledgerId.Value,
             ["document_type"] = req.DocumentType, ["is_system_generated"] = false, ["number_series_id"] = series.SeriesId,
             ["fiscal_year"] = fiscalYear, ["sequence_no"] = sequenceNo, ["document_number"] = number,
             ["fiscal_period"] = recheck.PeriodNo!.Value, ["soft_close_override"] = softOverride,
-            ["migration_batch_id"] = null, ["detail_digest"] = null,
+            ["migration_batch_id"] = null, ["detail_digest"] = detailDigest,
             ["document_date"] = req.DocumentDate, ["posting_date"] = req.PostingDate, ["posted_at"] = postedAt,
             ["transaction_currency"] = req.TransactionCurrency,
             ["reversal_of_document_id"] = null, ["reversal_reason_code"] = null, ["auto_reversal_date"] = null,
-            ["ic_transaction_id"] = null, ["ic_counterpart_company_id"] = null, ["origin"] = "EXTERNAL",
+            ["ic_transaction_id"] = null, ["ic_counterpart_company_id"] = null, ["origin"] = embedding?.Origin ?? "EXTERNAL",
             ["source_system"] = ctx.SourceSystem, ["source_document_ref"] = req.SourceDocumentRef,
-            ["idempotency_key"] = ctx.IdempotencyKey, ["command_name"] = CommandName, ["posted_by"] = ctx.Actor,
+            ["idempotency_key"] = ctx.IdempotencyKey, ["command_name"] = embedding?.CommandName ?? CommandName, ["posted_by"] = ctx.Actor,
             ["correlation_id"] = ctx.CorrelationId, ["hash_version"] = LedgerHash2.Version
         };
 
@@ -446,7 +474,7 @@ public sealed class JournalDocumentPoster(NpgsqlDataSource source)
 
         // Insert document and lines
         await InsertDocumentAsync(tx, tenantId, req, ctx, documentId, ledgerId.Value, series, fiscalYear, recheck.PeriodNo!.Value,
-            sequenceNo, number, softOverride, postedAt, chainSeq, headHash, rowHash, ct);
+            sequenceNo, number, softOverride, postedAt, chainSeq, headHash, rowHash, embedding, detailDigest, ct);
         if (await LegalSnapshots.WriteAsync(tx, tenantId, req.CompanyId, documentId, fiscalYear, req.PostingDate, postedAt, ct, partnerId: req.PartnerId) is { } noSnapshot)
             return Reject(noSnapshot);
         foreach (PostedLine l in lines)
@@ -490,8 +518,9 @@ public sealed class JournalDocumentPoster(NpgsqlDataSource source)
             await cmd.ExecuteNonQueryAsync(ct);
         }
 
-        // Command log and its result
+        // Command log and its result (an embedding writes its own)
         Guid logId = Guid.NewGuid();
+        if (embedding?.WriteLog != false)
         await using (var cmd = tx.Command(
             "insert into core.command_log (tenant_id, command_log_id, company_id, idempotency_key, command_name, request_fingerprint, actor, correlation_id) " +
             "values (@t, @id, @c, @k, @n, @f, @a, @corr)"))
@@ -506,6 +535,7 @@ public sealed class JournalDocumentPoster(NpgsqlDataSource source)
             cmd.Parameters.AddWithValue("corr", ctx.CorrelationId);
             await cmd.ExecuteNonQueryAsync(ct);
         }
+        if (embedding?.WriteLog != false)
         await using (var cmd = tx.Command(
             "insert into core.command_log_result (tenant_id, command_log_id, result_seq, entity_type, entity_id) " +
             "values (@t, @id, 1, 'DOCUMENT', @e)"))
@@ -553,13 +583,14 @@ public sealed class JournalDocumentPoster(NpgsqlDataSource source)
             await cmd.ExecuteNonQueryAsync(ct);
         }
 
-        // Commit runs the deferred checks: balance, lines present, chain link and head, outbox position.
-        await tx.CommitAsync(ct);
-
         warnings.AddRange(recheck.Warnings.Where(w => warnings.All(x => x.Code != w.Code)));
         var posted = new PostedDocument(documentId, req.CompanyId, ledgerId.Value, req.DocumentType, number, sequenceNo,
             fiscalYear, recheck.PeriodNo!.Value, req.DocumentDate, req.PostingDate, req.TransactionCurrency,
             "posted", softOverride, chainSeq, rowHashHex, Canonical.FormatHex32(headHash), LedgerHash2.Version, lines);
+        if (embedding?.After is { } after) await after(tx, posted, new EmbeddedFacts(req, taxPlan));
+
+        // Commit runs the deferred checks: balance, lines present, chain link and head, outbox position.
+        if (embedding?.Commit != false) await tx.CommitAsync(ct);
         return CommandResult<PostedDocument>.Ok(posted, logId, warnings);
     }
 
@@ -809,15 +840,17 @@ public sealed class JournalDocumentPoster(NpgsqlDataSource source)
     private static async Task InsertDocumentAsync(
         TenantTransaction tx, Guid tenantId, PostJournalDocumentRequest req, CommandContext ctx, Guid documentId, Guid ledgerId,
         SeriesRow series, int fiscalYear, int period, long sequenceNo, string number, bool softOverride, DateTime postedAt,
-        long chainSeq, byte[] prevHash, byte[] rowHash, CancellationToken ct)
+        long chainSeq, byte[] prevHash, byte[] rowHash, PostEmbedding? embedding, byte[]? detailDigest, CancellationToken ct)
     {
         await using var cmd = tx.Command(
             "insert into core.journal_document (tenant_id, company_id, document_id, ledger_id, document_type, is_system_generated, " +
             "number_series_id, fiscal_year, sequence_no, document_number, fiscal_period, soft_close_override, document_date, posting_date, " +
             "posted_at, transaction_currency, origin, source_system, source_document_ref, idempotency_key, command_name, posted_by, " +
-            "correlation_id, header_text, external_reference, chain_seq, prev_hash, row_hash, hash_version) " +
-            "values (@t, @c, @id, @l, @dt, false, @s, @fy, @seq, @num, @fp, @soft, @dd, @pd, @at, @tc, 'EXTERNAL', @src, @ref, @key, @cmd, " +
-            "@by, @corr, @ht, @ext, @cs, @prev, @row, @hv)");
+            "correlation_id, header_text, external_reference, chain_seq, prev_hash, row_hash, hash_version, detail_digest) " +
+            "values (@t, @c, @id, @l, @dt, false, @s, @fy, @seq, @num, @fp, @soft, @dd, @pd, @at, @tc, @origin, @src, @ref, @key, @cmd, " +
+            "@by, @corr, @ht, @ext, @cs, @prev, @row, @hv, @detail)");
+        cmd.Parameters.AddWithValue("origin", embedding?.Origin ?? "EXTERNAL");
+        cmd.Parameters.Add(new NpgsqlParameter("detail", NpgsqlDbType.Bytea) { Value = (object?)detailDigest ?? DBNull.Value });
         cmd.Parameters.AddWithValue("t", tenantId);
         cmd.Parameters.AddWithValue("c", req.CompanyId);
         cmd.Parameters.AddWithValue("id", documentId);
@@ -836,7 +869,7 @@ public sealed class JournalDocumentPoster(NpgsqlDataSource source)
         cmd.Parameters.AddWithValue("src", ctx.SourceSystem);
         cmd.Parameters.AddWithValue("ref", (object?)req.SourceDocumentRef ?? DBNull.Value);
         cmd.Parameters.AddWithValue("key", ctx.IdempotencyKey);
-        cmd.Parameters.AddWithValue("cmd", CommandName);
+        cmd.Parameters.AddWithValue("cmd", embedding?.CommandName ?? CommandName);
         cmd.Parameters.AddWithValue("by", ctx.Actor);
         cmd.Parameters.AddWithValue("corr", ctx.CorrelationId);
         cmd.Parameters.AddWithValue("ht", (object?)req.HeaderText ?? DBNull.Value);
