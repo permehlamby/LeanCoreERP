@@ -286,7 +286,7 @@ public class OrderTests
         Assert.Equal(["READ.CURSOR_INVALID"], Codes(await s.Reads.ListAsync(OrderKind.Sales, t.TenantId, Read("l8"), new(Cursor: "garbage"))));
         Assert.Equal(["AUTH.PERMISSION_MISSING"], Codes(await s.Reads.ListAsync(OrderKind.Sales, t.TenantId, t.Context("l9", "sales.order"), new())));
         Assert.Equal(["READ.NOT_FOUND"], Codes(await s.Reads.GetAsync(OrderKind.Sales, t.TenantId, Read("g1"), new(Guid.NewGuid()))));
-        Assert.Equal(["READ.INVALID_FILTER"], Codes(await s.Reads.GetAsync(OrderKind.Sales, t.TenantId, Read("g2"), new(a.OrderId, ["progress"]))));
+        Assert.Equal(["READ.INVALID_FILTER"], Codes(await s.Reads.GetAsync(OrderKind.Sales, t.TenantId, Read("g2"), new(a.OrderId, ["address"]))));
         var changes = (await s.Reads.GetAsync(OrderKind.Sales, t.TenantId, Read("g3"), new(c.OrderId, ["changes"]))).Value!.Changes!.Value;
         Assert.Equal("line_status", Assert.Single(changes.EnumerateArray()).GetProperty("field_name").GetString());
         var other = await TestTenant.CreateReadyAsync();

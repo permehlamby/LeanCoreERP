@@ -37,6 +37,16 @@ public sealed partial class OrderCommands
         await cmd.ExecuteNonQueryAsync(ct);
     }
 
+    /// <summary>The delivered (sales) or received (purchase) base quantity of an order line, mirror rows included (11, 4.3). Read under the order lock.</summary>
+    private static async Task<decimal> FulfilledBaseAsync(TenantTransaction tx, OrderKind kind, Guid tenantId, Guid companyId, Guid orderId, int lineNo, CancellationToken ct)
+    {
+        string table = kind.Kind == "SALES" ? "sales_delivery_line" : "purchase_receipt_line", idColumn = kind.Kind == "SALES" ? "sales_order_id" : "purchase_order_id";
+        string lineColumn = kind.Kind == "SALES" ? "sales_order_line_no" : "purchase_order_line_no";
+        await using var cmd = tx.Command($"select coalesce(sum(base_quantity), 0) from core.{table} where tenant_id = @t and company_id = @c and {idColumn} = @o and {lineColumn} = @n");
+        cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("c", companyId); cmd.Parameters.AddWithValue("o", orderId); cmd.Parameters.AddWithValue("n", lineNo);
+        return (decimal)(await cmd.ExecuteScalarAsync(ct))!;
+    }
+
     private static IReadOnlyList<(string, object)> LineKey(OrderKind kind, Guid tenantId, Guid companyId, Guid orderId, int lineNo) =>
         [("t", tenantId), ("c", companyId), ("o", orderId), ("n", lineNo)];
 
@@ -241,6 +251,9 @@ public sealed partial class OrderCommands
                     if (item is null || factor is null) problems.Add(Error("INVENTORY.UNIT_CONVERSION_MISSING", "P2", $"/lines/{i}/fields/quantity", ("unit_code", Str(line, "unit_code"))));
                     else if (Math.Round(quantity * factor.Value, item.Scale) != quantity * factor.Value)
                         problems.Add(Error("INVENTORY.QUANTITY_SCALE_EXCEEDED", "P1", $"/lines/{i}/fields/quantity", ("base_quantity", quantity * factor.Value), ("quantity_scale", item.Scale)));
+                    else if (quantity * factor.Value < await FulfilledBaseAsync(tx, kind, tenantId, h.CompanyId, req.Id, change.LineNo, ct))
+                        problems.Add(Error("ORDER.QUANTITY_BELOW_PROGRESS", "P4", $"/lines/{i}/fields/quantity", ("base_quantity", quantity * factor.Value),
+                            ("fulfilled", await FulfilledBaseAsync(tx, kind, tenantId, h.CompanyId, req.Id, change.LineNo, ct))));
                     else
                     {
                         sets.Add(("base_quantity", NpgsqlDbType.Numeric, quantity * factor.Value));
@@ -256,7 +269,9 @@ public sealed partial class OrderCommands
                         logs.Add((new MasterField("net_amount", MasterKind.Amount), Normalised(MasterKind.Amount, Num(line, "net_amount").ToString(CultureInfo.InvariantCulture)), Normalised(MasterKind.Amount, net.ToString(CultureInfo.InvariantCulture))));
                     }
                 }
-                if (Of("warehouse_id") is { } wh)
+                if (Of("warehouse_id") is not null && await FulfilledBaseAsync(tx, kind, tenantId, h.CompanyId, req.Id, change.LineNo, ct) != 0m)
+                    problems.Add(Error("ORDER.LINE_HAS_PROGRESS", "P4", $"/lines/{i}/fields/warehouse_id", ("line_no", change.LineNo)));
+                else if (Of("warehouse_id") is { } wh)
                 {
                     if (wh.Value is null && (Str(line, "fulfilment_type") == "STOCK" || (kind.Kind == "PURCHASE")))
                         problems.Add(Error("SCHEMA.REQUIRED_FIELD_MISSING", "P2", $"/lines/{i}/fields/warehouse_id", ("reason", "a stocked line has a warehouse")));
@@ -384,6 +399,10 @@ public sealed partial class OrderCommands
             }
             else affected.AddRange(lines.Where(l => Str(l.Value, "line_status") == "OPEN").Select(l => l.Key));
 
+            if (target == "CANCELLED")
+                foreach (int cancelLine in affected)
+                    if (await FulfilledBaseAsync(tx, kind, tenantId, h.CompanyId, id, cancelLine, ct) != 0m)
+                        return Reject(Error("ORDER.LINE_HAS_PROGRESS", "P4", "/line_no", ("line_no", cancelLine), ("reason", "a line with deliveries or receipts is short-closed, not cancelled")));
             DateTime at = Now();
             Guid changeSet = Guid.NewGuid();
             var field = new MasterField("line_status", MasterKind.Code, 50);

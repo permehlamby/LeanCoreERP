@@ -62,6 +62,16 @@ public class ContractTests
     }
 
     [Fact]
+    public void TheFulfilmentCommandsAreRegisteredWithTheirPermissionsOfSection61()
+    {
+        var catalog = new CommandCatalog();
+        new FulfilmentModule().Register(catalog);
+        Assert.Equal("sales.deliver", catalog.Find("sales-deliveries:post")?.Permission);
+        Assert.Equal("purchase.receive", catalog.Find("purchase-receipts:post")?.Permission);
+        Assert.Equal(2, catalog.All.Count);
+    }
+
+    [Fact]
     public void TheStockCommandsAreRegisteredWithTheirPermissionsOfSection61()
     {
         var catalog = new CommandCatalog();
@@ -260,7 +270,8 @@ public class ContractTests
         "CHAIN.DOCUMENT_WITHOUT_LINES", "NUMBER.GAP", "SYSTEM.FISCAL_YEAR_MISSING",
         "EVENT.ACK_NOT_FORWARD", "EVENT.REWIND_NOT_BACKWARD",   // 15, 5.3 says "only forward" and "backward" without naming a code (F-IMPL-42)
         "MIGRATION.ROLLBACK_FAILED",                             // 13, 7 has no code for a document of a rollback that does not reverse (F-IMPL-46)
-        "ORDER.ORDER_NOT_OPEN", "ORDER.LINE_NOT_OPEN"            // 11, 4.4 says an order and a line are changed only while open, without naming a code (F-IMPL-49)
+        "ORDER.ORDER_NOT_OPEN", "ORDER.LINE_NOT_OPEN",           // 11, 4.4 says an order and a line are changed only while open, without naming a code (F-IMPL-49)
+        "ORDER.QUANTITY_BELOW_PROGRESS", "ORDER.LINE_HAS_PROGRESS"   // 11, 4.4 limits a quantity, a warehouse and a cancel by progress without naming codes (F-IMPL-51)
     ];
 
     /// <summary>The index of 06 writes a code in full (`AREA.NAME`) or, inside the row of its area, as the bare name (`NAME`).</summary>

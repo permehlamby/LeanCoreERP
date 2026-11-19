@@ -23,6 +23,7 @@ builder.Services.AddSingleton(sp => new InventoryMasterCommands(sp.GetRequiredSe
 builder.Services.AddSingleton(sp => new AccountDeterminationCommands(sp.GetRequiredService<NpgsqlDataSource>()));
 builder.Services.AddSingleton(sp => new StockCommands(sp.GetRequiredService<NpgsqlDataSource>()));
 builder.Services.AddSingleton(sp => new StockReads(sp.GetRequiredService<NpgsqlDataSource>()));
+builder.Services.AddSingleton(sp => new FulfilmentCommands(sp.GetRequiredService<NpgsqlDataSource>()));
 builder.Services.AddSingleton(sp => new OrderCommands(sp.GetRequiredService<NpgsqlDataSource>()));
 builder.Services.AddSingleton(sp => new OrderSettingCommands(sp.GetRequiredService<NpgsqlDataSource>()));
 builder.Services.AddSingleton(sp => new OrderReads(sp.GetRequiredService<NpgsqlDataSource>()));
@@ -54,6 +55,7 @@ builder.Services.AddSingleton<ICommandModule, MigrationModule>();
 builder.Services.AddSingleton<ICommandModule, InventoryModule>();
 builder.Services.AddSingleton<ICommandModule, OrderModule>();
 builder.Services.AddSingleton<ICommandModule, StockModule>();
+builder.Services.AddSingleton<ICommandModule, FulfilmentModule>();
 builder.Services.AddSingleton<ICommandModule, ConfigModule>();
 builder.Services.AddSingleton<CommandCatalog>(sp =>
 {

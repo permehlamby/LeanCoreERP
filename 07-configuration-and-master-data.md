@@ -805,6 +805,17 @@ For the resources `gl-accounts`, `business-partners` (with PII, company relation
 
 These deltas are applied in 02 and 06 with this spec.
 
+### 13.2w Fulfilment of orders on the stock ledger (F-IMPL-51, 2026-11-19)
+
+PROPOSED, written down so that spec and code agree. It is the second slice of 11 (5.1, 5.2, 5.5, 6.3, 7.1) and builds on 13.2v.
+
+1. **Built.** `sales-deliveries:post` (`sales.deliver`) and `purchase-receipts:post` (`purchase.receive`), migration 0039. A request has the company, the date and lines of `{line_ref, order, order line, quantity, unit_code, warehouse_id, location_id}`. One transaction in the lock order of 11, 9: the order rows, the item rows, the counters, the LEDGER and STOCK heads, then the FULFILMENT head.
+2. **Lines.** The orders of one document have one customer or supplier and are open, the lines are open, a restricted partner is refused. The base quantity follows 10, 3.4, the limit is the ordered quantity plus the over tolerance less what is done, computed under the order lock and with two lines of one order line added (`ORDER.OVER_DELIVERY`, also for receipts). A goods line is one movement of the stock document (ISSUE at cost for a delivery, RECEIPT at the share of the net amount of the order line for a receipt), a service line has none, and a document of service lines only has no stock document.
+3. **Chain.** A delivery or a receipt is a node of the FULFILMENT chain (`FulfilmentHash2`: the header block, the digest of the lines, the stock document by id). The `detail_digest` of the stock document is the row hash of the node. The stock document and the journal are those of 13.2v, with the command name of the fulfilment command.
+4. **Progress.** `sales-orders:get` and `purchase-orders:get` take the include `progress`: per line the ordered, fulfilled and open base quantity, the limit and the status. The open quantity is the ordered less the fulfilled, never below zero, over tolerance not counted, zero for a line that is not open.
+5. **Order rules now enforced (4.4).** A quantity cannot fall below what is delivered or received (`ORDER.QUANTITY_BELOW_PROGRESS`), the warehouse of a line is fixed after its first delivery or receipt, and a line or an order with a delivery or receipt is short-closed and not cancelled (`ORDER.LINE_HAS_PROGRESS`). The rules that need invoices (price lock, tax geography, match mode) wait for them.
+6. **Not built.** Tracking, reservations and CONSUME, the coverage of a receipt by an earlier supplier invoice, dropship, intercompany, reversal of a delivery or receipt, foreign-currency orders, the reads of deliveries and receipts, `open-orders:query`, and the verification of the FULFILMENT and STOCK chains by `chains:verify`.
+
 ### 13.2v The stock ledger (F-IMPL-50, 2026-11-19)
 
 PROPOSED, written down so that spec and code agree. It is the third slice of 10 (4, 5.2, 6.2, 7) and the base of the fulfilment of 11.

@@ -9,6 +9,18 @@ using NpgsqlTypes;
 
 namespace FinanceCore.Data;
 
+/// <summary>A movement as derived, for the fulfilment command that embeds the stock document: the line of the request it came from, its base quantity and value.</summary>
+internal sealed record DerivedMovement(int LineNo, int RequestIndex, decimal BaseQuantity, decimal ValueLc);
+
+internal sealed record StockDerivation(Guid StockDocumentId, Guid? JournalDocumentId, IReadOnlyList<DerivedMovement> Movements);
+
+/// <summary>
+/// How a fulfilment command (11) embeds the stock document in its own transaction: the command name, whether the stock command writes its command log and commits (a fulfilment
+/// command does neither), the callback that gives the detail_digest once the movements are derived (the row hash of the fulfilment document, 11, 5.5), and the receipt value of a line
+/// that order management computes from the order price (10, 5.6: a priced receipt is COMPUTED).
+/// </summary>
+internal sealed record StockPostOptions(string CommandName, bool WriteLog, bool Commit, Func<StockDerivation, Task<byte[]?>>? DetailDigest, IReadOnlyDictionary<int, decimal>? LineValues);
+
 /// <summary>
 /// stock-documents:post (10, 6.2), first slice: RECEIPT, ISSUE and ADJUSTMENT (a delta or a count) of items without tracking, valued by moving average (5.2) in the company currency, in
 /// the locations of type STANDARD or none. One transaction: the item rows (10, 6.4), the numbers, the LEDGER and STOCK heads, the stock document with its movements and the derived
@@ -53,7 +65,7 @@ public sealed class StockCommands(NpgsqlDataSource source)
 
     private sealed record Planned(
         int LineNo, StockLineInput Input, ItemRow Item, string MovementType, string CostSource, decimal Quantity, decimal BaseQuantity, decimal ValueLc, decimal? ValueTc,
-        decimal CostQtyAfter, decimal CostValueAfter, decimal StockQtyAfter, decimal? ExpectedBook, string? CountRef, string UnitCode);
+        decimal CostQtyAfter, decimal CostValueAfter, decimal StockQtyAfter, decimal? ExpectedBook, string? CountRef, string UnitCode, int RequestIndex);
 
     private sealed record JournalPair(string DebitRole, string CreditRole, decimal Value, Guid ItemGroup, Guid Warehouse, Guid Item, int LineNo);
 
@@ -177,9 +189,10 @@ public sealed class StockCommands(NpgsqlDataSource source)
         return Convert.ToInt32(await cmd.ExecuteScalarAsync(ct) ?? 2, CultureInfo.InvariantCulture);
     }
 
-    private async Task<CommandResult<StockDocumentResult>> PostCoreAsync(
-        TenantTransaction tx, Guid tenantId, CommandContext ctx, PostStockDocumentRequest req, byte[] fingerprint, CancellationToken ct)
+    internal async Task<CommandResult<StockDocumentResult>> PostCoreAsync(
+        TenantTransaction tx, Guid tenantId, CommandContext ctx, PostStockDocumentRequest req, byte[] fingerprint, CancellationToken ct, StockPostOptions? options = null)
     {
+        string commandName = options?.CommandName ?? "stock-documents:post";
         Guid companyId = req.CompanyId;
         var company = await JournalDocumentPoster.ReadCompanyAsync(tx, tenantId, companyId, ct);
         if (company is null) return Reject(Error("CONFIG.INVALID_REFERENCE", "P2", "/company_id", ("company_id", companyId)));
@@ -277,8 +290,12 @@ public sealed class StockCommands(NpgsqlDataSource source)
             if (req.DocumentType == "RECEIPT")
             {
                 type = "RECEIPT"; inbound = true;
-                value = l.UnitPrice is { } price ? StockValuation.ReceiptValue(quantity, price, lcScale) : 0m;
-                valueTc = l.UnitPrice is null ? null : value;
+                if (options?.LineValues is { } lineValues && lineValues.TryGetValue(i, out decimal orderValue)) { value = orderValue; valueTc = value; }
+                else
+                {
+                    value = l.UnitPrice is { } price ? StockValuation.ReceiptValue(quantity, price, lcScale) : 0m;
+                    valueTc = l.UnitPrice is null ? null : value;
+                }
             }
             else if (req.DocumentType == "ISSUE") { type = "ISSUE"; inbound = false; value = 0m; }
             else if (l.Adjustment!.Mode == "TO_COUNTED")
@@ -311,7 +328,7 @@ public sealed class StockCommands(NpgsqlDataSource source)
                 costQty -= baseQty; costValue += value; stock[skey] -= baseQty; baseQty = -baseQty; quantity = -quantity;
             }
             cost[item.ItemId] = (costQty, costValue);
-            planned.Add(new Planned(planned.Count + 1, l, item, type, source, quantity, baseQty, value, valueTc, costQty, costValue, stock[skey], expectedBook, countRef, unitCode));
+            planned.Add(new Planned(planned.Count + 1, l, item, type, source, quantity, baseQty, value, valueTc, costQty, costValue, stock[skey], expectedBook, countRef, unitCode, i));
             if (value != 0m)
             {
                 (string debit, string credit) = type switch
@@ -378,13 +395,16 @@ public sealed class StockCommands(NpgsqlDataSource source)
             ["expected_book_quantity"] = m.ExpectedBook, ["source_line_ref"] = m.Input.LineRef, ["reversal_of_line_no"] = null
         }).ToList();
         byte[] movementDigest = StockHash2.MovementDigest(movementRows);
+        byte[]? detailDigest = options?.DetailDigest is { } provide
+            ? await provide(new StockDerivation(stockId, journalId, planned.Select(m => new DerivedMovement(m.LineNo, m.RequestIndex, m.BaseQuantity, m.ValueLc)).ToList()))
+            : null;
         var body = new Dictionary<string, object?>
         {
             ["stock_document_id"] = stockId, ["document_type"] = stockType, ["number_series_id"] = docSeries.SeriesId, ["fiscal_year"] = fiscalYear, ["sequence_no"] = sequenceNo,
             ["document_number"] = number, ["fiscal_period"] = periodNo, ["document_date"] = req.DocumentDate, ["posting_date"] = req.PostingDate, ["posted_at"] = at,
             ["reason_code"] = req.ReasonCode, ["reversal_of_stock_document_id"] = null, ["journal_document_id"] = journalId, ["soft_close_override"] = recheck.SoftCloseOverride,
             ["currency_tc"] = currencyTc, ["source_system"] = ctx.SourceSystem, ["source_document_ref"] = req.SourceDocumentRef, ["idempotency_key"] = ctx.IdempotencyKey,
-            ["command_name"] = "stock-documents:post", ["posted_by"] = ctx.Actor, ["correlation_id"] = ctx.CorrelationId, ["movement_count"] = planned.Count, ["detail_digest"] = null,
+            ["command_name"] = commandName, ["posted_by"] = ctx.Actor, ["correlation_id"] = ctx.CorrelationId, ["movement_count"] = planned.Count, ["detail_digest"] = detailDigest,
             ["movement_digest"] = movementDigest, ["hash_version"] = StockHash2.Version
         };
         byte[] rowHash = StockHash2.RowHash(tenantId, companyId, chainSeq, stockPrev, body);
@@ -394,7 +414,7 @@ public sealed class StockCommands(NpgsqlDataSource source)
         if (journalId is { } jid)
         {
             var posted = await ClosingDocuments.PostAsync(ledger, ctx with { SourceSystem = "INVENTORY" },
-                new DocumentSpec(stockType, "stock-documents:post", journalSeries!, fiscalYear, periodNo, recheck.SoftCloseOverride, req.PostingDate, ctx.IdempotencyKey + "#J",
+                new DocumentSpec(stockType, commandName, journalSeries!, fiscalYear, periodNo, recheck.SoftCloseOverride, req.PostingDate, ctx.IdempotencyKey + "#J",
                     DetailDigest: rowHash, Origin: "STOCK", TransactionCurrency: company.LocalCurrency, DocumentId: jid), journalLines, null, ct);
             if (posted.Error is not null) return Reject(posted.Error);
             journal = posted.Document;
@@ -402,8 +422,8 @@ public sealed class StockCommands(NpgsqlDataSource source)
         await using (var cmd = tx.Command(
             "insert into core.stock_document (tenant_id, company_id, stock_document_id, document_type, number_series_id, fiscal_year, sequence_no, document_number, fiscal_period, document_date, " +
             "posting_date, posted_at, reason_code, journal_document_id, soft_close_override, currency_tc, source_system, source_document_ref, idempotency_key, command_name, posted_by, correlation_id, " +
-            "header_text, movement_count, movement_digest, chain_seq, prev_hash, row_hash, hash_version) values (@t, @c, @id, @type, @s, @fy, @seq, @num, @fp, @dd, @pd, @at, @reason, @j, @soft, @tc, " +
-            "@src, @ref, @key, 'stock-documents:post', @by, @corr, @text, @n, @md, @cs, @prev, @row, 2)"))
+            "header_text, movement_count, detail_digest, movement_digest, chain_seq, prev_hash, row_hash, hash_version) values (@t, @c, @id, @type, @s, @fy, @seq, @num, @fp, @dd, @pd, @at, @reason, @j, @soft, @tc, " +
+            "@src, @ref, @key, @cmdname, @by, @corr, @text, @n, @dd2, @md, @cs, @prev, @row, 2)"))
         {
             cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("c", companyId); cmd.Parameters.AddWithValue("id", stockId); cmd.Parameters.AddWithValue("type", stockType);
             cmd.Parameters.AddWithValue("s", docSeries.SeriesId); cmd.Parameters.AddWithValue("fy", fiscalYear); cmd.Parameters.AddWithValue("seq", sequenceNo); cmd.Parameters.AddWithValue("num", number);
@@ -417,6 +437,8 @@ public sealed class StockCommands(NpgsqlDataSource source)
             cmd.Parameters.Add(new NpgsqlParameter("ref", NpgsqlDbType.Text) { Value = (object?)req.SourceDocumentRef ?? DBNull.Value });
             cmd.Parameters.AddWithValue("key", ctx.IdempotencyKey); cmd.Parameters.AddWithValue("by", ctx.Actor); cmd.Parameters.AddWithValue("corr", ctx.CorrelationId);
             cmd.Parameters.Add(new NpgsqlParameter("text", NpgsqlDbType.Text) { Value = (object?)req.HeaderText ?? DBNull.Value });
+            cmd.Parameters.AddWithValue("cmdname", commandName);
+            cmd.Parameters.Add(new NpgsqlParameter("dd2", NpgsqlDbType.Bytea) { Value = (object?)detailDigest ?? DBNull.Value });
             cmd.Parameters.AddWithValue("n", planned.Count); cmd.Parameters.AddWithValue("md", movementDigest); cmd.Parameters.AddWithValue("cs", chainSeq);
             cmd.Parameters.AddWithValue("prev", stockPrev); cmd.Parameters.AddWithValue("row", rowHash);
             await cmd.ExecuteNonQueryAsync(ct);
@@ -443,7 +465,7 @@ public sealed class StockCommands(NpgsqlDataSource source)
             await cmd.ExecuteNonQueryAsync(ct);
         }
         await ClearingPoster.MoveHeadAsync(tx, tenantId, companyId, StockHash2.ChainType, "", chainSeq, rowHash, StockHash2.Version, ct);
-        Guid logId = await CommandSupport.WriteLogAsync(tx, tenantId, companyId, ctx, "stock-documents:post", fingerprint, "STOCK_DOCUMENT", stockId, ct);
+        Guid logId = options?.WriteLog == false ? Guid.Empty : await CommandSupport.WriteLogAsync(tx, tenantId, companyId, ctx, commandName, fingerprint, "STOCK_DOCUMENT", stockId, ct);
 
         // the events (15, 6), the outbox position last: the journal, the stock document and a balance change per stock key
         if (journal is not null) await ClosingDocuments.WriteDocumentEventAsync(ledger, ctx, journal, "ledger.document_posted", journal.DocumentId, "POSTED", ct);
@@ -456,7 +478,7 @@ public sealed class StockCommands(NpgsqlDataSource source)
 
         StockDocumentResult result = await LoadResultAsync(tx, tenantId, companyId, stockId, ct);
         result = result with { Movements = result.Movements.Select(m => m with { LineRef = planned[m.LineNo - 1].Input.LineRef }).ToList() };
-        await tx.CommitAsync(ct);   // the deferred checks: the journal balances, the chain links and the head, the movement count, the outbox position
+        if (options?.Commit != false) await tx.CommitAsync(ct);   // the deferred checks: the journal balances, the chain links and the head, the movement count, the outbox position
         return CommandResult<StockDocumentResult>.Ok(result, logId);
     }
 }
