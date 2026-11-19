@@ -28,7 +28,7 @@ internal sealed record StockPostOptions(string CommandName, bool WriteLog, bool 
 /// receipt and on an adjustment in. Built choices are in 07, 13.2v. Not built: FIFO, tracking, foreign-currency prices, negative stock, transfers, status changes, returns, cost
 /// adjustments, reversal, reservations, the dimension defaults of 7 and the verification of the STOCK chain.
 /// </summary>
-public sealed class StockCommands(NpgsqlDataSource source)
+public sealed partial class StockCommands(NpgsqlDataSource source)
 {
     public const string Permission = StockValuation.PostPermission;
 

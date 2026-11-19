@@ -72,3 +72,16 @@ public static class StockValuation
             $"{r.CompanyId:D}|{r.DocumentType}|{r.DocumentDate:yyyy-MM-dd}|{r.PostingDate:yyyy-MM-dd}|{r.ReasonCode}|{r.HeaderText}|{r.SourceDocumentRef}|{lines}");
     }
 }
+
+// ---- stock-documents:reverse (10, 5.5), sales-deliveries:reverse and purchase-receipts:reverse (11, 6.8): the reversal date defaults to the posting date of the original (06, 5.3)
+public sealed record ReverseStockDocumentRequest(Guid CompanyId, Guid StockDocumentId, string ReasonCode, DateOnly? ReversalDate = null);
+
+public sealed record ReverseFulfilmentRequest(Guid CompanyId, Guid DocumentId, string ReasonCode, DateOnly? ReversalDate = null);
+
+public static class StockReversalRules
+{
+    public const string Permission = "stock.reverse";
+
+    public static byte[] Fingerprint(string command, Guid companyId, Guid documentId, string? reason, DateOnly? date) =>
+        MasterRules.Fingerprint(command, $"{companyId:D}|{documentId:D}|{reason}|{date:yyyy-MM-dd}");
+}

@@ -50,7 +50,7 @@ public class FulfilmentTests
               (@t, @c, gen_random_uuid(), 'ORD', 'SO', true, '-', 5, false), (@t, @c, gen_random_uuid(), 'FUL', 'FU', true, '-', 5, false);
             insert into core.number_series_assignment (tenant_id, company_id, document_type, series_id, effective_from, created_by)
               select @t, @c, m.ty, (select series_id from core.number_series where tenant_id = @t and series_code = m.sc), date '2026-01-01', 'test' from (values
-                ('STOCK_DOC_RECEIPT', 'STK'), ('STOCK_DOC_ISSUE', 'STK'), ('STOCK_DOC_ADJUSTMENT', 'STK'), ('STOCK_RECEIPT', 'STJ'), ('STOCK_ISSUE', 'STJ'), ('STOCK_ADJUSTMENT', 'STJ'),
+                ('STOCK_DOC_RECEIPT', 'STK'), ('STOCK_DOC_ISSUE', 'STK'), ('STOCK_DOC_ADJUSTMENT', 'STK'), ('STOCK_DOC_REVERSAL', 'STK'), ('STOCK_REVERSAL', 'STJ'), ('STOCK_RECEIPT', 'STJ'), ('STOCK_ISSUE', 'STJ'), ('STOCK_ADJUSTMENT', 'STJ'),
                 ('SALES_ORDER', 'ORD'), ('PURCHASE_ORDER', 'ORD'), ('SALES_DELIVERY', 'FUL'), ('PURCHASE_RECEIPT', 'FUL')) m(ty, sc);
             insert into core.number_range_counter (tenant_id, company_id, series_id, fiscal_year, last_number)
               select @t, @c, series_id, 2026, 0 from core.number_series where tenant_id = @t and series_code in ('STK', 'STJ', 'ORD', 'FUL');
@@ -255,5 +255,174 @@ public class FulfilmentTests
         await Assert.ThrowsAnyAsync<Exception>(() => t.ExecuteAsync("update core.sales_delivery set delivery_date = date '2026-01-01' where tenant_id = @t"));
         await Assert.ThrowsAnyAsync<Exception>(() => t.ExecuteAsync("delete from core.sales_delivery where tenant_id = @t"));
         Assert.Equal(1L, await t.ScalarAsync<long>("select count(*) from core.sales_delivery where tenant_id = @t"));
+    }
+
+    // ---- reversal (F-IMPL-52): stock-documents:reverse, sales-deliveries:reverse, purchase-receipts:reverse
+
+    private static CommandContext Stock(S s, string key, params string[] more) => s.T.Context(key, more.Length == 0 ? ["stock.post", "stock.reverse"] : more);
+
+    private static async Task<StockDocumentResult> StockPostAsync(S s, string key, string type, decimal qty, decimal? price, string date = "2026-03-10")
+    {
+        var r = await new StockCommands(s.T.App).PostAsync(s.T.TenantId, Stock(s, key, "stock.post"), new(s.T.CompanyId, type, DateOnly.Parse(date), DateOnly.Parse(date),
+            [new("L1", s.Item, s.Warehouse, qty, "C62", UnitPrice: price)], type == "RECEIPT" && price is null ? "OPENING" : null));
+        Assert.True(r.Status == CommandStatus.Ok, Describe(r));
+        return r.Value!;
+    }
+
+    private static Task<CommandResult<StockDocumentResult>> StockReverseAsync(S s, string key, Guid id, string reason = "CORRECTION", DateOnly? date = null, params string[] permissions) =>
+        new StockCommands(s.T.App).ReverseAsync(s.T.TenantId, Stock(s, key, permissions), new(s.T.CompanyId, id, reason, date));
+
+    [Fact]
+    public async Task AStockDocumentIsReversedAtItsOriginalValueAndItsGrIrOpenItemIsCleared()
+    {
+        var s = await SetupAsync();
+        var t = s.T;
+        var receipt = await StockPostAsync(s, "r1", "RECEIPT", 100, 10m);
+        Assert.Equal((1000m, -1000m), (await BalanceAsync(s, s.Inventory), await BalanceAsync(s, s.GrIr)));
+        var rev = await StockReverseAsync(s, "rev1", receipt.StockDocumentId);
+        Assert.True(rev.Status == CommandStatus.Ok, Describe(rev));
+        var m = rev.Value!;
+        Assert.Equal(("STOCK_REVERSAL", "SD-2026-00002", 2L), (m.DocumentType, m.DocumentNumber, m.ChainSeq));
+        var move = Assert.Single(m.Movements);
+        Assert.Equal(("RECEIPT", -100m, -1000m, 0m, 0m), (move.MovementType, move.BaseQuantity, move.ValueLc, move.CostQtyAfter, move.CostValueAfterLc));
+        Assert.Equal((0m, 0m), (await BalanceAsync(s, s.Inventory), await BalanceAsync(s, s.GrIr)));
+
+        // the original: status, link, the mirror link of the movement; the journal mirror with its reason and the cleared GR/IR items
+        Assert.Equal(("reversed", m.StockDocumentId), (await t.ScalarAsync<string>($"select status from core.stock_document where tenant_id = @t and stock_document_id = '{receipt.StockDocumentId}'"),
+            await t.ScalarAsync<Guid>($"select reversed_by_stock_document_id from core.stock_document where tenant_id = @t and stock_document_id = '{receipt.StockDocumentId}'")));
+        Assert.Equal((receipt.StockDocumentId, "CORRECTION", 1), (await t.ScalarAsync<Guid>($"select reversal_of_stock_document_id from core.stock_document where tenant_id = @t and stock_document_id = '{m.StockDocumentId}'"),
+            await t.ScalarAsync<string>($"select reason_code from core.stock_document where tenant_id = @t and stock_document_id = '{m.StockDocumentId}'"),
+            await t.ScalarAsync<int>($"select reversal_of_line_no from core.stock_movement where tenant_id = @t and stock_document_id = '{m.StockDocumentId}'")));
+        Assert.Equal(("reversed", "STOCK_REVERSAL", "STOCK"), (await t.ScalarAsync<string>($"select status from core.journal_document where tenant_id = @t and document_id = '{receipt.JournalDocumentId}'"),
+            await t.ScalarAsync<string>($"select document_type from core.journal_document where tenant_id = @t and document_id = '{m.JournalDocumentId}'"),
+            await t.ScalarAsync<string>($"select origin from core.journal_document where tenant_id = @t and document_id = '{m.JournalDocumentId}'")));
+        Assert.Equal(2L, await t.ScalarAsync<long>($"select count(*) from core.journal_line_open_item where tenant_id = @t and clearing_status = 'CLEARED' and document_id in ('{receipt.JournalDocumentId}', '{m.JournalDocumentId}')"));
+        Assert.Equal(1L, await t.ScalarAsync<long>("select count(*) from core.clearing where tenant_id = @t and clearing_method = 'REVERSAL'"));
+        Assert.True(await t.ScalarAsync<bool>($"select detail_digest is null from core.stock_document where tenant_id = @t and stock_document_id = '{m.StockDocumentId}'"));
+        Assert.Equal(m.RowHash, await t.ScalarAsync<string>($"select encode(last_hash, 'hex') from core.chain_head where tenant_id = @t and company_id = '{t.CompanyId}' and chain_type = 'STOCK'"));
+
+        // twice, the mirror itself, the replay, the journal through the other command
+        Assert.Equal(["REVERSAL.ALREADY_REVERSED"], Codes(await StockReverseAsync(s, "rev2", receipt.StockDocumentId)));
+        Assert.Equal(["REVERSAL.TYPE_NOT_REVERSIBLE"], Codes(await StockReverseAsync(s, "rev3", m.StockDocumentId)));
+        var replay = await StockReverseAsync(s, "rev1", receipt.StockDocumentId);
+        Assert.True(replay.IdempotentReplay);
+        Assert.Equal(m.StockDocumentId, replay.Value!.StockDocumentId);
+        Assert.Equal(["REVERSAL.TYPE_NOT_REVERSIBLE"], Codes(await new DocumentReverser(t.App).ReverseAsync(t.TenantId, t.Context("jr", "journal.reverse"), new(m.JournalDocumentId!.Value, null, "CORRECTION", null))));
+        foreach (string chain in new[] { "LEDGER", "CLEARING" })
+        {
+            var verify = await new ChainVerification(t.App).VerifyAsync(t.TenantId, t.Context("v" + chain, "chain.verify"), new(t.CompanyId, chain));
+            Assert.True(verify.Status == CommandStatus.Ok && verify.Value!.Ok, chain + " " + Describe(verify));
+        }
+    }
+
+    [Fact]
+    public async Task AReceiptThatIsConsumedCannotBeReversedAndAnIssueReturnsAtItsOwnValue()
+    {
+        var s = await SetupAsync();
+        await StockPostAsync(s, "r1", "RECEIPT", 100, 10m);   // 100 for 1000
+        var second = await StockPostAsync(s, "r2", "RECEIPT", 100, 20m, "2026-03-11");   // 200 pieces for 3000, average 15
+        var issue = await StockPostAsync(s, "i1", "ISSUE", 40, null, "2026-03-12");   // 40 at 15 = 600
+        Assert.Equal(2400m, await BalanceAsync(s, s.Inventory));
+        var consumed = await StockPostAsync(s, "i2", "ISSUE", 150, null, "2026-03-13");   // 10 are left, worth 150
+        long documents = await s.T.ScalarAsync<long>("select count(*) from core.stock_document where tenant_id = @t");
+        Assert.Equal(["INVENTORY.RECEIPT_CONSUMED"], Codes(await StockReverseAsync(s, "x1", second.StockDocumentId)));
+        Assert.Equal(documents, await s.T.ScalarAsync<long>("select count(*) from core.stock_document where tenant_id = @t"));   // nothing was written by the refused reversal
+
+        // the issues are reversed at their original values: the stock and the value are back, and then the receipt is reversible
+        Assert.Equal(CommandStatus.Ok, (await StockReverseAsync(s, "x2", consumed.StockDocumentId)).Status);
+        Assert.Equal(CommandStatus.Ok, (await StockReverseAsync(s, "x3", issue.StockDocumentId)).Status);
+        Assert.Equal(3000m, await BalanceAsync(s, s.Inventory));
+        var undo = await StockReverseAsync(s, "x4", second.StockDocumentId);
+        Assert.True(undo.Status == CommandStatus.Ok, Describe(undo));
+        Assert.Equal((100m, 1000m), (undo.Value!.Movements[0].CostQtyAfter, undo.Value.Movements[0].CostValueAfterLc));
+        Assert.Equal(1000m, await BalanceAsync(s, s.Inventory));
+
+        // the reasons and the permission
+        Assert.Equal(["REVERSAL.REASON_REQUIRED"], Codes(await StockReverseAsync(s, "y1", second.StockDocumentId, "")));
+        Assert.Equal(["REVERSAL.REASON_NOT_ALLOWED"], Codes(await StockReverseAsync(s, "y2", second.StockDocumentId, "RETURN")));
+        Assert.Equal(["AUTH.PERMISSION_MISSING"], Codes(await StockReverseAsync(s, "y3", second.StockDocumentId, "CORRECTION", null, "stock.post")));
+        Assert.Equal(["REVERSAL.NOT_FOUND"], Codes(await StockReverseAsync(s, "y4", Guid.NewGuid())));
+    }
+
+    [Fact]
+    public async Task ADeliveryIsReversedWithItsStockDocumentAndJournalAndTheOrderIsOpenAgain()
+    {
+        var s = await SetupAsync();
+        var t = s.T;
+        await ReceiveAsync(s, "r1", await PurchaseOrderAsync(s, "po", 100, 10), 100);
+        var so = await SalesOrderAsync(s, "so", GoodsLine(s, 30, 25), ServiceLine(s, 5, 400));
+        var delivery = (await s.Cmds.PostDeliveryAsync(t.TenantId, Ctx(s, "d1", "sales.deliver"), new(t.CompanyId, new DateOnly(2026, 3, 12),
+            [new("D1", so.OrderId, 1, 10, "C62"), new("D2", so.OrderId, 2, 2, "HUR")], CarrierReference: "DHL", TrackingReference: "TRK-9"))).Value!;
+        Assert.Equal(900m, await BalanceAsync(s, s.Inventory));
+
+        // a delivery is not reversed through the stock command nor through the journal command
+        Assert.Equal(["REVERSAL.TYPE_NOT_REVERSIBLE"], Codes(await StockReverseAsync(s, "z1", delivery.StockDocumentId!.Value)));
+        Assert.Equal(["REVERSAL.TYPE_NOT_REVERSIBLE"], Codes(await new DocumentReverser(t.App).ReverseAsync(t.TenantId, t.Context("jr", "journal.reverse"), new(delivery.JournalDocumentId!.Value, null, "CORRECTION", null))));
+
+        var r = await s.Cmds.ReverseDeliveryAsync(t.TenantId, Ctx(s, "dr", "sales.deliver"), new(t.CompanyId, delivery.DocumentId, "CORRECTION"));
+        Assert.True(r.Status == CommandStatus.Ok, Describe(r));
+        var m = r.Value!;
+        Assert.Equal(("FU-2026-00003", 3L), (m.DocumentNumber, m.ChainSeq));
+        Assert.Equal((-10m, -100m, 1, 0m, 30m), (m.Lines[0].BaseQuantity, m.Lines[0].ValueLc, m.Lines[0].StockDocumentLineNo, m.Lines[0].FulfilledBaseQuantity, m.Lines[0].OpenBaseQuantity));
+        Assert.Equal((-2m, null, 0m, 5m), (m.Lines[1].BaseQuantity, m.Lines[1].ValueLc, m.Lines[1].FulfilledBaseQuantity, m.Lines[1].OpenBaseQuantity));
+        Assert.Equal((1000m, 0m), (await BalanceAsync(s, s.Inventory), await BalanceAsync(s, s.Cogs)));
+        Assert.Equal(("reversed", delivery.DocumentId, "CORRECTION", "DHL"), (
+            await t.ScalarAsync<string>($"select status from core.sales_delivery where tenant_id = @t and delivery_id = '{delivery.DocumentId}'"),
+            await t.ScalarAsync<Guid>($"select reversal_of_delivery_id from core.sales_delivery where tenant_id = @t and delivery_id = '{m.DocumentId}'"),
+            await t.ScalarAsync<string>($"select reason_code from core.sales_delivery where tenant_id = @t and delivery_id = '{m.DocumentId}'"),
+            await t.ScalarAsync<string>($"select carrier_reference from core.sales_delivery where tenant_id = @t and delivery_id = '{m.DocumentId}'")));
+        Assert.True(await t.ScalarAsync<bool>($"select encode(detail_digest, 'hex') = '{m.RowHash}' from core.stock_document where tenant_id = @t and stock_document_id = '{m.StockDocumentId}'"));
+        Assert.Equal(("STOCK_REVERSAL", "sales-deliveries:reverse", "reversed"), (
+            await t.ScalarAsync<string>($"select document_type from core.stock_document where tenant_id = @t and stock_document_id = '{m.StockDocumentId}'"),
+            await t.ScalarAsync<string>($"select command_name from core.stock_document where tenant_id = @t and stock_document_id = '{m.StockDocumentId}'"),
+            await t.ScalarAsync<string>($"select status from core.stock_document where tenant_id = @t and stock_document_id = '{delivery.StockDocumentId}'")));
+        Assert.Equal(m.RowHash, await t.ScalarAsync<string>($"select encode(last_hash, 'hex') from core.chain_head where tenant_id = @t and company_id = '{t.CompanyId}' and chain_type = 'FULFILMENT'"));
+
+        // the order is open again, the whole quantity can be delivered, and the reversal cannot be repeated or reversed
+        Assert.Equal(["REVERSAL.ALREADY_REVERSED"], Codes(await s.Cmds.ReverseDeliveryAsync(t.TenantId, Ctx(s, "dr2", "sales.deliver"), new(t.CompanyId, delivery.DocumentId, "CORRECTION"))));
+        Assert.Equal(["REVERSAL.TYPE_NOT_REVERSIBLE"], Codes(await s.Cmds.ReverseDeliveryAsync(t.TenantId, Ctx(s, "dr3", "sales.deliver"), new(t.CompanyId, m.DocumentId, "CORRECTION"))));
+        var again = await s.Cmds.PostDeliveryAsync(t.TenantId, Ctx(s, "d2", "sales.deliver"), new(t.CompanyId, new DateOnly(2026, 3, 14), [new("D1", so.OrderId, 1, 30, "C62")]));
+        Assert.True(again.Status == CommandStatus.Ok, Describe(again));
+        var replay = await s.Cmds.ReverseDeliveryAsync(t.TenantId, Ctx(s, "dr", "sales.deliver"), new(t.CompanyId, delivery.DocumentId, "CORRECTION"));
+        Assert.True(replay.IdempotentReplay);
+        Assert.Equal(m.DocumentId, replay.Value!.DocumentId);
+        Assert.Equal(["REVERSAL.NOT_FOUND"], Codes(await s.Cmds.ReverseDeliveryAsync(t.TenantId, Ctx(s, "dr4", "sales.deliver"), new(t.CompanyId, Guid.NewGuid(), "ERROR"))));
+        Assert.Equal(["REVERSAL.REASON_NOT_ALLOWED"], Codes(await s.Cmds.ReverseDeliveryAsync(t.TenantId, Ctx(s, "dr5", "sales.deliver"), new(t.CompanyId, again.Value!.DocumentId, "RETURN"))));
+        Assert.Equal(["AUTH.PERMISSION_MISSING"], Codes(await s.Cmds.ReverseDeliveryAsync(t.TenantId, Ctx(s, "dr6", "purchase.receive"), new(t.CompanyId, again.Value.DocumentId, "ERROR"))));
+        var verify = await new ChainVerification(t.App).VerifyAsync(t.TenantId, t.Context("v", "chain.verify"), new(t.CompanyId, "LEDGER"));
+        Assert.True(verify.Status == CommandStatus.Ok && verify.Value!.Ok, Describe(verify));
+    }
+
+    [Fact]
+    public async Task AReceiptIsReversedWithItsGrIrAndAConsumedReceiptIsRefused()
+    {
+        var s = await SetupAsync();
+        var t = s.T;
+        var po = await PurchaseOrderAsync(s, "po", 100, 12.5m);
+        var receipt = await ReceiveAsync(s, "r1", po, 40);
+        Assert.Equal((500m, -500m), (await BalanceAsync(s, s.Inventory), await BalanceAsync(s, s.GrIr)));
+
+        var r = await s.Cmds.ReverseReceiptAsync(t.TenantId, Ctx(s, "rr", "purchase.receive"), new(t.CompanyId, receipt.DocumentId, "ERROR", new DateOnly(2026, 3, 11)));
+        Assert.True(r.Status == CommandStatus.Ok, Describe(r));
+        var m = r.Value!;
+        Assert.Equal((-40m, -500m, 0m, 100m), (m.Lines[0].BaseQuantity, m.Lines[0].ValueLc, m.Lines[0].FulfilledBaseQuantity, m.Lines[0].OpenBaseQuantity));
+        Assert.Equal((0m, 0m), (await BalanceAsync(s, s.Inventory), await BalanceAsync(s, s.GrIr)));
+        Assert.Equal(("2026-03-11", "reversed", "purchase-receipts:reverse"), (
+            await t.ScalarAsync<string>($"select receipt_date::text from core.purchase_receipt where tenant_id = @t and receipt_id = '{m.DocumentId}'"),
+            await t.ScalarAsync<string>($"select status from core.purchase_receipt where tenant_id = @t and receipt_id = '{receipt.DocumentId}'"),
+            await t.ScalarAsync<string>($"select command_name from core.stock_document where tenant_id = @t and stock_document_id = '{m.StockDocumentId}'")));
+        Assert.Equal(2L, await t.ScalarAsync<long>($"select count(*) from core.journal_line_open_item where tenant_id = @t and clearing_status = 'CLEARED' and document_id in ('{receipt.JournalDocumentId}', '{m.JournalDocumentId}')"));
+        Assert.Equal(("DN-1", 12.5m), (await t.ScalarAsync<string>($"select delivery_note_reference from core.purchase_receipt where tenant_id = @t and receipt_id = '{m.DocumentId}'"),
+            await t.ScalarAsync<decimal>($"select unit_price from core.purchase_receipt_line where tenant_id = @t and receipt_id = '{m.DocumentId}'")));
+
+        // a receipt whose goods are gone is refused with nothing written
+        var second = await ReceiveAsync(s, "r2", po, 60, "2026-03-12");
+        var sold = await SalesOrderAsync(s, "so", GoodsLine(s, 50, 25));
+        Assert.Equal(CommandStatus.Ok, (await s.Cmds.PostDeliveryAsync(t.TenantId, Ctx(s, "d1", "sales.deliver"), new(t.CompanyId, new DateOnly(2026, 3, 13), [new("D1", sold.OrderId, 1, 50, "C62")]))).Status);
+        long before = await t.ScalarAsync<long>("select count(*) from core.purchase_receipt where tenant_id = @t");
+        var refused = await s.Cmds.ReverseReceiptAsync(t.TenantId, Ctx(s, "rr2", "purchase.receive"), new(t.CompanyId, second.DocumentId, "CORRECTION"));
+        Assert.Equal(["INVENTORY.RECEIPT_CONSUMED"], Codes(refused));
+        Assert.Equal(before, await t.ScalarAsync<long>("select count(*) from core.purchase_receipt where tenant_id = @t"));
+        Assert.Equal("posted", await t.ScalarAsync<string>($"select status from core.purchase_receipt where tenant_id = @t and receipt_id = '{second.DocumentId}'"));
     }
 }

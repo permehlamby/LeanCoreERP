@@ -18,7 +18,7 @@ namespace FinanceCore.Data;
 /// has no stock document. Progress (delivered or received, the limit with the over tolerance) is computed under the order lock. Built choices are in 07, 13.2w. Not built: tracking,
 /// reservations (no CONSUME), the coverage of a receipt by an earlier supplier invoice, dropship, intercompany, reversal, foreign-currency orders, the lock order of the period row.
 /// </summary>
-public sealed class FulfilmentCommands(NpgsqlDataSource source)
+public sealed partial class FulfilmentCommands(NpgsqlDataSource source)
 {
     private readonly StockCommands _stock = new(source);
 

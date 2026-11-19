@@ -805,6 +805,17 @@ For the resources `gl-accounts`, `business-partners` (with PII, company relation
 
 These deltas are applied in 02 and 06 with this spec.
 
+### 13.2x Reversal of stock documents, deliveries and receipts (F-IMPL-52, 2026-11-19)
+
+PROPOSED, written down so that spec and code agree. It builds on 13.2v and 13.2w (10, 5.5, 6.2; 11, 6.8).
+
+1. **Built.** `stock-documents:reverse` (`stock.reverse`), `sales-deliveries:reverse` (`sales.deliver`) and `purchase-receipts:reverse` (`purchase.receive`), migration 0040. A request has the company, the document, a `reason_code` (CORRECTION or ERROR) and an optional `reversal_date` that defaults to the date of the original and is never moved.
+2. **Stock mirror.** One movement per movement of the original, same type, opposite sign, original value, `reversal_of_line_no`; the document is STOCK_REVERSAL (series key `STOCK_DOC_REVERSAL`), links to the original and the original gets status reversed. The journal is the mirror of the original journal (type STOCK_REVERSAL, origin STOCK, its detail_digest the stock row hash); a GR/IR open item is cleared against its mirror in the same transaction.
+3. **Consumption.** A mirror that takes stock out is refused with INVENTORY.RECEIPT_CONSUMED if the quantity or the value of the cost key, or the quantity of the stock key, would turn negative, or if a quantity of zero would keep a value. A mirror that brings stock in is always possible. Nothing is written by a refusal.
+4. **Owning commands.** `stock-documents:reverse` rejects documents with a detail_digest (deliveries and receipts), mirrors and every other type than RECEIPT, ISSUE and ADJUSTMENT with REVERSAL.TYPE_NOT_REVERSIBLE; the journal command rejects the journal by its origin.
+5. **Fulfilment mirror.** A delivery or receipt is reversed as a new node of the FULFILMENT chain: negative quantities and values, the id of the original, the reason code, the mirror stock document by id. The order lines are open again by the reversed quantity. The documents of services only have no stock document and no journal.
+6. **Not built.** The refusals that need invoices and returns (ORDER.DELIVERY_INVOICED, ORDER.DELIVERY_RETURNED, ORDER.RECEIPT_INVOICED), receipts covered by a supplier invoice, FIFO layers, tracking and negative stock.
+
 ### 13.2w Fulfilment of orders on the stock ledger (F-IMPL-51, 2026-11-19)
 
 PROPOSED, written down so that spec and code agree. It is the second slice of 11 (5.1, 5.2, 5.5, 6.3, 7.1) and builds on 13.2v.

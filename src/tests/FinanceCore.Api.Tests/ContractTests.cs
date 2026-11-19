@@ -68,7 +68,9 @@ public class ContractTests
         new FulfilmentModule().Register(catalog);
         Assert.Equal("sales.deliver", catalog.Find("sales-deliveries:post")?.Permission);
         Assert.Equal("purchase.receive", catalog.Find("purchase-receipts:post")?.Permission);
-        Assert.Equal(2, catalog.All.Count);
+        Assert.Equal("sales.deliver", catalog.Find("sales-deliveries:reverse")?.Permission);
+        Assert.Equal("purchase.receive", catalog.Find("purchase-receipts:reverse")?.Permission);
+        Assert.Equal(4, catalog.All.Count);
     }
 
     [Fact]
@@ -77,8 +79,9 @@ public class ContractTests
         var catalog = new CommandCatalog();
         new StockModule().Register(catalog);
         Assert.Equal("stock.post", catalog.Find("stock-documents:post")?.Permission);
+        Assert.Equal("stock.reverse", catalog.Find("stock-documents:reverse")?.Permission);
         foreach (string name in new[] { "stock-documents:get", "stock-documents:list", "stock-balances:query" }) Assert.Equal("read.inventory", catalog.Find(name)?.Permission);
-        Assert.Equal(4, catalog.All.Count);
+        Assert.Equal(5, catalog.All.Count);
     }
 
     [Fact]
