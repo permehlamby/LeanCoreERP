@@ -7,7 +7,7 @@ using FinanceCore.Core.Periods;
 namespace FinanceCore.Core.Masters;
 
 /// <summary>The kinds of value of a master data field. The text form of a value is canonical, so that old and new values of a change compare and log.</summary>
-public enum MasterKind { Code, Text, Bool, Amount, Percent, Id, Country, Currency, SmallInt, Date, Rate }
+public enum MasterKind { Code, Text, Bool, Amount, Percent, Id, Country, Currency, SmallInt, Date, Rate, Factor }
 
 /// <summary>
 /// One field that a master command may set: the column, the kind, the length, whether it may be null, the allowed values of a code and whether
@@ -63,6 +63,13 @@ public static class MasterValues
                 if (Math.Round(r, Canonical.RateScale) != r) { reason = $"at most {Canonical.RateScale} fraction digits"; return null; }
                 if (r < 0 || r > 100) { reason = "0 to 100"; return null; }
                 return new ParsedValue(r, r.ToString("F" + Canonical.RateScale, CultureInfo.InvariantCulture));
+            case MasterKind.Factor:
+                // a conversion factor: more than 0, at most the rate scale in fraction digits (10, 3.4)
+                if (v is int or long) v = Convert.ToDecimal(v, CultureInfo.InvariantCulture);
+                if (v is not decimal fa) { reason = "a decimal number"; return null; }
+                if (fa <= 0) { reason = "more than 0"; return null; }
+                if (Math.Round(fa, Canonical.RateScale) != fa) { reason = $"at most {Canonical.RateScale} fraction digits"; return null; }
+                return new ParsedValue(fa, fa.ToString("F" + Canonical.RateScale, CultureInfo.InvariantCulture));
             case MasterKind.Date:
                 if (v is DateOnly day) return new ParsedValue(day, day.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture));
                 if (v is string ds && DateOnly.TryParseExact(ds, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out DateOnly parsedDay))

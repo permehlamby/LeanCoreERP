@@ -1,0 +1,87 @@
+using System.Text.Json;
+using FinanceCore.Core.Commands;
+using FinanceCore.Core.Masters;
+using FinanceCore.Core.Reads;
+using Npgsql;
+using NpgsqlTypes;
+
+namespace FinanceCore.Data;
+
+/// <summary>
+/// sales-orders:get and :list, purchase-orders:get and :list (11, 8, permission read.orders): the order as typed JSON with the includes `lines`, `events` and `changes`, and a list with
+/// the filters partner, lifecycle status, order date range and source reference. One repeatable-read transaction of the read role. Not built: the includes `progress`, `address`,
+/// `fulfilments` and `invoices` (nothing of them exists yet), the filters on item and warehouse, `open-orders:query` and the other order reads.
+/// </summary>
+public sealed class OrderReads(NpgsqlDataSource source)
+{
+    private static CommandError Error(string code, string phase, string path, params (string Key, object? Value)[] parameters) =>
+        JournalDocumentPoster.Error(code, phase, path, parameters);
+
+    private static CommandResult<T> Reject<T>(CommandError e) => CommandResult<T>.Rejected([e]);
+
+    private static CommandError? Denied(CommandContext ctx) =>
+        ctx.Permissions.Contains(OrderKind.ReadPermission) ? null : Error("AUTH.PERMISSION_MISSING", "P0", "", ("permission", OrderKind.ReadPermission));
+
+    private static JsonElement Parse(string json) => JsonDocument.Parse(json).RootElement.Clone();
+
+    public async Task<CommandResult<OrderDetail>> GetAsync(OrderKind kind, Guid tenantId, CommandContext ctx, GetOrderRequest req, CancellationToken ct = default)
+    {
+        if (Denied(ctx) is { } denied) return Reject<OrderDetail>(denied);
+        if (req.Id == Guid.Empty) return Reject<OrderDetail>(Error("SCHEMA.INVALID_VALUE", "P1", "id", ("reason", "required")));
+        IReadOnlyList<string> include = req.Include ?? [];
+        foreach (string i in include)
+            if (!OrderRules.Includes.Contains(i)) return Reject<OrderDetail>(Error("READ.INVALID_FILTER", "P1", "include", ("field", i), ("allowed", OrderRules.Includes.ToArray())));
+
+        await using TenantTransaction tx = await TenantTransaction.BeginAsync(source, tenantId, CommandRole.Read, ct: ct, snapshot: true);
+        string? json; Guid companyId;
+        await using (var cmd = tx.Command($"select company_id, (to_jsonb(h) - 'tenant_id')::text from core.{kind.HeaderTable} h where tenant_id = @t and {kind.IdColumn} = @i"))
+        {
+            cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("i", req.Id);
+            await using var r = await cmd.ExecuteReaderAsync(ct);
+            if (!await r.ReadAsync(ct)) return Reject<OrderDetail>(Error("READ.NOT_FOUND", "P2", "id"));
+            companyId = r.GetGuid(0); json = r.GetString(1);
+        }
+        async Task<JsonElement> Array(string sql)
+        {
+            await using var cmd = tx.Command(sql);
+            cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("c", companyId); cmd.Parameters.AddWithValue("o", req.Id); cmd.Parameters.AddWithValue("k", kind.Kind);
+            return Parse((string)(await cmd.ExecuteScalarAsync(ct))!);
+        }
+        JsonElement? lines = include.Contains("lines")
+            ? await Array($"select coalesce(jsonb_agg(to_jsonb(l) - 'tenant_id' - 'company_id' - '{kind.IdColumn}' order by line_no), '[]'::jsonb)::text from core.{kind.LineTable} l where tenant_id = @t and company_id = @c and {kind.IdColumn} = @o") : null;
+        JsonElement? events = include.Contains("events")
+            ? await Array("select coalesce(jsonb_agg(to_jsonb(e) - 'tenant_id' - 'company_id' order by event_no), '[]'::jsonb)::text from core.order_event e where tenant_id = @t and company_id = @c and order_kind = @k and order_id = @o") : null;
+        JsonElement? changes = include.Contains("changes")
+            ? await Array("select coalesce(jsonb_agg(to_jsonb(x) - 'tenant_id' - 'company_id' order by changed_at, change_id), '[]'::jsonb)::text from core.order_change_log x where tenant_id = @t and company_id = @c and order_kind = @k and order_id = @o") : null;
+        return CommandResult<OrderDetail>.Ok(new OrderDetail(Parse(json), lines, events, changes), Guid.Empty);
+    }
+
+    public async Task<CommandResult<OrderList>> ListAsync(OrderKind kind, Guid tenantId, CommandContext ctx, ListOrdersRequest req, CancellationToken ct = default)
+    {
+        if (Denied(ctx) is { } denied) return Reject<OrderList>(denied);
+        int limit = req.Limit ?? ReadRules.DefaultLimit;
+        if (limit is < 1 or > ReadRules.MaxLimit) return Reject<OrderList>(Error("READ.LIMIT_EXCEEDED", "P1", "limit", ("max", ReadRules.MaxLimit)));
+        if (!ReadRules.TryDecodeCursor(req.Cursor, "ord:" + kind.Kind, out long offset)) return Reject<OrderList>(Error("READ.CURSOR_INVALID", "P1", "cursor"));
+        if (req.LifecycleStatus is not (null or "OPEN" or "CLOSED" or "CANCELLED")) return Reject<OrderList>(Error("READ.INVALID_FILTER", "P1", "lifecycle_status", ("field", "lifecycle_status")));
+
+        await using TenantTransaction tx = await TenantTransaction.BeginAsync(source, tenantId, CommandRole.Read, ct: ct, snapshot: true);
+        var items = new List<JsonElement>();
+        await using (var cmd = tx.Command(
+            $"select (to_jsonb(h) - 'tenant_id')::text from core.{kind.HeaderTable} h where tenant_id = @t and (@p::uuid is null or {kind.PartyColumn} = @p) and (@s::text is null or lifecycle_status = @s) " +
+            "and (@from::date is null or order_date >= @from) and (@to::date is null or order_date <= @to) and (@ref::text is null or source_document_ref = @ref) " +
+            "order by order_date, order_number offset @o limit @n"))
+        {
+            cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("o", offset); cmd.Parameters.AddWithValue("n", limit + 1);
+            cmd.Parameters.Add(new NpgsqlParameter("p", NpgsqlDbType.Uuid) { Value = (object?)req.PartnerId ?? DBNull.Value });
+            cmd.Parameters.Add(new NpgsqlParameter("s", NpgsqlDbType.Text) { Value = (object?)req.LifecycleStatus ?? DBNull.Value });
+            cmd.Parameters.Add(new NpgsqlParameter("from", NpgsqlDbType.Date) { Value = (object?)req.DateFrom ?? DBNull.Value });
+            cmd.Parameters.Add(new NpgsqlParameter("to", NpgsqlDbType.Date) { Value = (object?)req.DateTo ?? DBNull.Value });
+            cmd.Parameters.Add(new NpgsqlParameter("ref", NpgsqlDbType.Text) { Value = (object?)req.SourceDocumentRef ?? DBNull.Value });
+            await using var r = await cmd.ExecuteReaderAsync(ct);
+            while (await r.ReadAsync(ct)) items.Add(Parse(r.GetString(0)));
+        }
+        string? next = null;
+        if (items.Count > limit) { items.RemoveAt(limit); next = ReadRules.EncodeCursor("ord:" + kind.Kind, offset + limit); }
+        return CommandResult<OrderList>.Ok(new OrderList(items, new ReadPage(next, limit)), Guid.Empty);
+    }
+}

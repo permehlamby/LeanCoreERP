@@ -44,6 +44,38 @@ public class ContractTests
     }
 
     [Fact]
+    public void TheInventoryMasterDataIsRegisteredWithWriteAndReadPermissions()
+    {
+        var catalog = new CommandCatalog();
+        new InventoryModule().Register(catalog);
+        foreach (string resource in InventoryMasterCommands.Resources)
+        {
+            foreach (string verb in new[] { "create", "update", "deactivate", "reactivate" }) Assert.Equal("write.config", catalog.Find($"{resource}:{verb}")?.Permission);
+            foreach (string verb in new[] { "get", "list" }) Assert.Equal("read.config", catalog.Find($"{resource}:{verb}")?.Permission);
+        }
+        Assert.Equal("read.config", catalog.Find("units:list")?.Permission);
+        Assert.Equal("write.config", catalog.Find("account-determinations:create")?.Permission);
+        Assert.Equal("write.config", catalog.Find("account-determinations:create-version")?.Permission);
+        Assert.Equal("read.config", catalog.Find("account-determinations:list")?.Permission);
+        Assert.Null(catalog.Find("account-determinations:get"));
+        Assert.Equal(8 * 6 + 1 + 3, catalog.All.Count);
+    }
+
+    [Fact]
+    public void TheOrderCommandsAreRegisteredWithTheirPermissionsOfSection61()
+    {
+        var catalog = new CommandCatalog();
+        new OrderModule().Register(catalog);
+        foreach (var (resource, permission) in new[] { ("sales-orders", "sales.order"), ("purchase-orders", "purchase.order") })
+        {
+            foreach (string verb in new[] { "create", "change", "add-line", "close-line", "cancel", "change-line-dates" }) Assert.Equal(permission, catalog.Find($"{resource}:{verb}")?.Permission);
+            foreach (string verb in new[] { "get", "list" }) Assert.Equal("read.orders", catalog.Find($"{resource}:{verb}")?.Permission);
+        }
+        Assert.Equal("write.config", catalog.Find("company-order-settings:create-version")?.Permission);
+        Assert.Equal(2 * 8 + 1, catalog.All.Count);
+    }
+
+    [Fact]
     public void TheMigrationCommandsOfTheSecondSliceAreRegisteredWithTheirPermissions()
     {
         var catalog = new CommandCatalog();
@@ -217,7 +249,8 @@ public class ContractTests
         "API.COMMAND_NOT_FOUND", "AUTH.TENANT_MISMATCH", "AUTH.TENANT_MISSING", "AUTH.TOKEN_INVALID",
         "CHAIN.DOCUMENT_WITHOUT_LINES", "NUMBER.GAP", "SYSTEM.FISCAL_YEAR_MISSING",
         "EVENT.ACK_NOT_FORWARD", "EVENT.REWIND_NOT_BACKWARD",   // 15, 5.3 says "only forward" and "backward" without naming a code (F-IMPL-42)
-        "MIGRATION.ROLLBACK_FAILED"                              // 13, 7 has no code for a document of a rollback that does not reverse (F-IMPL-46)
+        "MIGRATION.ROLLBACK_FAILED",                             // 13, 7 has no code for a document of a rollback that does not reverse (F-IMPL-46)
+        "ORDER.ORDER_NOT_OPEN", "ORDER.LINE_NOT_OPEN"            // 11, 4.4 says an order and a line are changed only while open, without naming a code (F-IMPL-49)
     ];
 
     /// <summary>The index of 06 writes a code in full (`AREA.NAME`) or, inside the row of its area, as the bare name (`NAME`).</summary>
