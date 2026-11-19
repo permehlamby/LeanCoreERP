@@ -91,7 +91,9 @@ public class ContractTests
         new ReturnModule().Register(catalog);
         Assert.Equal("sales.return", catalog.Find("sales-returns:post")?.Permission);
         Assert.Equal("purchase.return", catalog.Find("purchase-returns:post")?.Permission);
-        Assert.Equal(2, catalog.All.Count);
+        Assert.Equal("sales.return", catalog.Find("sales-returns:reverse")?.Permission);
+        Assert.Equal("purchase.return", catalog.Find("purchase-returns:reverse")?.Permission);
+        Assert.Equal(4, catalog.All.Count);
     }
 
     [Fact]

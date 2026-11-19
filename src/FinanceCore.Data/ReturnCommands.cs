@@ -17,7 +17,7 @@ namespace FinanceCore.Data;
 /// the line (ORDER.RETURN_EXCEEDS_DELIVERED). Built choices are in 07, 13.2y. Not built: the reversal of a return, dispositions other than AVAILABLE, tracking, dropship, migrated deliveries
 /// and receipts, FIFO, the return credit notes, the clearing of the GR/IR debit against the receipt credit.
 /// </summary>
-public sealed class ReturnCommands(NpgsqlDataSource source)
+public sealed partial class ReturnCommands(NpgsqlDataSource source)
 {
     private readonly StockCommands _stock = new(source);
 

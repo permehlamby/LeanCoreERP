@@ -30,7 +30,7 @@ public sealed partial class StockCommands
 
     private sealed record OriginalMovement(
         int LineNo, string MovementType, string CostSource, Guid ItemId, Guid WarehouseId, Guid? LocationId, decimal Quantity, string UnitCode, decimal BaseQuantity, decimal ValueLc,
-        decimal? ValueTc, string? LineRef, string? LineText);
+        decimal? ValueTc, string? LineRef, string? LineText, Guid? RefDocument, int? RefLine);
 
     private sealed record Mirror(OriginalMovement From, decimal Quantity, decimal BaseQuantity, decimal ValueLc, decimal? ValueTc, decimal CostQtyAfter, decimal CostValueAfter, decimal StockQtyAfter);
 
@@ -80,7 +80,7 @@ public sealed partial class StockCommands
         // P2: the original, the company, the date
         Original? original = await ReadOriginalAsync(false);
         if (original is null) return Reject(Error("REVERSAL.NOT_FOUND", "P2", "/stock_document_id"));
-        if (original.DocumentType is not ("STOCK_RECEIPT" or "STOCK_ISSUE" or "STOCK_ADJUSTMENT") || (original.Derived && options?.AllowDerived != true))
+        if (original.DocumentType is not ("STOCK_RECEIPT" or "STOCK_ISSUE" or "STOCK_ADJUSTMENT" or "STOCK_RETURN") || (original.Derived && options?.AllowDerived != true))
             return Reject(Error("REVERSAL.TYPE_NOT_REVERSIBLE", "P2", "/stock_document_id", ("document_type", original.DocumentType),
                 ("owning_command", original.Derived ? "the order command that created it (11, 6.8)" : null)));
         if (original.Status != "posted") return Reject(Error("REVERSAL.ALREADY_REVERSED", "P2", "/stock_document_id"));
@@ -101,14 +101,15 @@ public sealed partial class StockCommands
 
         var movements = new List<OriginalMovement>();
         await using (var cmd = tx.Command(
-            "select line_no, movement_type, cost_source, item_id, warehouse_id, location_id, quantity, unit_code, base_quantity, value_lc, value_tc, source_line_ref, line_text from core.stock_movement " +
+            "select line_no, movement_type, cost_source, item_id, warehouse_id, location_id, quantity, unit_code, base_quantity, value_lc, value_tc, source_line_ref, line_text, valuation_ref_document_id, valuation_ref_line_no from core.stock_movement " +
             "where tenant_id = @t and company_id = @c and stock_document_id = @d order by line_no"))
         {
             cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("c", companyId); cmd.Parameters.AddWithValue("d", originalId);
             await using var r = await cmd.ExecuteReaderAsync(ct);
             while (await r.ReadAsync(ct))
                 movements.Add(new OriginalMovement(r.GetInt32(0), r.GetString(1), r.GetString(2), r.GetGuid(3), r.GetGuid(4), r.IsDBNull(5) ? null : r.GetGuid(5), r.GetDecimal(6), r.GetString(7).Trim(),
-                    r.GetDecimal(8), r.GetDecimal(9), r.IsDBNull(10) ? null : r.GetDecimal(10), r.IsDBNull(11) ? null : r.GetString(11), r.IsDBNull(12) ? null : r.GetString(12)));
+                    r.GetDecimal(8), r.GetDecimal(9), r.IsDBNull(10) ? null : r.GetDecimal(10), r.IsDBNull(11) ? null : r.GetString(11), r.IsDBNull(12) ? null : r.GetString(12),
+                    r.IsDBNull(13) ? null : r.GetGuid(13), r.IsDBNull(14) ? null : r.GetInt32(14)));
         }
         bool hasOpenItems = false;
         if (original.JournalId is { } journalOfOriginal)
@@ -203,7 +204,7 @@ public sealed partial class StockCommands
         var movementRows = mirrors.Select((m, i) => (IReadOnlyDictionary<string, object?>)new Dictionary<string, object?>
         {
             ["tenant_id"] = tenantId, ["company_id"] = companyId, ["stock_document_id"] = stockId, ["line_no"] = i + 1, ["chain_seq"] = chainSeq, ["movement_type"] = m.From.MovementType,
-            ["cost_source"] = m.From.CostSource, ["valuation_ref_document_id"] = null, ["valuation_ref_line_no"] = null, ["posting_date"] = date, ["item_id"] = m.From.ItemId,
+            ["cost_source"] = m.From.CostSource, ["valuation_ref_document_id"] = m.From.RefDocument, ["valuation_ref_line_no"] = m.From.RefLine, ["posting_date"] = date, ["item_id"] = m.From.ItemId,
             ["warehouse_id"] = m.From.WarehouseId, ["location_id"] = m.From.LocationId, ["tracking_id"] = null, ["stock_status"] = "AVAILABLE", ["quantity"] = m.Quantity,
             ["unit_code"] = m.From.UnitCode, ["base_quantity"] = m.BaseQuantity, ["value_lc"] = m.ValueLc, ["unit_cost_lc"] = StockValuation.UnitCost(m.ValueLc, m.BaseQuantity),
             ["value_tc"] = m.ValueTc, ["currency_tc"] = m.ValueTc is null ? null : currencyTc, ["cost_warehouse_id"] = null, ["cost_qty_after"] = m.CostQtyAfter,
@@ -272,7 +273,7 @@ public sealed partial class StockCommands
             await using var cmd = tx.Command(
                 "insert into core.stock_movement (tenant_id, company_id, stock_document_id, line_no, chain_seq, movement_type, cost_source, posting_date, item_id, warehouse_id, location_id, stock_status, " +
                 "quantity, unit_code, base_quantity, value_lc, unit_cost_lc, value_tc, currency_tc, cost_qty_after, cost_value_after_lc, stock_qty_after, lot_expired, source_line_ref, reversal_of_line_no, " +
-                "line_text) values (@t, @c, @d, @n, @cs, @type, @src, @pd, @i, @w, @l, 'AVAILABLE', @q, @u, @bq, @v, @uc, @vt, @ct, @cq, @cv, @sq, false, @ref, @rl, @text)");
+                "line_text, valuation_ref_document_id, valuation_ref_line_no) values (@t, @c, @d, @n, @cs, @type, @src, @pd, @i, @w, @l, 'AVAILABLE', @q, @u, @bq, @v, @uc, @vt, @ct, @cq, @cv, @sq, false, @ref, @rl, @text, @rd, @rn)");
             cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("c", companyId); cmd.Parameters.AddWithValue("d", stockId); cmd.Parameters.AddWithValue("n", i + 1);
             cmd.Parameters.AddWithValue("cs", chainSeq); cmd.Parameters.AddWithValue("type", m.From.MovementType); cmd.Parameters.AddWithValue("src", m.From.CostSource);
             cmd.Parameters.AddWithValue("pd", date); cmd.Parameters.AddWithValue("i", m.From.ItemId); cmd.Parameters.AddWithValue("w", m.From.WarehouseId);
@@ -285,6 +286,8 @@ public sealed partial class StockCommands
             cmd.Parameters.Add(new NpgsqlParameter("ref", NpgsqlDbType.Text) { Value = (object?)m.From.LineRef ?? DBNull.Value });
             cmd.Parameters.AddWithValue("rl", m.From.LineNo);
             cmd.Parameters.Add(new NpgsqlParameter("text", NpgsqlDbType.Text) { Value = (object?)m.From.LineText ?? DBNull.Value });
+            cmd.Parameters.Add(new NpgsqlParameter("rd", NpgsqlDbType.Uuid) { Value = (object?)m.From.RefDocument ?? DBNull.Value });
+            cmd.Parameters.Add(new NpgsqlParameter("rn", NpgsqlDbType.Integer) { Value = (object?)m.From.RefLine ?? DBNull.Value });
             await cmd.ExecuteNonQueryAsync(ct);
         }
         await using (var cmd = tx.Command(

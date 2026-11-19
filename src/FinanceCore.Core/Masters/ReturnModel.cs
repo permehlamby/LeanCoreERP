@@ -12,6 +12,9 @@ public sealed record PurchaseReturnLineInput(string LineRef, Guid ReceiptId, int
 
 public sealed record PostPurchaseReturnRequest(Guid CompanyId, DateOnly ReturnDate, IReadOnlyList<PurchaseReturnLineInput> Lines, string? SourceDocumentRef = null);
 
+/// <summary>sales-returns:reverse and purchase-returns:reverse (11, 5.6): the owning commands of a return, its STOCK_RETURN document and its journal. posting_date defaults to the return date.</summary>
+public sealed record ReverseReturnRequest(Guid CompanyId, Guid ReturnId, string ReasonCode, DateOnly? PostingDate = null);
+
 public static class ReturnRules
 {
     public const string SalesPermission = "sales.return", PurchasePermission = "purchase.return";

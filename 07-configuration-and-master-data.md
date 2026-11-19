@@ -805,6 +805,15 @@ For the resources `gl-accounts`, `business-partners` (with PII, company relation
 
 These deltas are applied in 02 and 06 with this spec.
 
+### 13.2z Reversal of returns (F-IMPL-54, 2026-11-19)
+
+PROPOSED, written down so that spec and code agree. It builds on 13.2x and 13.2y (11, 5.6).
+
+1. **Built.** `sales-returns:reverse` (`sales.return`) and `purchase-returns:reverse` (`purchase.return`): `return_id`, `reason_code` (CORRECTION or ERROR), optional `posting_date` that defaults to the return date. No migration.
+2. **Effect.** A mirror return as the next node of the FULFILMENT chain (negative base quantities, reason code, id of the original), the reversal of its STOCK_RETURN document and journal by the stock command, the original return reversed. The returned quantity of the delivery or receipt line is restored, and the whole quantity can be returned again at the original cost.
+3. **Refusals.** ORDER.RETURN_NOT_FOUND, ORDER.RETURN_ALREADY_REVERSED, REVERSAL.TYPE_NOT_REVERSIBLE for a mirror, INVENTORY.RECEIPT_CONSUMED if the returned goods are gone, REVERSAL.HAS_CLEARED_LINES if the GR/IR debit is cleared otherwise.
+4. **Not built.** ORDER.RETURN_CREDITED (credit notes do not exist yet) and the dropship pair.
+
 ### 13.2y Returns of delivered and received goods (F-IMPL-53, 2026-11-19)
 
 PROPOSED, written down so that spec and code agree. It builds on 13.2w and 13.2x (11, 5.4, 5.5; 10, 5.3).

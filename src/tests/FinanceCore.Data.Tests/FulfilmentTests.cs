@@ -514,4 +514,81 @@ public class FulfilmentTests
         Assert.Equal(before, await t.ScalarAsync<long>("select count(*) from core.purchase_return where tenant_id = @t"));
         Assert.Equal(["AUTH.PERMISSION_MISSING"], Codes(await returns.PostPurchaseReturnAsync(t.TenantId, Ctx(s, "pr4", "sales.return"), new(t.CompanyId, new DateOnly(2026, 3, 14), [new("R1", receipt.DocumentId, 1, 1, "C62", "X")]))));
     }
+
+    // ---- reversal of returns (F-IMPL-54)
+
+    [Fact]
+    public async Task ASalesReturnIsReversedAndTheDeliveryCanBeReversedAfterIt()
+    {
+        var s = await SetupAsync();
+        var t = s.T;
+        var returns = new ReturnCommands(t.App);
+        await ReceiveAsync(s, "r1", await PurchaseOrderAsync(s, "po", 100, 10), 100);
+        var so = await SalesOrderAsync(s, "so", GoodsLine(s, 30, 25));
+        var delivery = (await s.Cmds.PostDeliveryAsync(t.TenantId, Ctx(s, "d1", "sales.deliver"), new(t.CompanyId, new DateOnly(2026, 3, 12), [new("D1", so.OrderId, 1, 30, "C62")]))).Value!;
+        var ret = (await returns.PostSalesReturnAsync(t.TenantId, Ctx(s, "ret", "sales.return"), new(t.CompanyId, new DateOnly(2026, 3, 14), [new("R1", delivery.DocumentId, 1, 10, "C62", "DAMAGED")]))).Value!;
+        Assert.Equal((800m, 200m), (await BalanceAsync(s, s.Inventory), await BalanceAsync(s, s.Cogs)));
+
+        var r = await returns.ReverseSalesReturnAsync(t.TenantId, Ctx(s, "rev", "sales.return"), new(t.CompanyId, ret.DocumentId, "CORRECTION"));
+        Assert.True(r.Status == CommandStatus.Ok, Describe(r));
+        var m = r.Value!;
+        Assert.Equal((-10m, -100m, 0m, 30m), (m.Lines[0].BaseQuantity, m.Lines[0].ValueLc, m.Lines[0].FulfilledBaseQuantity, m.Lines[0].OpenBaseQuantity));
+        Assert.Equal((700m, 300m), (await BalanceAsync(s, s.Inventory), await BalanceAsync(s, s.Cogs)));
+        Assert.Equal(("reversed", ret.DocumentId, "CORRECTION"), (
+            await t.ScalarAsync<string>($"select status from core.sales_return where tenant_id = @t and return_id = '{ret.DocumentId}'"),
+            await t.ScalarAsync<Guid>($"select reversal_of_return_id from core.sales_return where tenant_id = @t and return_id = '{m.DocumentId}'"),
+            await t.ScalarAsync<string>($"select reason_code from core.sales_return where tenant_id = @t and return_id = '{m.DocumentId}'")));
+        Assert.True(await t.ScalarAsync<bool>($"select encode(detail_digest, 'hex') = '{m.RowHash}' from core.stock_document where tenant_id = @t and stock_document_id = '{m.StockDocumentId}'"));
+        Assert.Equal(("STOCK_REVERSAL", "sales-returns:reverse"), (
+            await t.ScalarAsync<string>($"select document_type from core.stock_document where tenant_id = @t and stock_document_id = '{m.StockDocumentId}'"),
+            await t.ScalarAsync<string>($"select command_name from core.stock_document where tenant_id = @t and stock_document_id = '{m.StockDocumentId}'")));
+
+        // the mirror names the original movement too, so the full quantity can be returned again and the cost is the original one
+        Assert.Equal(["ORDER.RETURN_ALREADY_REVERSED"], Codes(await returns.ReverseSalesReturnAsync(t.TenantId, Ctx(s, "rev2", "sales.return"), new(t.CompanyId, ret.DocumentId, "CORRECTION"))));
+        Assert.Equal(["REVERSAL.TYPE_NOT_REVERSIBLE"], Codes(await returns.ReverseSalesReturnAsync(t.TenantId, Ctx(s, "rev3", "sales.return"), new(t.CompanyId, m.DocumentId, "CORRECTION"))));
+        Assert.Equal(["ORDER.RETURN_NOT_FOUND"], Codes(await returns.ReverseSalesReturnAsync(t.TenantId, Ctx(s, "rev4", "sales.return"), new(t.CompanyId, Guid.NewGuid(), "CORRECTION"))));
+        Assert.Equal(["REVERSAL.REASON_NOT_ALLOWED"], Codes(await returns.ReverseSalesReturnAsync(t.TenantId, Ctx(s, "rev5", "sales.return"), new(t.CompanyId, ret.DocumentId, "RETURN"))));
+        Assert.Equal(["AUTH.PERMISSION_MISSING"], Codes(await returns.ReverseSalesReturnAsync(t.TenantId, Ctx(s, "rev6", "purchase.return"), new(t.CompanyId, ret.DocumentId, "CORRECTION"))));
+        Assert.Equal(["REVERSAL.TYPE_NOT_REVERSIBLE"], Codes(await StockReverseAsync(s, "sr", ret.StockDocumentId!.Value)));
+        var all = await returns.PostSalesReturnAsync(t.TenantId, Ctx(s, "ret2", "sales.return"), new(t.CompanyId, new DateOnly(2026, 3, 15), [new("R1", delivery.DocumentId, 1, 30, "C62", "WRONG")]));
+        Assert.True(all.Status == CommandStatus.Ok, Describe(all));
+        Assert.Equal((1000m, 0m), (await BalanceAsync(s, s.Inventory), await BalanceAsync(s, s.Cogs)));
+
+        // the return of the whole delivery stands: the delivery is reversed after reversing that return
+        Assert.Equal(["ORDER.DELIVERY_RETURNED"], Codes(await s.Cmds.ReverseDeliveryAsync(t.TenantId, Ctx(s, "dr", "sales.deliver"), new(t.CompanyId, delivery.DocumentId, "CORRECTION"))));
+        Assert.Equal(CommandStatus.Ok, (await returns.ReverseSalesReturnAsync(t.TenantId, Ctx(s, "rev7", "sales.return"), new(t.CompanyId, all.Value!.DocumentId, "ERROR"))).Status);
+        Assert.Equal(CommandStatus.Ok, (await s.Cmds.ReverseDeliveryAsync(t.TenantId, Ctx(s, "dr2", "sales.deliver"), new(t.CompanyId, delivery.DocumentId, "CORRECTION"))).Status);
+        var verify = await new ChainVerification(t.App).VerifyAsync(t.TenantId, t.Context("v", "chain.verify"), new(t.CompanyId, "LEDGER"));
+        Assert.True(verify.Status == CommandStatus.Ok && verify.Value!.Ok, Describe(verify));
+    }
+
+    [Fact]
+    public async Task APurchaseReturnIsReversedWithItsGrIrOpenItemAndReturnedGoodsThatAreConsumedAreRefused()
+    {
+        var s = await SetupAsync();
+        var t = s.T;
+        var returns = new ReturnCommands(t.App);
+        var receipt = await ReceiveAsync(s, "r1", await PurchaseOrderAsync(s, "po", 40, 12.5m), 40);
+        var ret = (await returns.PostPurchaseReturnAsync(t.TenantId, Ctx(s, "pr", "purchase.return"), new(t.CompanyId, new DateOnly(2026, 3, 14), [new("R1", receipt.DocumentId, 1, 10, "C62", "WRONG")]))).Value!;
+        Assert.Equal((375m, -375m), (await BalanceAsync(s, s.Inventory), await BalanceAsync(s, s.GrIr)));
+
+        var r = await returns.ReversePurchaseReturnAsync(t.TenantId, Ctx(s, "rev", "purchase.return"), new(t.CompanyId, ret.DocumentId, "ERROR", new DateOnly(2026, 3, 15)));
+        Assert.True(r.Status == CommandStatus.Ok, Describe(r));
+        var m = r.Value!;
+        Assert.Equal((-10m, -125m, 0m, 40m), (m.Lines[0].BaseQuantity, m.Lines[0].ValueLc, m.Lines[0].FulfilledBaseQuantity, m.Lines[0].OpenBaseQuantity));
+        Assert.Equal((500m, -500m), (await BalanceAsync(s, s.Inventory), await BalanceAsync(s, s.GrIr)));
+        Assert.Equal(2L, await t.ScalarAsync<long>($"select count(*) from core.journal_line_open_item where tenant_id = @t and clearing_status = 'CLEARED' and document_id in ('{ret.JournalDocumentId}', '{m.JournalDocumentId}')"));
+        Assert.Equal("reversed", await t.ScalarAsync<string>($"select status from core.journal_document where tenant_id = @t and document_id = '{ret.JournalDocumentId}'"));
+
+        // the goods that came back are sold again, so the reversal of the sales return is refused with nothing written
+        var so = await SalesOrderAsync(s, "so", GoodsLine(s, 40, 25));
+        var delivery = (await s.Cmds.PostDeliveryAsync(t.TenantId, Ctx(s, "d1", "sales.deliver"), new(t.CompanyId, new DateOnly(2026, 3, 16), [new("D1", so.OrderId, 1, 40, "C62")]))).Value!;
+        var back = (await returns.PostSalesReturnAsync(t.TenantId, Ctx(s, "sr", "sales.return"), new(t.CompanyId, new DateOnly(2026, 3, 17), [new("R1", delivery.DocumentId, 1, 40, "C62", "WRONG")]))).Value!;
+        var so2 = await SalesOrderAsync(s, "so2", GoodsLine(s, 40, 25));
+        Assert.Equal(CommandStatus.Ok, (await s.Cmds.PostDeliveryAsync(t.TenantId, Ctx(s, "d2", "sales.deliver"), new(t.CompanyId, new DateOnly(2026, 3, 18), [new("D1", so2.OrderId, 1, 40, "C62")]))).Status);
+        long before = await t.ScalarAsync<long>("select count(*) from core.sales_return where tenant_id = @t");
+        Assert.Equal(["INVENTORY.RECEIPT_CONSUMED"], Codes(await returns.ReverseSalesReturnAsync(t.TenantId, Ctx(s, "rev2", "sales.return"), new(t.CompanyId, back.DocumentId, "CORRECTION"))));
+        Assert.Equal(before, await t.ScalarAsync<long>("select count(*) from core.sales_return where tenant_id = @t"));
+        Assert.Equal("posted", await t.ScalarAsync<string>($"select status from core.sales_return where tenant_id = @t and return_id = '{back.DocumentId}'"));
+    }
 }
