@@ -50,7 +50,7 @@ public class FulfilmentTests
               (@t, @c, gen_random_uuid(), 'ORD', 'SO', true, '-', 5, false), (@t, @c, gen_random_uuid(), 'FUL', 'FU', true, '-', 5, false);
             insert into core.number_series_assignment (tenant_id, company_id, document_type, series_id, effective_from, created_by)
               select @t, @c, m.ty, (select series_id from core.number_series where tenant_id = @t and series_code = m.sc), date '2026-01-01', 'test' from (values
-                ('STOCK_DOC_RECEIPT', 'STK'), ('STOCK_DOC_ISSUE', 'STK'), ('STOCK_DOC_ADJUSTMENT', 'STK'), ('STOCK_DOC_REVERSAL', 'STK'), ('STOCK_REVERSAL', 'STJ'), ('STOCK_RECEIPT', 'STJ'), ('STOCK_ISSUE', 'STJ'), ('STOCK_ADJUSTMENT', 'STJ'),
+                ('STOCK_DOC_RECEIPT', 'STK'), ('STOCK_DOC_ISSUE', 'STK'), ('STOCK_DOC_ADJUSTMENT', 'STK'), ('STOCK_DOC_REVERSAL', 'STK'), ('STOCK_REVERSAL', 'STJ'), ('STOCK_DOC_RETURN', 'STK'), ('STOCK_RETURN', 'STJ'), ('SALES_RETURN', 'FUL'), ('PURCHASE_RETURN', 'FUL'), ('STOCK_RECEIPT', 'STJ'), ('STOCK_ISSUE', 'STJ'), ('STOCK_ADJUSTMENT', 'STJ'),
                 ('SALES_ORDER', 'ORD'), ('PURCHASE_ORDER', 'ORD'), ('SALES_DELIVERY', 'FUL'), ('PURCHASE_RECEIPT', 'FUL')) m(ty, sc);
             insert into core.number_range_counter (tenant_id, company_id, series_id, fiscal_year, last_number)
               select @t, @c, series_id, 2026, 0 from core.number_series where tenant_id = @t and series_code in ('STK', 'STJ', 'ORD', 'FUL');
@@ -424,5 +424,94 @@ public class FulfilmentTests
         Assert.Equal(["INVENTORY.RECEIPT_CONSUMED"], Codes(refused));
         Assert.Equal(before, await t.ScalarAsync<long>("select count(*) from core.purchase_receipt where tenant_id = @t"));
         Assert.Equal("posted", await t.ScalarAsync<string>($"select status from core.purchase_receipt where tenant_id = @t and receipt_id = '{second.DocumentId}'"));
+    }
+
+    // ---- returns (F-IMPL-53): sales-returns:post and purchase-returns:post
+
+    [Fact]
+    public async Task ASalesReturnTakesTheGoodsBackAtTheOriginalCostAndIsLimitedByTheDeliveredQuantity()
+    {
+        var s = await SetupAsync();
+        var t = s.T;
+        var returns = new ReturnCommands(t.App);
+        await ReceiveAsync(s, "r1", await PurchaseOrderAsync(s, "po", 100, 10), 100);   // 100 for 1000
+        var so = await SalesOrderAsync(s, "so", GoodsLine(s, 30, 25));
+        var delivery = (await s.Cmds.PostDeliveryAsync(t.TenantId, Ctx(s, "d1", "sales.deliver"), new(t.CompanyId, new DateOnly(2026, 3, 12), [new("D1", so.OrderId, 1, 30, "C62")]))).Value!;
+        await ReceiveAsync(s, "r2", await PurchaseOrderAsync(s, "po2", 50, 20), 50, "2026-03-13");   // the average moves to 1000 - 300 + 1000 = 1700 for 120
+        Assert.Equal(1700m, await BalanceAsync(s, s.Inventory) - 0m);
+
+        Task<CommandResult<FulfilmentResult>> Return(string key, decimal qty, string? disposition = null, string permission = "sales.return") =>
+            returns.PostSalesReturnAsync(t.TenantId, Ctx(s, key, permission), new(t.CompanyId, new DateOnly(2026, 3, 14), [new("R1", delivery.DocumentId, 1, qty, "C62", "DAMAGED", disposition)], "RMA-1"));
+
+        var first = await Return("ret1", 10);
+        Assert.True(first.Status == CommandStatus.Ok, Describe(first));
+        var m = first.Value!;
+        Assert.Equal(("FU-2026-00004", 4L), (m.DocumentNumber, m.ChainSeq));
+        Assert.Equal((10m, 100m, 1, 10m, 20m), (m.Lines[0].BaseQuantity, m.Lines[0].ValueLc, m.Lines[0].StockDocumentLineNo, m.Lines[0].FulfilledBaseQuantity, m.Lines[0].OpenBaseQuantity));
+        // the original cost of 10 per piece, not the average of the moment
+        Assert.Equal((1800m, 200m), (await BalanceAsync(s, s.Inventory), await BalanceAsync(s, s.Cogs)));
+        Assert.Equal(("STOCK_RETURN", "RETURN_IN", 10m, "sales-returns:post"), (
+            await t.ScalarAsync<string>($"select document_type from core.stock_document where tenant_id = @t and stock_document_id = '{m.StockDocumentId}'"),
+            await t.ScalarAsync<string>($"select movement_type from core.stock_movement where tenant_id = @t and stock_document_id = '{m.StockDocumentId}'"),
+            await t.ScalarAsync<decimal>($"select base_quantity from core.stock_movement where tenant_id = @t and stock_document_id = '{m.StockDocumentId}'"),
+            await t.ScalarAsync<string>($"select command_name from core.stock_document where tenant_id = @t and stock_document_id = '{m.StockDocumentId}'")));
+        Assert.Equal(delivery.StockDocumentId, await t.ScalarAsync<Guid>($"select valuation_ref_document_id from core.stock_movement where tenant_id = @t and stock_document_id = '{m.StockDocumentId}'"));
+        Assert.True(await t.ScalarAsync<bool>($"select encode(detail_digest, 'hex') = '{m.RowHash}' from core.stock_document where tenant_id = @t and stock_document_id = '{m.StockDocumentId}'"));
+        Assert.Equal(m.RowHash, await t.ScalarAsync<string>($"select encode(last_hash, 'hex') from core.chain_head where tenant_id = @t and company_id = '{t.CompanyId}' and chain_type = 'FULFILMENT'"));
+
+        // the returned quantity shows in the progress, the delivery cannot be reversed while the return stands, the rest comes back at the rest of the cost
+        var progress = (await s.Reads.GetAsync(OrderKind.Sales, t.TenantId, Ctx(s, "g", "read.orders"), new(so.OrderId, ["progress"]))).Value!.Progress!.Value[0];
+        Assert.Equal((30m, 10m), (progress.GetProperty("fulfilled").GetDecimal(), progress.GetProperty("returned").GetDecimal()));
+        Assert.Equal(["ORDER.DELIVERY_RETURNED"], Codes(await s.Cmds.ReverseDeliveryAsync(t.TenantId, Ctx(s, "dr", "sales.deliver"), new(t.CompanyId, delivery.DocumentId, "CORRECTION"))));
+        Assert.Equal(["ORDER.RETURN_EXCEEDS_DELIVERED"], Codes(await Return("ret2", 21)));
+        var rest = await Return("ret3", 20);
+        Assert.True(rest.Status == CommandStatus.Ok, Describe(rest));
+        Assert.Equal((200m, 0m, 0m), (rest.Value!.Lines[0].ValueLc, rest.Value.Lines[0].OpenBaseQuantity, await BalanceAsync(s, s.Cogs)));
+        Assert.Equal(["ORDER.RETURN_EXCEEDS_DELIVERED"], Codes(await Return("ret4", 1)));
+
+        // the checks of the request
+        Assert.Equal(["LIMIT.RETURN_DISPOSITION_NOT_BUILT"], Codes(await Return("ret5", 1, "QUARANTINE")));
+        Assert.Equal(["AUTH.PERMISSION_MISSING"], Codes(await Return("ret6", 1, null, "sales.deliver")));
+        Assert.Equal(["CONFIG.INVALID_REFERENCE"], Codes(await returns.PostSalesReturnAsync(t.TenantId, Ctx(s, "ret7", "sales.return"), new(t.CompanyId, new DateOnly(2026, 3, 14), [new("R1", delivery.DocumentId, 9, 1, "C62", "X")]))));
+        Assert.Equal(["SCHEMA.INVALID_VALUE"], Codes(await returns.PostSalesReturnAsync(t.TenantId, Ctx(s, "ret8", "sales.return"), new(t.CompanyId, new DateOnly(2026, 3, 14), [new("R1", delivery.DocumentId, 1, 0, "C62", "X")]))));
+        var replay = await returns.PostSalesReturnAsync(t.TenantId, Ctx(s, "ret1", "sales.return"), new(t.CompanyId, new DateOnly(2026, 3, 14), [new("R1", delivery.DocumentId, 1, 10, "C62", "DAMAGED")], "RMA-1"));
+        Assert.True(replay.IdempotentReplay);
+        Assert.Equal(m.DocumentId, replay.Value!.DocumentId);
+        var verify = await new ChainVerification(t.App).VerifyAsync(t.TenantId, t.Context("v", "chain.verify"), new(t.CompanyId, "LEDGER"));
+        Assert.True(verify.Status == CommandStatus.Ok && verify.Value!.Ok, Describe(verify));
+    }
+
+    [Fact]
+    public async Task APurchaseReturnTakesTheGoodsOutAtTheReceiptValueAndAConsumedReceiptCannotBeReturned()
+    {
+        var s = await SetupAsync();
+        var t = s.T;
+        var returns = new ReturnCommands(t.App);
+        var po = await PurchaseOrderAsync(s, "po", 100, 12.5m);
+        var receipt = await ReceiveAsync(s, "r1", po, 40);   // 40 for 500
+        await ReceiveAsync(s, "r2", await PurchaseOrderAsync(s, "po2", 40, 20), 40, "2026-03-11");   // 40 for 800
+        Task<CommandResult<FulfilmentResult>> Return(string key, decimal qty) =>
+            returns.PostPurchaseReturnAsync(t.TenantId, Ctx(s, key, "purchase.return"), new(t.CompanyId, new DateOnly(2026, 3, 14), [new("R1", receipt.DocumentId, 1, qty, "C62", "WRONG_ITEM")]));
+
+        var first = await Return("pr1", 10);
+        Assert.True(first.Status == CommandStatus.Ok, Describe(first));
+        var m = first.Value!;
+        Assert.Equal((10m, 125m, 10m, 30m), (m.Lines[0].BaseQuantity, m.Lines[0].ValueLc, m.Lines[0].FulfilledBaseQuantity, m.Lines[0].OpenBaseQuantity));
+        Assert.Equal((1175m, -1300m + 125m), (await BalanceAsync(s, s.Inventory), await BalanceAsync(s, s.GrIr)));   // 500 + 800 - 125; GR/IR credits 1300 less the debit of 125
+        Assert.Equal(("RETURN_OUT", -10m, -125m), (
+            await t.ScalarAsync<string>($"select movement_type from core.stock_movement where tenant_id = @t and stock_document_id = '{m.StockDocumentId}'"),
+            await t.ScalarAsync<decimal>($"select base_quantity from core.stock_movement where tenant_id = @t and stock_document_id = '{m.StockDocumentId}'"),
+            await t.ScalarAsync<decimal>($"select value_lc from core.stock_movement where tenant_id = @t and stock_document_id = '{m.StockDocumentId}'")));
+        Assert.True(await t.ScalarAsync<bool>($"select encode(detail_digest, 'hex') = '{m.RowHash}' from core.stock_document where tenant_id = @t and stock_document_id = '{m.StockDocumentId}'"));
+        Assert.Equal(["ORDER.RECEIPT_RETURNED"], Codes(await s.Cmds.ReverseReceiptAsync(t.TenantId, Ctx(s, "rr", "purchase.receive"), new(t.CompanyId, receipt.DocumentId, "CORRECTION"))));
+        Assert.Equal(["ORDER.RETURN_EXCEEDS_DELIVERED"], Codes(await Return("pr2", 31)));
+
+        // the goods are sold: 70 of the 70 in stock go, so what the receipt brought is gone
+        var so = await SalesOrderAsync(s, "so", GoodsLine(s, 70, 25));
+        Assert.Equal(CommandStatus.Ok, (await s.Cmds.PostDeliveryAsync(t.TenantId, Ctx(s, "d1", "sales.deliver"), new(t.CompanyId, new DateOnly(2026, 3, 13), [new("D1", so.OrderId, 1, 70, "C62")]))).Status);
+        long before = await t.ScalarAsync<long>("select count(*) from core.purchase_return where tenant_id = @t");
+        Assert.Equal(["INVENTORY.RECEIPT_CONSUMED"], Codes(await Return("pr3", 5)));
+        Assert.Equal(before, await t.ScalarAsync<long>("select count(*) from core.purchase_return where tenant_id = @t"));
+        Assert.Equal(["AUTH.PERMISSION_MISSING"], Codes(await returns.PostPurchaseReturnAsync(t.TenantId, Ctx(s, "pr4", "sales.return"), new(t.CompanyId, new DateOnly(2026, 3, 14), [new("R1", receipt.DocumentId, 1, 1, "C62", "X")]))));
     }
 }

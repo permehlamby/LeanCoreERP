@@ -85,6 +85,16 @@ public class ContractTests
     }
 
     [Fact]
+    public void TheReturnCommandsAreRegisteredWithTheirPermissionsOfSection61()
+    {
+        var catalog = new CommandCatalog();
+        new ReturnModule().Register(catalog);
+        Assert.Equal("sales.return", catalog.Find("sales-returns:post")?.Permission);
+        Assert.Equal("purchase.return", catalog.Find("purchase-returns:post")?.Permission);
+        Assert.Equal(2, catalog.All.Count);
+    }
+
+    [Fact]
     public void TheOrderCommandsAreRegisteredWithTheirPermissionsOfSection61()
     {
         var catalog = new CommandCatalog();
@@ -274,7 +284,8 @@ public class ContractTests
         "EVENT.ACK_NOT_FORWARD", "EVENT.REWIND_NOT_BACKWARD",   // 15, 5.3 says "only forward" and "backward" without naming a code (F-IMPL-42)
         "MIGRATION.ROLLBACK_FAILED",                             // 13, 7 has no code for a document of a rollback that does not reverse (F-IMPL-46)
         "ORDER.ORDER_NOT_OPEN", "ORDER.LINE_NOT_OPEN",           // 11, 4.4 says an order and a line are changed only while open, without naming a code (F-IMPL-49)
-        "ORDER.QUANTITY_BELOW_PROGRESS", "ORDER.LINE_HAS_PROGRESS"   // 11, 4.4 limits a quantity, a warehouse and a cancel by progress without naming codes (F-IMPL-51)
+        "ORDER.QUANTITY_BELOW_PROGRESS", "ORDER.LINE_HAS_PROGRESS",   // 11, 4.4 limits a quantity, a warehouse and a cancel by progress without naming codes (F-IMPL-51)
+        "ORDER.RECEIPT_RETURNED"   // 11, 6.3 names ORDER.DELIVERY_RETURNED for a delivery; the same rule for a receipt has no code (F-IMPL-53)
     ];
 
     /// <summary>The index of 06 writes a code in full (`AREA.NAME`) or, inside the row of its area, as the bare name (`NAME`).</summary>

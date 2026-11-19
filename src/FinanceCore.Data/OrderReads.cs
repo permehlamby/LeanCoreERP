@@ -55,13 +55,15 @@ public sealed class OrderReads(NpgsqlDataSource source)
             ? await Array("select coalesce(jsonb_agg(to_jsonb(x) - 'tenant_id' - 'company_id' order by changed_at, change_id), '[]'::jsonb)::text from core.order_change_log x where tenant_id = @t and company_id = @c and order_kind = @k and order_id = @o") : null;
         // 4.3: ordered, fulfilled (delivered or received, mirror rows included), the open quantity (over tolerance not counted, zero for a line that is not open) and the limit with the over tolerance
         string fulfilTable = kind.Kind == "SALES" ? "sales_delivery_line" : "purchase_receipt_line", fulfilId = kind.Kind == "SALES" ? "sales_order_id" : "purchase_order_id", fulfilLine = kind.Kind == "SALES" ? "sales_order_line_no" : "purchase_order_line_no";
+        string returnTable = kind.Kind == "SALES" ? "sales_return_line" : "purchase_return_line";
         JsonElement? progress = include.Contains("progress")
             ? await Array(
                 $"select coalesce(jsonb_agg(jsonb_build_object('line_no', l.line_no, 'line_status', l.line_status, 'ordered', l.base_quantity, 'fulfilled', coalesce(f.q, 0), " +
-                "'open', case when l.line_status = 'OPEN' then greatest(0, l.base_quantity - coalesce(f.q, 0)) else 0 end, " +
+                "'returned', coalesce(rt.q, 0), 'open', case when l.line_status = 'OPEN' then greatest(0, l.base_quantity - coalesce(f.q, 0)) else 0 end, " +
                 "'limit', greatest(0, l.base_quantity + l.base_quantity * l.over_tolerance_pct / 100 - coalesce(f.q, 0))) order by l.line_no), '[]'::jsonb)::text " +
                 $"from core.{kind.LineTable} l left join lateral (select sum(x.base_quantity) q from core.{fulfilTable} x where x.tenant_id = l.tenant_id and x.company_id = l.company_id " +
-                $"and x.{fulfilId} = l.{kind.IdColumn} and x.{fulfilLine} = l.line_no) f on true where l.tenant_id = @t and l.company_id = @c and l.{kind.IdColumn} = @o")
+                $"and x.{fulfilId} = l.{kind.IdColumn} and x.{fulfilLine} = l.line_no) f on true " +
+                $"left join lateral (select sum(y.base_quantity) q from core.{returnTable} y where y.tenant_id = l.tenant_id and y.company_id = l.company_id and y.{fulfilId} = l.{kind.IdColumn} and y.{fulfilLine} = l.line_no) rt on true where l.tenant_id = @t and l.company_id = @c and l.{kind.IdColumn} = @o")
             : null;
         return CommandResult<OrderDetail>.Ok(new OrderDetail(Parse(json), lines, events, changes, progress), Guid.Empty);
     }

@@ -13,7 +13,7 @@ public static class FulfilmentHash2
 {
     public const int Version = 2;
     public const string ChainType = "FULFILMENT";
-    public const string Delivery = "SALES_DELIVERY", Receipt = "PURCHASE_RECEIPT";
+    public const string Delivery = "SALES_DELIVERY", Receipt = "PURCHASE_RECEIPT", SalesReturn = "SALES_RETURN", PurchaseReturn = "PURCHASE_RETURN";
 
     private static FieldSpec Id(string n, bool nullable = false) => new(n, FieldType.Id, nullable);
     private static FieldSpec Code(string n, bool nullable = false) => new(n, FieldType.Text, nullable);
@@ -36,6 +36,23 @@ public static class FulfilmentHash2
         Id("warehouse_id", true), Id("location_id", true), Id("tracking_id", true), Code("stock_status"), Int("stock_document_line_no", true), Int("stock_document_line_count", true),
         new("unit_price", FieldType.Amount, true), Code("currency", true), new("value_lc", FieldType.Amount, true)
     ];
+
+    /// <summary>The L1 columns of a return line in table order (11, 5.4): the delivery or receipt line it returns and the order line, the reason and the disposition.</summary>
+    public static readonly IReadOnlyList<FieldSpec> ReturnLine =
+    [
+        Id("tenant_id"), Id("company_id"), Id("document_id"), Int("line_no"), Id("source_document_id"), Int("source_line_no"), Id("order_id"), Int("order_line_no"), Id("item_id"),
+        Qty("quantity"), Code("unit_code"), Qty("base_quantity"), Code("reason_code"), Code("disposition"), Id("warehouse_id", true), Id("location_id", true), Id("tracking_id", true),
+        Code("stock_status"), Int("stock_document_line_no", true), new("value_lc", FieldType.Amount, true), Id("dropship_confirmation_id", true)
+    ];
+
+    /// <summary>SHA-256 of one block per return line, in line_no order. At least one line.</summary>
+    public static byte[] ReturnLineDigest(IReadOnlyList<IReadOnlyDictionary<string, object?>> linesInOrder)
+    {
+        if (linesInOrder.Count == 0) throw new ArgumentException("A return has at least one line");
+        using var buffer = new MemoryStream();
+        foreach (var line in linesInOrder) buffer.Write(Canonical.Block(Canonical.EncodeFields(ReturnLine, line)));
+        return SHA256.HashData(buffer.ToArray());
+    }
 
     /// <summary>SHA-256 of one block per line, in line_no order. At least one line.</summary>
     public static byte[] LineDigest(IReadOnlyList<IReadOnlyDictionary<string, object?>> linesInOrder)

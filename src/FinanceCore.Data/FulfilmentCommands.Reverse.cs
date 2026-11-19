@@ -123,6 +123,16 @@ public sealed partial class FulfilmentCommands
             if ((string?)await cmd.ExecuteScalarAsync(ct) != "posted") return Reject(Error("REVERSAL.ALREADY_REVERSED", "P7", "/document_id"));
         }
 
+        // a delivery or receipt that a return that is not reversed refers to is reversed after the return (11, 6.3, B6)
+        string returnLine = sales ? "sales_return_line" : "purchase_return_line", returnHeader = sales ? "sales_return" : "purchase_return", returnSource = sales ? "delivery_id" : "receipt_id";
+        await using (var cmd = tx.Command(
+            $"select exists (select 1 from core.{returnLine} l join core.{returnHeader} h on h.tenant_id = l.tenant_id and h.company_id = l.company_id and h.return_id = l.return_id " +
+            $"where l.tenant_id = @t and l.company_id = @c and l.{returnSource} = @i and h.status = 'posted' and h.reversal_of_return_id is null)"))
+        {
+            cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("c", companyId); cmd.Parameters.AddWithValue("i", originalId);
+            if ((bool)(await cmd.ExecuteScalarAsync(ct))!) return Reject(Error(sales ? "ORDER.DELIVERY_RETURNED" : "ORDER.RECEIPT_RETURNED", "P6", "/document_id", ("reason", "the return is reversed first")));
+        }
+
         // the number of the mirror document: the series of its type (a type without a mirror type keeps its document type, 14, 11)
         int fiscalYear;
         await using (var cmd = tx.Command("select fiscal_year from core.fiscal_year where tenant_id = @t and company_id = @c and start_date <= @d and end_date >= @d"))

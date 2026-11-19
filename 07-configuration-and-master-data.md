@@ -805,6 +805,16 @@ For the resources `gl-accounts`, `business-partners` (with PII, company relation
 
 These deltas are applied in 02 and 06 with this spec.
 
+### 13.2y Returns of delivered and received goods (F-IMPL-53, 2026-11-19)
+
+PROPOSED, written down so that spec and code agree. It builds on 13.2w and 13.2x (11, 5.4, 5.5; 10, 5.3).
+
+1. **Built.** `sales-returns:post` (`sales.return`) and `purchase-returns:post` (`purchase.return`), migration 0041. A request has the company, the return date and lines of `{line_ref, delivery (or receipt), line number, quantity, unit_code, reason_code, disposition, location_id}`. One transaction in the lock order of 11, 9.
+2. **Lines.** A line names a goods line of a posted delivery or receipt that is not a reversal; the lines of one return belong to one customer or supplier, a restricted partner is refused, one line for each delivery or receipt line. A return can exceed neither the delivered or received quantity nor what is already returned (`ORDER.RETURN_EXCEEDS_DELIVERED`), computed under the order lock. The goods go to the warehouse and location of the original line.
+3. **Value.** The stock moves at the value of the original movement in proportion to the returned quantity; the return that takes the last of the quantity takes the rest of the value. A sales return is a `RETURN_IN` and debits inventory against COGS, a purchase return is a `RETURN_OUT` and debits GR/IR against inventory. A purchase return of goods that are gone is refused with INVENTORY.RECEIPT_CONSUMED. The movements name the original movement (`valuation_ref_*`).
+4. **Chain.** A return is a node of the FULFILMENT chain; its row hash is the detail_digest of the STOCK_RETURN document. The delivery or receipt cannot be reversed while a return that is not reversed names it.
+5. **Not built.** The reversal of a return, dispositions other than AVAILABLE, service lines, tracking, dropship returns, migrated documents, FIFO, return credit notes, the clearing of the GR/IR debit against the receipt credit.
+
 ### 13.2x Reversal of stock documents, deliveries and receipts (F-IMPL-52, 2026-11-19)
 
 PROPOSED, written down so that spec and code agree. It builds on 13.2v and 13.2w (10, 5.5, 6.2; 11, 6.8).

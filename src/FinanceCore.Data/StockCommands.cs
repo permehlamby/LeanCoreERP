@@ -19,7 +19,12 @@ internal sealed record StockDerivation(Guid StockDocumentId, Guid? JournalDocume
 /// command does neither), the callback that gives the detail_digest once the movements are derived (the row hash of the fulfilment document, 11, 5.5), and the receipt value of a line
 /// that order management computes from the order price (10, 5.6: a priced receipt is COMPUTED).
 /// </summary>
-internal sealed record StockPostOptions(string CommandName, bool WriteLog, bool Commit, Func<StockDerivation, Task<byte[]?>>? DetailDigest, IReadOnlyDictionary<int, decimal>? LineValues);
+/// <summary>The original movement that a return line refers to (11, 5.4): its quantity and value as positive numbers and what earlier returns of it took.</summary>
+internal sealed record ReturnRef(Guid DocumentId, int LineNo, decimal Quantity, decimal Value, decimal ReturnedQuantity, decimal ReturnedValue);
+
+internal sealed record StockPostOptions(
+    string CommandName, bool WriteLog, bool Commit, Func<StockDerivation, Task<byte[]?>>? DetailDigest, IReadOnlyDictionary<int, decimal>? LineValues,
+    string? ReturnDirection = null, IReadOnlyDictionary<int, ReturnRef>? ReturnRefs = null);
 
 /// <summary>
 /// stock-documents:post (10, 6.2), first slice: RECEIPT, ISSUE and ADJUSTMENT (a delta or a count) of items without tracking, valued by moving average (5.2) in the company currency, in
@@ -65,7 +70,7 @@ public sealed partial class StockCommands(NpgsqlDataSource source)
 
     private sealed record Planned(
         int LineNo, StockLineInput Input, ItemRow Item, string MovementType, string CostSource, decimal Quantity, decimal BaseQuantity, decimal ValueLc, decimal? ValueTc,
-        decimal CostQtyAfter, decimal CostValueAfter, decimal StockQtyAfter, decimal? ExpectedBook, string? CountRef, string UnitCode, int RequestIndex);
+        decimal CostQtyAfter, decimal CostValueAfter, decimal StockQtyAfter, decimal? ExpectedBook, string? CountRef, string UnitCode, int RequestIndex, Guid? RefDocument = null, int? RefLine = null);
 
     private sealed record JournalPair(string DebitRole, string CreditRole, decimal Value, Guid ItemGroup, Guid Warehouse, Guid Item, int LineNo);
 
@@ -287,6 +292,7 @@ public sealed partial class StockCommands(NpgsqlDataSource source)
             decimal? expectedBook = null; string? countRef = null;
             string type; string source = "COMPUTED"; decimal value; decimal? valueTc = null;
             bool inbound;
+            ReturnRef? returnRef = null;
             if (req.DocumentType == "RECEIPT")
             {
                 type = "RECEIPT"; inbound = true;
@@ -298,6 +304,14 @@ public sealed partial class StockCommands(NpgsqlDataSource source)
                 }
             }
             else if (req.DocumentType == "ISSUE") { type = "ISSUE"; inbound = false; value = 0m; }
+            else if (req.DocumentType == "RETURN")
+            {
+                // 11, 5.4: the value comes from the original movement, in proportion to the returned quantity; the caller supplies none
+                ReturnRef rr = options!.ReturnRefs![i];
+                inbound = options.ReturnDirection == "IN"; type = inbound ? "RETURN_IN" : "RETURN_OUT";
+                value = ReturnRules.ReturnValue(rr.Value, rr.Quantity, rr.ReturnedValue, rr.ReturnedQuantity, baseQty, lcScale);
+                returnRef = rr;
+            }
             else if (l.Adjustment!.Mode == "TO_COUNTED")
             {
                 decimal book = stock[skey];
@@ -321,6 +335,14 @@ public sealed partial class StockCommands(NpgsqlDataSource source)
                 }
                 costQty += baseQty; costValue += value; stock[skey] += baseQty;
             }
+            else if (returnRef is not null)
+            {
+                // a return to the supplier takes the original value out; what the receipt brought must still be there (10, 5.3)
+                costQty -= baseQty; costValue -= value; stock[skey] -= baseQty;
+                if (costQty < 0m || costValue < 0m || (costQty == 0m && costValue != 0m) || stock[skey] < 0m)
+                    return Reject(Error("INVENTORY.RECEIPT_CONSUMED", "P4", p + "/quantity", ("item_id", item.ItemId), ("on_hand", cost[item.ItemId].Qty), ("requested", baseQty)));
+                value = -value; baseQty = -baseQty; quantity = -quantity;
+            }
             else
             {
                 if (costQty < baseQty) return Reject(Error("INVENTORY.INSUFFICIENT_STOCK", "P4", p + "/quantity", ("item_id", item.ItemId), ("on_hand", costQty), ("requested", baseQty)));
@@ -328,13 +350,13 @@ public sealed partial class StockCommands(NpgsqlDataSource source)
                 costQty -= baseQty; costValue += value; stock[skey] -= baseQty; baseQty = -baseQty; quantity = -quantity;
             }
             cost[item.ItemId] = (costQty, costValue);
-            planned.Add(new Planned(planned.Count + 1, l, item, type, source, quantity, baseQty, value, valueTc, costQty, costValue, stock[skey], expectedBook, countRef, unitCode, i));
+            planned.Add(new Planned(planned.Count + 1, l, item, type, source, quantity, baseQty, value, valueTc, costQty, costValue, stock[skey], expectedBook, countRef, unitCode, i, returnRef?.DocumentId, returnRef?.LineNo));
             if (value != 0m)
             {
                 (string debit, string credit) = type switch
                 {
                     "RECEIPT" => ("INVENTORY", "GR_IR"), "ISSUE" => (StockValuation.IssueRole(req.ReasonCode), "INVENTORY"),
-                    "ADJUST_IN" => ("INVENTORY", "ADJUSTMENT_GAIN"), _ => ("ADJUSTMENT_LOSS", "INVENTORY")
+                    "ADJUST_IN" => ("INVENTORY", "ADJUSTMENT_GAIN"), "RETURN_IN" => ("INVENTORY", "COGS"), "RETURN_OUT" => ("GR_IR", "INVENTORY"), _ => ("ADJUSTMENT_LOSS", "INVENTORY")
                 };
                 pairs.Add(new JournalPair(debit, credit, Math.Abs(value), item.GroupId, l.WarehouseId, item.ItemId, planned.Count));
             }
@@ -387,7 +409,7 @@ public sealed partial class StockCommands(NpgsqlDataSource source)
         var movementRows = planned.Select(m => (IReadOnlyDictionary<string, object?>)new Dictionary<string, object?>
         {
             ["tenant_id"] = tenantId, ["company_id"] = companyId, ["stock_document_id"] = stockId, ["line_no"] = m.LineNo, ["chain_seq"] = chainSeq, ["movement_type"] = m.MovementType,
-            ["cost_source"] = m.CostSource, ["valuation_ref_document_id"] = null, ["valuation_ref_line_no"] = null, ["posting_date"] = req.PostingDate, ["item_id"] = m.Item.ItemId,
+            ["cost_source"] = m.CostSource, ["valuation_ref_document_id"] = m.RefDocument, ["valuation_ref_line_no"] = m.RefLine, ["posting_date"] = req.PostingDate, ["item_id"] = m.Item.ItemId,
             ["warehouse_id"] = m.Input.WarehouseId, ["location_id"] = m.Input.LocationId, ["tracking_id"] = null, ["stock_status"] = "AVAILABLE", ["quantity"] = m.Quantity,
             ["unit_code"] = m.UnitCode, ["base_quantity"] = m.BaseQuantity, ["value_lc"] = m.ValueLc, ["unit_cost_lc"] = StockValuation.UnitCost(m.ValueLc, m.BaseQuantity),
             ["value_tc"] = m.ValueTc, ["currency_tc"] = m.ValueTc is null ? null : company.LocalCurrency, ["cost_warehouse_id"] = null, ["cost_qty_after"] = m.CostQtyAfter,
@@ -448,7 +470,7 @@ public sealed partial class StockCommands(NpgsqlDataSource source)
             await using var cmd = tx.Command(
                 "insert into core.stock_movement (tenant_id, company_id, stock_document_id, line_no, chain_seq, movement_type, cost_source, posting_date, item_id, warehouse_id, location_id, stock_status, " +
                 "quantity, unit_code, base_quantity, value_lc, unit_cost_lc, value_tc, currency_tc, cost_qty_after, cost_value_after_lc, stock_qty_after, lot_expired, count_ref, expected_book_quantity, " +
-                "source_line_ref, line_text) values (@t, @c, @d, @n, @cs, @type, @src, @pd, @i, @w, @l, 'AVAILABLE', @q, @u, @bq, @v, @uc, @vt, @ct, @cq, @cv, @sq, false, @cr, @eb, @ref, @text)");
+                "source_line_ref, line_text, valuation_ref_document_id, valuation_ref_line_no) values (@t, @c, @d, @n, @cs, @type, @src, @pd, @i, @w, @l, 'AVAILABLE', @q, @u, @bq, @v, @uc, @vt, @ct, @cq, @cv, @sq, false, @cr, @eb, @ref, @text, @rd, @rn)");
             cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("c", companyId); cmd.Parameters.AddWithValue("d", stockId); cmd.Parameters.AddWithValue("n", m.LineNo);
             cmd.Parameters.AddWithValue("cs", chainSeq); cmd.Parameters.AddWithValue("type", m.MovementType); cmd.Parameters.AddWithValue("src", m.CostSource);
             cmd.Parameters.AddWithValue("pd", req.PostingDate); cmd.Parameters.AddWithValue("i", m.Item.ItemId); cmd.Parameters.AddWithValue("w", m.Input.WarehouseId);
@@ -462,6 +484,8 @@ public sealed partial class StockCommands(NpgsqlDataSource source)
             cmd.Parameters.Add(new NpgsqlParameter("eb", NpgsqlDbType.Numeric) { Value = (object?)m.ExpectedBook ?? DBNull.Value });
             cmd.Parameters.AddWithValue("ref", m.Input.LineRef);
             cmd.Parameters.Add(new NpgsqlParameter("text", NpgsqlDbType.Text) { Value = (object?)m.Input.LineText ?? DBNull.Value });
+            cmd.Parameters.Add(new NpgsqlParameter("rd", NpgsqlDbType.Uuid) { Value = (object?)m.RefDocument ?? DBNull.Value });
+            cmd.Parameters.Add(new NpgsqlParameter("rn", NpgsqlDbType.Integer) { Value = (object?)m.RefLine ?? DBNull.Value });
             await cmd.ExecuteNonQueryAsync(ct);
         }
         await ClearingPoster.MoveHeadAsync(tx, tenantId, companyId, StockHash2.ChainType, "", chainSeq, rowHash, StockHash2.Version, ct);
