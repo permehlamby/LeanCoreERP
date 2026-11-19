@@ -122,7 +122,7 @@ public sealed partial class OrderCommands(NpgsqlDataSource source)
     }
 
     /// <summary>The factor from a unit to the base unit of an item (10, 3.4): 1 for the base unit, then the item's own row, then the tenant's row or its inverse. No chaining.</summary>
-    private static async Task<decimal?> FactorAsync(TenantTransaction tx, Guid tenantId, Guid itemId, string unit, string baseUnit, CancellationToken ct)
+    internal static async Task<decimal?> FactorAsync(TenantTransaction tx, Guid tenantId, Guid itemId, string unit, string baseUnit, CancellationToken ct)
     {
         if (unit == baseUnit) return 1m;
         await using (var cmd = tx.Command("select factor_to_base from core.item_unit_conversion where tenant_id = @t and item_id = @i and unit_code = @u and active"))

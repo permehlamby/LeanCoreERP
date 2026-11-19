@@ -17,7 +17,7 @@ internal sealed record NewLine(
 
 internal sealed record DocumentSpec(
     string DocumentType, string CommandName, JournalDocumentPoster.SeriesRow Series, int FiscalYear, int PeriodNo, bool SoftOverride, DateOnly PostingDate,
-    string IdempotencyKey, Guid? ReversalOf = null, string? ReasonCode = null, DateOnly? AutoReversalDate = null, byte[]? DetailDigest = null, string Origin = "SYSTEM", Guid? MigrationBatchId = null, string? TransactionCurrency = null);
+    string IdempotencyKey, Guid? ReversalOf = null, string? ReasonCode = null, DateOnly? AutoReversalDate = null, byte[]? DetailDigest = null, string Origin = "SYSTEM", Guid? MigrationBatchId = null, string? TransactionCurrency = null, Guid? DocumentId = null);
 
 /// <summary>The ledger of one command and the head of its chain, moved by every document the command posts.</summary>
 internal sealed class ClosingLedger(TenantTransaction tx, Guid tenantId, Guid companyId, Guid ledgerId, JournalDocumentPoster.CompanyRow company, string groupCurrency, long seq, byte[] hash)
@@ -119,7 +119,7 @@ internal static class ClosingDocuments
             await cmd.ExecuteNonQueryAsync(ct);
         }
         string number = PostingRules.FormatNumber(spec.Series.Prefix, spec.Series.IncludeFiscalYear, spec.Series.Separator, spec.Series.NumberLength, spec.FiscalYear, sequenceNo);
-        Guid documentId = Guid.NewGuid();
+        Guid documentId = spec.DocumentId ?? Guid.NewGuid();
         long chainSeq = l.Seq + 1;
         DateTime now = DateTime.UtcNow;
         DateTime postedAt = new(now.Ticks - now.Ticks % 10, DateTimeKind.Utc);

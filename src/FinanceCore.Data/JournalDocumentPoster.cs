@@ -671,7 +671,7 @@ public sealed class JournalDocumentPoster(NpgsqlDataSource source)
             : null;
     }
 
-    private static async Task<int> ReadFallbackDaysAsync(TenantTransaction tx, Guid tenantId, CancellationToken ct)
+    internal static async Task<int> ReadFallbackDaysAsync(TenantTransaction tx, Guid tenantId, CancellationToken ct)
     {
         await using var cmd = tx.Command("select rate_fallback_days from core.tenant_setting where tenant_id = @t");
         cmd.Parameters.AddWithValue("t", tenantId);
@@ -679,7 +679,7 @@ public sealed class JournalDocumentPoster(NpgsqlDataSource source)
         return value is null ? 0 : Convert.ToInt32(value, CultureInfo.InvariantCulture);
     }
 
-    private static async Task<string?> ReadPivotAsync(TenantTransaction tx, Guid tenantId, CancellationToken ct)
+    internal static async Task<string?> ReadPivotAsync(TenantTransaction tx, Guid tenantId, CancellationToken ct)
     {
         await using var cmd = tx.Command("select pivot_currency from core.tenant_setting where tenant_id = @t");
         cmd.Parameters.AddWithValue("t", tenantId);
@@ -755,7 +755,7 @@ public sealed class JournalDocumentPoster(NpgsqlDataSource source)
     // ---------------------------------------------------------------------------------------------------------
     // Rates (07, 7.2): direct with fallback, inverse, cross through the pivot
     // ---------------------------------------------------------------------------------------------------------
-    private static async Task<Rate> LookupRateAsync(
+    internal static async Task<Rate> LookupRateAsync(
         TenantTransaction tx, Guid tenantId, string from, string to, DateOnly date, int fallbackDays, string? pivot,
         List<Guid> used, List<CommandError> warnings, List<CommandError> errors, string scope, CancellationToken ct)
     {

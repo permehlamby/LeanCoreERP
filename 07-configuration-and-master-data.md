@@ -805,6 +805,16 @@ For the resources `gl-accounts`, `business-partners` (with PII, company relation
 
 These deltas are applied in 02 and 06 with this spec.
 
+### 13.2v The stock ledger (F-IMPL-50, 2026-11-19)
+
+PROPOSED, written down so that spec and code agree. It is the third slice of 10 (4, 5.2, 6.2, 7) and the base of the fulfilment of 11.
+
+1. **Built.** `stock-documents:post` (`stock.post`) for RECEIPT, ISSUE and ADJUSTMENT, `stock-documents:get` (include `movements`), `:list` and `stock-balances:query` (`read.inventory`), migration 0038, role `cmd_stock`. One transaction: the item rows of 6.4 locked in item order, the counters, the LEDGER and then the STOCK head, the period in share mode, then the documents, the chain and the events (`stock.document_posted`, `stock.balance_changed` per stock key, `ledger.document_posted` for the journal).
+2. **Valuation.** Moving average (5.2): a receipt adds quantity and value, an issue takes `ROUND(value × issued / quantity)` and the issue of the whole quantity takes the whole value, an adjustment in is valued at the average (`COMPUTED`) or at a supplied unit price (`SUPPLIED`; with no stock and no price `INVENTORY.VALUE_REQUIRED`). A price is not accepted on an issue. A receipt with no price is quantity-only, needs a reason and has no journal. A count (`TO_COUNTED`) compares `expected_book_quantity` with the stock key balance (`INVENTORY.BOOK_QUANTITY_CHANGED`) and posts the difference, none for a difference of zero.
+3. **Journal (7).** A system document of the stock type with origin STOCK, debit and credit lines per valued movement through the account determination of 3.9 (`INVENTORY.ACCOUNT_DETERMINATION_MISSING`): receipt INVENTORY against GR_IR, issue COGS (or ADJUSTMENT_LOSS for a loss reason) against INVENTORY, adjustment in INVENTORY against ADJUSTMENT_GAIN, out ADJUSTMENT_LOSS against INVENTORY. The journal binds the stock document: its `detail_digest` is the stock row hash. `journal-documents:reverse` rejects it.
+4. **Numbers.** The stock document takes the series assigned to the key `STOCK_DOC_RECEIPT`, `STOCK_DOC_ISSUE` or `STOCK_DOC_ADJUSTMENT`, its journal the series assigned to its document type.
+5. **Not built.** FIFO and layers, tracking, status changes, transfers, returns, cost adjustments, landed costs, reversal, reservations, negative stock, locations other than STANDARD, foreign-currency prices, the dimension defaults, the cost scope WAREHOUSE and the verification of the STOCK chain by `chains:verify`. Each is refused with its `LIMIT.STOCK_*` code or is absent from the contract.
+
 ### 13.2u The orders without fulfilment (F-IMPL-49, 2026-11-18)
 
 PROPOSED, written down so that spec and code agree. It is the first slice of 11 (4 and 6.1 to 6.2): the orders and their amendments, with nothing delivered, received or invoiced.

@@ -62,6 +62,16 @@ public class ContractTests
     }
 
     [Fact]
+    public void TheStockCommandsAreRegisteredWithTheirPermissionsOfSection61()
+    {
+        var catalog = new CommandCatalog();
+        new StockModule().Register(catalog);
+        Assert.Equal("stock.post", catalog.Find("stock-documents:post")?.Permission);
+        foreach (string name in new[] { "stock-documents:get", "stock-documents:list", "stock-balances:query" }) Assert.Equal("read.inventory", catalog.Find(name)?.Permission);
+        Assert.Equal(4, catalog.All.Count);
+    }
+
+    [Fact]
     public void TheOrderCommandsAreRegisteredWithTheirPermissionsOfSection61()
     {
         var catalog = new CommandCatalog();
