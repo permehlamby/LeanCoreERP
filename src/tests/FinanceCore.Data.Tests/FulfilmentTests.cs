@@ -657,6 +657,104 @@ public class FulfilmentTests
     }
 
     [Fact]
+    public async Task AReturnCreditCreditsTheReturnedQuantityAtTheInvoicePriceWithinTheCapsAndIsReversedBeforeTheReturnAndTheInvoice()
+    {
+        var s = await SetupAsync();
+        var t = s.T;
+        var inv = await InvoiceSetupAsync(s);
+        var returns = new ReturnCommands(t.App);
+        var credits = new SalesCreditNoteCommands(t.App);
+        await ReceiveAsync(s, "r1", await PurchaseOrderAsync(s, "po", 100, 10), 100);
+        var so = await SalesOrderAsync(s, "so", GoodsLine(s, 30, 25));
+        var delivery = (await s.Cmds.PostDeliveryAsync(t.TenantId, Ctx(s, "d1", "sales.deliver"), new(t.CompanyId, new DateOnly(2026, 3, 12), [new("D1", so.OrderId, 1, 10, "C62")]))).Value!;
+        var invoice = (await Invoice(s, "i1", new SalesInvoiceLineInput("L1", so.OrderId, 1, DeliveryLineRefs: [new(delivery.DocumentId, 1)]))).Value!;
+        var ret = (await returns.PostSalesReturnAsync(t.TenantId, Ctx(s, "ret", "sales.return"), new(t.CompanyId, new DateOnly(2026, 3, 14), [new("R1", delivery.DocumentId, 1, 4, "C62", "DAMAGED")]))).Value!;
+        Task<CommandResult<SalesCreditNoteResult>> Credit(string key, string kind, decimal? qty, string permission = "sales.invoice", int lineNo = 1) =>
+            credits.CreateAsync(t.TenantId, Ctx(s, key, permission), new(t.CompanyId, invoice.SalesInvoiceId, kind, new DateOnly(2026, 3, 21),
+                [new CreditLineInput("C1", lineNo, ret.DocumentId, 1, qty)], SourceDocumentRef: "CN-REF"));
+        async Task<decimal> Receivable() => await t.ScalarAsync<decimal>($"select coalesce(sum(amount_lc), 0) from core.journal_line where tenant_id = @t and company_id = '{t.CompanyId}' and account_id = '{inv.Receivable}'");
+
+        // 4 returned at 25, tax 25 per cent: 100 net, 25 tax, 125 gross credited to the receivable
+        var r = await Credit("c1", "RETURN", null);
+        Assert.True(r.Status == CommandStatus.Ok, Describe(r));
+        var m = r.Value!;
+        Assert.Equal(("RETURN", 100m, 25m, 125m, -4m, -100m), (m.CreditKind, m.NetAmount, m.TaxAmount, m.GrossAmount, m.Lines[0].BaseQuantity, m.Lines[0].NetAmount));
+        Assert.Equal(187.5m, await Receivable());
+        Assert.Equal(("AR_CREDIT", "ORDER", true), (
+            await t.ScalarAsync<string>($"select document_type from core.journal_document where tenant_id = @t and document_id = '{m.JournalDocumentId}'"),
+            await t.ScalarAsync<string>($"select origin from core.journal_document where tenant_id = @t and document_id = '{m.JournalDocumentId}'"),
+            await t.ScalarAsync<bool>($"select detail_digest is not null from core.journal_document where tenant_id = @t and document_id = '{m.JournalDocumentId}'")));
+        Assert.Equal(("CREDIT_NOTE", invoice.SalesInvoiceId, ret.DocumentId), (
+            await t.ScalarAsync<string>($"select invoice_kind from core.sales_invoice where tenant_id = @t and sales_invoice_id = '{m.CreditNoteId}'"),
+            await t.ScalarAsync<Guid>($"select credits_invoice_id from core.sales_invoice where tenant_id = @t and sales_invoice_id = '{m.CreditNoteId}'"),
+            await t.ScalarAsync<Guid>($"select return_id from core.sales_invoice_line where tenant_id = @t and sales_invoice_id = '{m.CreditNoteId}' and line_no = 1")));
+
+        // the caps: the whole return is credited, the invoice cannot be reversed and the return cannot be reversed while the credit note stands
+        Assert.Equal(["ORDER.CREDIT_EXCEEDS_INVOICED"], Codes(await Credit("c2", "RETURN", 1)));
+        Assert.Equal("RETURN_LINE", (string)(await Credit("c3", "RETURN", 1)).Errors[0].Params!["cap_source"]!);
+        Assert.Equal(["ORDER.INVOICE_HAS_CREDIT_NOTES"], Codes(await new SalesInvoiceCommands(t.App).ReverseAsync(t.TenantId, Ctx(s, "ri", "sales.invoice"), new(t.CompanyId, invoice.SalesInvoiceId, "CORRECTION"))));
+        Assert.Equal(["ORDER.RETURN_CREDITED"], Codes(await returns.ReverseSalesReturnAsync(t.TenantId, Ctx(s, "rr", "sales.return"), new(t.CompanyId, ret.DocumentId, "CORRECTION"))));
+
+        // reversing the credit note restores the caps: it can be credited again, and the order of the reversals is credit note, return, invoice
+        var back = await credits.ReverseAsync(t.TenantId, Ctx(s, "rc", "sales.invoice"), new(t.CompanyId, m.CreditNoteId, "CORRECTION"));
+        Assert.True(back.Status == CommandStatus.Ok, Describe(back));
+        Assert.Equal(312.5m, await Receivable());
+        Assert.Equal(("reversed", "AR_CREDIT", 4m), (
+            await t.ScalarAsync<string>($"select status from core.journal_document where tenant_id = @t and document_id = '{m.JournalDocumentId}'"),
+            await t.ScalarAsync<string>($"select document_type from core.journal_document where tenant_id = @t and document_id = '{back.Value!.JournalDocumentId}'"),
+            await t.ScalarAsync<decimal>($"select base_quantity from core.sales_invoice_line where tenant_id = @t and sales_invoice_id = '{back.Value.ReversalId}' and line_no = 1")));
+        Assert.Equal(["ORDER.CREDIT_NOTE_ALREADY_REVERSED"], Codes(await credits.ReverseAsync(t.TenantId, Ctx(s, "rc2", "sales.invoice"), new(t.CompanyId, m.CreditNoteId, "CORRECTION"))));
+        Assert.Equal(["REVERSAL.TYPE_NOT_REVERSIBLE"], Codes(await credits.ReverseAsync(t.TenantId, Ctx(s, "rc3", "sales.invoice"), new(t.CompanyId, back.Value.ReversalId, "CORRECTION"))));
+        Assert.Equal(["ORDER.CREDIT_NOTE_NOT_FOUND"], Codes(await credits.ReverseAsync(t.TenantId, Ctx(s, "rc4", "sales.invoice"), new(t.CompanyId, Guid.NewGuid(), "CORRECTION"))));
+        var again = await Credit("c4", "RETURN", 3);
+        Assert.True(again.Status == CommandStatus.Ok, Describe(again));
+        Assert.Equal(CommandStatus.Ok, (await credits.ReverseAsync(t.TenantId, Ctx(s, "rc5", "sales.invoice"), new(t.CompanyId, again.Value!.CreditNoteId, "ERROR"))).Status);
+        Assert.Equal(CommandStatus.Ok, (await returns.ReverseSalesReturnAsync(t.TenantId, Ctx(s, "rr2", "sales.return"), new(t.CompanyId, ret.DocumentId, "CORRECTION"))).Status);
+        Assert.Equal(CommandStatus.Ok, (await new SalesInvoiceCommands(t.App).ReverseAsync(t.TenantId, Ctx(s, "ri2", "sales.invoice"), new(t.CompanyId, invoice.SalesInvoiceId, "CORRECTION"))).Status);
+        Assert.Equal(["AUTH.PERMISSION_MISSING"], Codes(await Credit("c5", "RETURN", null, "sales.order")));
+        foreach (string chain in new[] { "LEDGER", "CLEARING" })
+        {
+            var verify = await new ChainVerification(t.App).VerifyAsync(t.TenantId, t.Context("v" + chain, "chain.verify"), new(t.CompanyId, chain));
+            Assert.True(verify.Status == CommandStatus.Ok && verify.Value!.Ok, chain + " " + Describe(verify));
+        }
+    }
+
+    [Fact]
+    public async Task AnAmountCreditCorrectsThePriceWithTheTaxOfTheInvoiceLineAndIsCappedByTheNetAmount()
+    {
+        var s = await SetupAsync();
+        var t = s.T;
+        var inv = await InvoiceSetupAsync(s);
+        var credits = new SalesCreditNoteCommands(t.App);
+        var so = await SalesOrderAsync(s, "so", W(GoodsLine(s, 10, 25), "invoice_policy", "ORDERED"));
+        var invoice = (await Invoice(s, "i1", new SalesInvoiceLineInput("L1", so.OrderId, 1))).Value!;   // 250 net, 62.5 tax
+        Task<CommandResult<SalesCreditNoteResult>> Credit(string key, decimal amount, string? reason = "PRICE") =>
+            credits.CreateAsync(t.TenantId, Ctx(s, key, "sales.invoice"), new(t.CompanyId, invoice.SalesInvoiceId, "AMOUNT", new DateOnly(2026, 3, 21), [new CreditLineInput("C1", 1, CreditAmountNet: amount)], reason));
+
+        var r = await Credit("c1", 50m);
+        Assert.True(r.Status == CommandStatus.Ok, Describe(r));
+        Assert.Equal(("AMOUNT", 50m, 12.5m, 62.5m, 0m, -50m), (r.Value!.CreditKind, r.Value.NetAmount, r.Value.TaxAmount, r.Value.GrossAmount, r.Value.Lines[0].BaseQuantity, r.Value.Lines[0].NetAmount));
+        Assert.Equal(250m, await t.ScalarAsync<decimal>($"select coalesce(sum(amount_lc), 0) from core.journal_line where tenant_id = @t and company_id = '{t.CompanyId}' and account_id = '{inv.Receivable}'"));   // 312.5 less 62.5
+
+        // 200 net are left to credit
+        var over = await Credit("c2", 200.01m);
+        Assert.Equal(["ORDER.CREDIT_EXCEEDS_INVOICED"], Codes(over));
+        Assert.Equal((200m, "INVOICE_LINE"), (Convert.ToDecimal(over.Errors[0].Params!["cap"]), (string)over.Errors[0].Params!["cap_source"]!));
+        Assert.Equal(CommandStatus.Ok, (await Credit("c3", 200m)).Status);
+        Assert.Equal(["ORDER.CREDIT_EXCEEDS_INVOICED"], Codes(await Credit("c4", 0.01m)));
+        Assert.Equal(["SCHEMA.REQUIRED_FIELD_MISSING"], Codes(await Credit("c5", 1m, null)));
+        Assert.Equal(["SCHEMA.INVALID_VALUE"], Codes(await credits.CreateAsync(t.TenantId, Ctx(s, "c6", "sales.invoice"), new(t.CompanyId, invoice.SalesInvoiceId, "OTHER", new DateOnly(2026, 3, 21), [new CreditLineInput("C1", 1, CreditAmountNet: 1m)], "X"))));
+        Assert.Equal(["CONFIG.INVALID_REFERENCE"], Codes(await credits.CreateAsync(t.TenantId, Ctx(s, "c7", "sales.invoice"), new(t.CompanyId, invoice.SalesInvoiceId, "AMOUNT", new DateOnly(2026, 3, 21), [new CreditLineInput("C1", 9, CreditAmountNet: 1m)], "X"))));
+        var replay = await Credit("c1", 50m);
+        Assert.True(replay.IdempotentReplay);
+        Assert.Equal(r.Value.CreditNoteId, replay.Value!.CreditNoteId);
+
+        // an invoice that is reversed cannot be credited: its credit notes go first, then the invoice
+        var reversed = await new SalesInvoiceCommands(t.App).ReverseAsync(t.TenantId, Ctx(s, "ri", "sales.invoice"), new(t.CompanyId, invoice.SalesInvoiceId, "CORRECTION"));
+        Assert.Equal(["ORDER.INVOICE_HAS_CREDIT_NOTES"], Codes(reversed));
+    }
+
+    [Fact]
     public async Task AGoodsLineWithPolicyOrderedIsInvoicedBeforeDeliveryAtTheOrderedQuantityAndTheOverToleranceIsOnlyTheCeiling()
     {
         var s = await SetupAsync();

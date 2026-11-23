@@ -98,6 +98,14 @@ public sealed partial class ReturnCommands
                     r.IsDBNull(11) ? null : r.GetGuid(11), r.IsDBNull(12) ? null : r.GetGuid(12), r.IsDBNull(13) ? null : r.GetInt32(13), r.IsDBNull(14) ? null : r.GetDecimal(14)));
         }
 
+        // a return that a credit note that is not reversed credits is reversed after the credit note (11, 5.6)
+        if (kind.Sales)
+        {
+            await using var cmd = tx.Command("select exists (select 1 from core.sales_invoice_line where tenant_id = @t and company_id = @c and return_id = @r group by return_line_no having sum(base_quantity) <> 0)");
+            cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("c", companyId); cmd.Parameters.AddWithValue("r", originalId);
+            if ((await cmd.ExecuteScalarAsync(ct)) is true) return Reject(Error("ORDER.RETURN_CREDITED", "P6", "/return_id", ("reason", "the credit note is reversed first")));
+        }
+
         // position 1 of the lock order: the order rows, sorted, then the original return
         await using (var cmd = tx.Command(
             $"select {kind.Order.IdColumn} from core.{kind.Order.HeaderTable} where tenant_id = @t and company_id = @c and {kind.Order.IdColumn} = any(@ids) order by {kind.Order.IdColumn} for update"))

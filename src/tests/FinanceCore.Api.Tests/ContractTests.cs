@@ -91,7 +91,9 @@ public class ContractTests
         new InvoiceModule().Register(catalog);
         Assert.Equal("sales.invoice", catalog.Find("sales-invoices:create")?.Permission);
         Assert.Equal("sales.invoice", catalog.Find("sales-invoices:reverse")?.Permission);
-        Assert.Equal(2, catalog.All.Count);
+        Assert.Equal("sales.invoice", catalog.Find("sales-credit-notes:create")?.Permission);
+        Assert.Equal("sales.invoice", catalog.Find("sales-credit-notes:reverse")?.Permission);
+        Assert.Equal(4, catalog.All.Count);
     }
 
     [Fact]

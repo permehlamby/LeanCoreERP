@@ -805,6 +805,18 @@ For the resources `gl-accounts`, `business-partners` (with PII, company relation
 
 These deltas are applied in 02 and 06 with this spec.
 
+### 13.2ac Sales credit notes (F-IMPL-57, 2026-11-23)
+
+PROPOSED, written down so that spec and code agree. It builds on 13.2aa and 13.2ab (11, 6.5, 6.9, 5.6).
+
+1. **Built.** `sales-credit-notes:create` and `:reverse` (`sales.invoice`), migration 0045. A request has the company, the invoice, `credit_kind` RETURN or AMOUNT, the credit date, optional posting and due date, a reason code (required for AMOUNT) and lines `{line_ref, invoice_line_no, return_id, return_line_no, quantity}` or `{line_ref, invoice_line_no, credit_amount_net}`.
+2. **Return credit.** The returned quantity at the unit price, discount and tax code of the invoice line. Capped by the returned quantity of the return line and by the invoiced quantity of the invoice line, less what is credited (ORDER.CREDIT_EXCEEDS_INVOICED, cap_source RETURN_LINE or INVOICE_LINE). The default quantity is the smaller cap.
+3. **Amount credit.** A net amount with the tax of the invoice line, capped by the net amount of the invoice line less what is credited; no quantity.
+4. **Document.** An AR_CREDIT with origin ORDER: the revenue account of the original line debited, the tax derived by the pipeline, the receivable credited as the balance with an open item of the customer. The link rows are negative and their digest is the detail_digest of the journal document. A credit note does not clear against the invoice; the caller does that through the clearing domain.
+5. **Reversal.** A mirror AR_CREDIT through the finance reversal, mirror rows with the opposite sign (the caps are restored), the credit open item cleared against its mirror. ORDER.CREDIT_NOTE_NOT_FOUND, ORDER.CREDIT_NOTE_ALREADY_REVERSED.
+6. **Order of reversal.** `sales-invoices:reverse` is refused with ORDER.INVOICE_HAS_CREDIT_NOTES and `sales-returns:reverse` with ORDER.RETURN_CREDITED while a credit note that is not reversed stands. A credit against a reversed invoice is ORDER.INVOICE_REVERSED.
+7. **Not built.** Purchase credit notes, the reads, the credited measure of the order progress, a credit across several invoices.
+
 ### 13.2ab Reversal of sales invoices (F-IMPL-56, 2026-11-19)
 
 PROPOSED, written down so that spec and code agree. It builds on 13.2aa (11, 6.4, 6.3, 6.8).

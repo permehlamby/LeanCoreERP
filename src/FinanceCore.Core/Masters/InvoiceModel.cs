@@ -69,3 +69,40 @@ public static class InvoiceRules
 public sealed record ReverseSalesInvoiceRequest(Guid CompanyId, Guid SalesInvoiceId, string ReasonCode, DateOnly? PostingDate = null);
 
 public sealed record ReversedSalesInvoice(Guid SalesInvoiceId, Guid ReversalInvoiceId, Guid JournalDocumentId, string DocumentNumber, string RowHash);
+
+// ---- sales-credit-notes:create (11, 6.5, permission sales.invoice): credits the lines of one invoice. A return credit names return lines and credits the returned quantity at the original invoice
+// price and tax codes; an amount credit names invoice lines and a net amount (price correction or goodwill, no quantity).
+/// <summary>One credit line: the invoice line it credits and, for a return credit, the return line and the quantity (default the most that the caps allow); for an amount credit the net amount.</summary>
+public sealed record CreditLineInput(string LineRef, int InvoiceLineNo, Guid? ReturnId = null, int? ReturnLineNo = null, decimal? Quantity = null, decimal? CreditAmountNet = null);
+
+public sealed record CreateSalesCreditNoteRequest(
+    Guid CompanyId, Guid SalesInvoiceId, string CreditKind, DateOnly CreditDate, IReadOnlyList<CreditLineInput> Lines, string? ReasonCode = null, DateOnly? PostingDate = null, DateOnly? DueDate = null,
+    string? SourceDocumentRef = null);
+
+public sealed record SalesCreditNoteResult(
+    Guid CreditNoteId, Guid JournalDocumentId, string DocumentNumber, string CreditKind, decimal NetAmount, decimal TaxAmount, decimal GrossAmount, string RowHash, IReadOnlyList<SalesInvoiceLineResult> Lines);
+
+public sealed record ReverseSalesCreditNoteRequest(Guid CompanyId, Guid CreditNoteId, string ReasonCode, DateOnly? PostingDate = null);
+
+public sealed record ReversedSalesCreditNote(Guid CreditNoteId, Guid ReversalId, Guid JournalDocumentId, string DocumentNumber, string RowHash);
+
+public static class CreditRules
+{
+    public static readonly string[] Kinds = ["RETURN", "AMOUNT"];
+
+    /// <summary>The L1 columns of a credit line: those of an invoice line and the credited invoice line and the return line (6.9).</summary>
+    public static readonly IReadOnlyList<FieldSpec> Line = [.. InvoiceRules.Line, new("credits_invoice_line_no", FieldType.Int, true), new("return_id", FieldType.Id, true), new("return_line_no", FieldType.Int, true)];
+
+    public static byte[] Digest(IReadOnlyDictionary<string, object?> header, IReadOnlyList<IReadOnlyDictionary<string, object?>> linesInOrder)
+    {
+        using var buffer = new MemoryStream();
+        buffer.Write(Canonical.Block(Canonical.EncodeFields(InvoiceRules.Header, header)));
+        foreach (var line in linesInOrder) buffer.Write(Canonical.Block(Canonical.EncodeFields(Line, line)));
+        return SHA256.HashData(buffer.ToArray());
+    }
+
+    public static byte[] Fingerprint(CreateSalesCreditNoteRequest r) =>
+        MasterRules.Fingerprint("sales-credit-notes:create", $"{r.CompanyId:D}|{r.SalesInvoiceId:D}|{r.CreditKind}|{r.CreditDate:yyyy-MM-dd}|{r.PostingDate:yyyy-MM-dd}|{r.DueDate:yyyy-MM-dd}|{r.ReasonCode}|{r.SourceDocumentRef}|" +
+            string.Join("#", r.Lines.Select(l => string.Join("|", l.LineRef, l.InvoiceLineNo, l.ReturnId?.ToString("D") ?? "-", l.ReturnLineNo?.ToString(CultureInfo.InvariantCulture) ?? "-",
+                l.Quantity?.ToString(CultureInfo.InvariantCulture) ?? "-", l.CreditAmountNet?.ToString(CultureInfo.InvariantCulture) ?? "-"))));
+}
