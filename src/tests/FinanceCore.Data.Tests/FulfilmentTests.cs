@@ -308,7 +308,7 @@ public class FulfilmentTests
         Assert.True(replay.IdempotentReplay);
         Assert.Equal(m.StockDocumentId, replay.Value!.StockDocumentId);
         Assert.Equal(["REVERSAL.TYPE_NOT_REVERSIBLE"], Codes(await new DocumentReverser(t.App).ReverseAsync(t.TenantId, t.Context("jr", "journal.reverse"), new(m.JournalDocumentId!.Value, null, "CORRECTION", null))));
-        foreach (string chain in new[] { "LEDGER", "CLEARING" })
+        foreach (string chain in new[] { "LEDGER", "CLEARING", "STOCK" })
         {
             var verify = await new ChainVerification(t.App).VerifyAsync(t.TenantId, t.Context("v" + chain, "chain.verify"), new(t.CompanyId, chain));
             Assert.True(verify.Status == CommandStatus.Ok && verify.Value!.Ok, chain + " " + Describe(verify));
@@ -649,7 +649,7 @@ public class FulfilmentTests
         Assert.Equal(m.ReversalInvoiceId, replay.Value!.ReversalInvoiceId);
         Assert.Equal(CommandStatus.Ok, (await Reverse("rev7", again.Value.SalesInvoiceId, "ERROR")).Status);
         Assert.Equal(CommandStatus.Ok, (await s.Cmds.ReverseDeliveryAsync(t.TenantId, Ctx(s, "dr2", "sales.deliver"), new(t.CompanyId, delivery.DocumentId, "CORRECTION"))).Status);
-        foreach (string chain in new[] { "LEDGER", "CLEARING" })
+        foreach (string chain in new[] { "LEDGER", "CLEARING", "STOCK" })
         {
             var verify = await new ChainVerification(t.App).VerifyAsync(t.TenantId, t.Context("v" + chain, "chain.verify"), new(t.CompanyId, chain));
             Assert.True(verify.Status == CommandStatus.Ok && verify.Value!.Ok, chain + " " + Describe(verify));
@@ -712,7 +712,7 @@ public class FulfilmentTests
         Assert.Equal(CommandStatus.Ok, (await returns.ReverseSalesReturnAsync(t.TenantId, Ctx(s, "rr2", "sales.return"), new(t.CompanyId, ret.DocumentId, "CORRECTION"))).Status);
         Assert.Equal(CommandStatus.Ok, (await new SalesInvoiceCommands(t.App).ReverseAsync(t.TenantId, Ctx(s, "ri2", "sales.invoice"), new(t.CompanyId, invoice.SalesInvoiceId, "CORRECTION"))).Status);
         Assert.Equal(["AUTH.PERMISSION_MISSING"], Codes(await Credit("c5", "RETURN", null, "sales.order")));
-        foreach (string chain in new[] { "LEDGER", "CLEARING" })
+        foreach (string chain in new[] { "LEDGER", "CLEARING", "STOCK" })
         {
             var verify = await new ChainVerification(t.App).VerifyAsync(t.TenantId, t.Context("v" + chain, "chain.verify"), new(t.CompanyId, chain));
             Assert.True(verify.Status == CommandStatus.Ok && verify.Value!.Ok, chain + " " + Describe(verify));
@@ -986,7 +986,7 @@ public class FulfilmentTests
         var replay = await PostPurchaseInvoice(s, "i1", "SI-1", 750, new PurchaseInvoiceLineInput("L1", po.OrderId, 1, 60, 10, 600, pur.Code, 150));
         Assert.True(replay.IdempotentReplay);
         Assert.Equal(m.PurchaseInvoiceId, replay.Value!.PurchaseInvoiceId);
-        foreach (string chain in new[] { "LEDGER", "CLEARING" })
+        foreach (string chain in new[] { "LEDGER", "CLEARING", "STOCK" })
         {
             var verify = await new ChainVerification(t.App).VerifyAsync(t.TenantId, t.Context("v" + chain, "chain.verify"), new(t.CompanyId, chain));
             Assert.True(verify.Status == CommandStatus.Ok && verify.Value!.Ok, chain + " " + Describe(verify));
@@ -1053,7 +1053,7 @@ public class FulfilmentTests
             await t.ScalarAsync<decimal>($"select value_lc from core.stock_movement where tenant_id = @t and stock_document_id = '{m2.StockDocumentId}'"),
             await t.ScalarAsync<decimal>($"select cost_value_after_lc from core.stock_movement where tenant_id = @t and stock_document_id = '{m2.StockDocumentId}'"),
             await t.ScalarAsync<decimal>($"select cost_qty_after from core.stock_movement where tenant_id = @t and stock_document_id = '{m2.StockDocumentId}'")));
-        foreach (string chain in new[] { "LEDGER", "CLEARING" })   // the STOCK chain has no verification yet (11, 12)
+        foreach (string chain in new[] { "LEDGER", "CLEARING", "STOCK" })
         {
             var verify = await new ChainVerification(t.App).VerifyAsync(t.TenantId, t.Context("v" + chain, "chain.verify"), new(t.CompanyId, chain));
             Assert.True(verify.Status == CommandStatus.Ok && verify.Value!.Ok, chain + " " + Describe(verify));
@@ -1100,7 +1100,7 @@ public class FulfilmentTests
         Assert.True(again.Status == CommandStatus.Ok, Describe(again));
         Assert.Equal((1060m, -400m), (await BalanceAsync(s, s.Inventory), await BalanceAsync(s, s.GrIr)));
         Assert.True((await ReversePurchaseInvoice(s, "rev1", m.PurchaseInvoiceId)).IdempotentReplay);
-        foreach (string chain in new[] { "LEDGER", "CLEARING" })
+        foreach (string chain in new[] { "LEDGER", "CLEARING", "STOCK" })
         {
             var verify = await new ChainVerification(t.App).VerifyAsync(t.TenantId, t.Context("v" + chain, "chain.verify"), new(t.CompanyId, chain));
             Assert.True(verify.Status == CommandStatus.Ok && verify.Value!.Ok, chain + " " + Describe(verify));
@@ -1124,5 +1124,30 @@ public class FulfilmentTests
         Assert.Equal(journals, await t.ScalarAsync<long>("select count(*) from core.journal_document where tenant_id = @t"));
         Assert.Equal("posted", await t.ScalarAsync<string>($"select status from core.journal_document where tenant_id = @t and document_id = '{m.JournalDocumentId}'"));
         Assert.Equal("CLEARED", await ItemStatusAsync(s, m.JournalDocumentId));   // the reset is rolled back with the rest
+    }
+
+    [Fact]
+    public async Task ATamperedStockMovementIsFoundByTheVerificationOfTheStockChain()
+    {
+        var s = await SetupAsync();
+        var t = s.T;
+        var pur = await PurchaseSetupAsync(s);
+        var po = await DomesticPurchaseOrderAsync(s, "po", 100, 10);
+        await ReceiveAsync(s, "r1", po, 100);
+        var m = (await PostPurchaseInvoice(s, "i1", "SI-1", 825, new PurchaseInvoiceLineInput("L1", po.OrderId, 1, 60, 11, 660, pur.Code, 165))).Value!;
+        var verify = new ChainVerification(t.App);
+        var ok = await verify.VerifyAsync(t.TenantId, t.Context("v0", "chain.verify"), new(t.CompanyId, "STOCK"));
+        Assert.True(ok.Status == CommandStatus.Ok && ok.Value!.Ok && ok.Value.Checked == 2, Describe(ok));
+        await t.ExecuteAsync($"""
+            alter table core.stock_movement disable trigger stock_movement_guard;
+            update core.stock_movement set value_lc = value_lc + 1 where tenant_id = @t and stock_document_id = '{m.StockDocumentId}' and line_no = 1;
+            alter table core.stock_movement enable trigger stock_movement_guard;
+            """);
+        var r = await verify.VerifyAsync(t.TenantId, t.Context("v1", "chain.verify"), new(t.CompanyId, "STOCK"));
+        Assert.Equal(CommandStatus.Ok, r.Status);
+        Assert.False(r.Value!.Ok);
+        Assert.Equal(2L, r.Value.FirstBreakSeq);
+        Assert.Contains(r.Value.Breaks, b => b is { Kind: "digest_mismatch", Code: "STOCK.MOVEMENT_DIGEST_MISMATCH", ChainSeq: 2 });
+        Assert.Contains(r.Value.Breaks, b => b.Code == "STOCK.COST_KEY_MISMATCH");   // the row hash binds the stored digest, so it is the digest that shows the change
     }
 }

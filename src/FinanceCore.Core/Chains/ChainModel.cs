@@ -14,7 +14,7 @@ public sealed record ChainVerificationResult(
 public static class ChainRules
 {
     public static readonly IReadOnlyList<string> ChainTypes = ["LEDGER", "CLEARING", "PERIOD_EVENT", "VAT_RETURN", "STOCK", "FULFILMENT"];
-    public static readonly IReadOnlyList<string> BuiltChainTypes = ["LEDGER", "CLEARING", "PERIOD_EVENT", "VAT_RETURN"];
+    public static readonly IReadOnlyList<string> BuiltChainTypes = ["LEDGER", "CLEARING", "PERIOD_EVENT", "VAT_RETURN", "STOCK"];
 
     /// <summary>The kind of break (06, 7.4) that a check belongs to.</summary>
     public static string KindOf(string code) => code switch
@@ -25,7 +25,7 @@ public static class ChainRules
         "DOCUMENT.NOT_BALANCED" or "CLEARING.NOT_BALANCED" or "OPEN_ITEM.OVER_CLEARED" => "balance",
         "NUMBER.GAP" => "number_continuity",
         "PERIOD.STATUS_MISMATCH" or "OPEN_ITEM.CACHE_MISMATCH" => "s_column_mismatch",
-        "CLEARING.DOCUMENT_MISMATCH" => "digest_mismatch",
+        "CLEARING.DOCUMENT_MISMATCH" or "STOCK.DETAIL_DIGEST_MISMATCH" or "STOCK.MOVEMENT_DIGEST_MISMATCH" => "digest_mismatch",
         "CHAIN.HEAD_MISSING" or "CHAIN.HEAD_MISMATCH" or "CHAIN.HEAD_HASH_MISMATCH" => "head",
         var c when c.StartsWith("SNAPSHOT.", StringComparison.Ordinal) => "snapshot",
         _ => "structure"

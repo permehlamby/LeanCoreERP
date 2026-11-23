@@ -805,6 +805,15 @@ For the resources `gl-accounts`, `business-partners` (with PII, company relation
 
 These deltas are applied in 02 and 06 with this spec.
 
+### 13.2ag Verification of the STOCK chain (F-IMPL-61, 2026-11-23)
+
+PROPOSED, written down so that spec and code agree. `chains:verify` accepts `chain_type` STOCK (06, 7.4; 10, 4.1).
+
+1. **Hash and links.** The movement digest and the row hash of every stock document are recomputed from the stored columns; the links, the gapless chain_seq, the head and the movement count are checked.
+2. **Journal binding.** The journal document of a stock document binds the row hash of the stock document; for a document derived by a purchase invoice (external journal mode) it binds the digest of the detail digest and the row hash (STOCK.DETAIL_DIGEST_MISMATCH, kind digest_mismatch).
+3. **Cost key.** For the movements that move value the quantity and value after a movement are those before plus the movement (STOCK.COST_KEY_MISMATCH).
+4. **Not built.** The FULFILMENT chain, the range (from_seq, to_seq), TRANSFER and STATUS lines in the cost key check.
+
 ### 13.2af Reversal of purchase invoices (F-IMPL-60, 2026-11-23)
 
 PROPOSED, written down so that spec and code agree. It builds on 13.2ad, 13.2ae and 11, 7.4, 6.8.

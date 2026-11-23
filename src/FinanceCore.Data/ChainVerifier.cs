@@ -14,7 +14,7 @@ public sealed record VerificationResult(bool Ok, long DocumentsChecked, IReadOnl
 /// checks the links, the gapless chain_seq, the head, the balance of each document and the continuity of the numbers.
 /// The recomputation uses the application library only. The database never computes a hash (ADR-211).
 /// </summary>
-public sealed class ChainVerifier(NpgsqlDataSource source)
+public sealed partial class ChainVerifier(NpgsqlDataSource source)
 {
     /// <summary>chains:verify for the PERIOD_EVENT chain (04, 3.5): recomputes every row hash, checks the links, the gapless
     /// event_seq and the head, and that the status of every year and period is the to_status of its latest event.</summary>
