@@ -64,3 +64,8 @@ public static class InvoiceRules
                 string.Join(",", (l.DeliveryLineRefs ?? []).Select(d => $"{d.DeliveryId:D}/{d.DeliveryLineNo}")), l.UnitPrice?.ToString(CultureInfo.InvariantCulture) ?? "-",
                 l.DiscountPct?.ToString(CultureInfo.InvariantCulture) ?? "-"))));
 }
+
+// ---- sales-invoices:reverse (11, 6.4, permission sales.invoice): the owning command of an order-built AR_INVOICE and its link records. posting_date defaults to the posting date of the invoice.
+public sealed record ReverseSalesInvoiceRequest(Guid CompanyId, Guid SalesInvoiceId, string ReasonCode, DateOnly? PostingDate = null);
+
+public sealed record ReversedSalesInvoice(Guid SalesInvoiceId, Guid ReversalInvoiceId, Guid JournalDocumentId, string DocumentNumber, string RowHash);

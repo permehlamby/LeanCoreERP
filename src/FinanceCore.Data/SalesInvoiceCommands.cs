@@ -17,7 +17,7 @@ namespace FinanceCore.Data;
 /// by what is open to invoice (4.3) under the order lock, and a delivery line that is named is limited by its own quantity. Built choices are in 07, 13.2aa. Not built: credit notes, the reversal,
 /// dropship lines, intercompany, tracking, the tax point of a line invoiced without a delivery reference (the invoice date is used), the invoice lines of several delivery lines in the price check.
 /// </summary>
-public sealed class SalesInvoiceCommands(NpgsqlDataSource source)
+public sealed partial class SalesInvoiceCommands(NpgsqlDataSource source)
 {
     private readonly JournalDocumentPoster _poster = new(source);
     private const string CommandName = "sales-invoices:create";

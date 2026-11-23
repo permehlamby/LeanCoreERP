@@ -805,6 +805,17 @@ For the resources `gl-accounts`, `business-partners` (with PII, company relation
 
 These deltas are applied in 02 and 06 with this spec.
 
+### 13.2ab Reversal of sales invoices (F-IMPL-56, 2026-11-19)
+
+PROPOSED, written down so that spec and code agree. It builds on 13.2aa (11, 6.4, 6.3, 6.8).
+
+1. **Built.** `sales-invoices:reverse` (`sales.invoice`): `sales_invoice_id`, `reason_code` (CORRECTION or ERROR), optional `posting_date` that defaults to the posting date of the invoice. Migrations 0043 and 0044.
+2. **Effect.** The journal document is reversed through the finance reversal: a mirror AR_INVOICE (origin ORDER, system generated), the open item of the receivable cleared against its mirror, the tax rows mirrored. The mirror link rows (kind REVERSAL, negative quantities and amounts, same references) are inserted in the same transaction and their digest is the detail_digest of the mirror journal document. The invoiced quantity of the order line and of the delivery line is restored.
+3. **Refusals.** REVERSAL.HAS_CLEARED_LINES if the receivable is cleared otherwise, ORDER.INVOICE_HAS_CREDIT_NOTES while a credit note is not reversed, REVERSAL.ALREADY_REVERSED, REVERSAL.TYPE_NOT_REVERSIBLE for a mirror or a credit note. `journal-documents:reverse` rejects the journal by its origin.
+4. **Delivery protection.** `sales-deliveries:reverse` is refused with ORDER.DELIVERY_INVOICED while an invoice that is not reversed names a line of the delivery, and when the delivered quantity of a DELIVERED line would fall below the invoiced quantity.
+5. **Found.** The clearing role could not insert the tax rows of a mirror, so no taxed document with an open item could be reversed; fixed by migration 0044.
+6. **Not built.** Credit notes, purchase invoices and matching, the reads.
+
 ### 13.2aa Sales invoices from orders (F-IMPL-55, 2026-11-19)
 
 PROPOSED, written down so that spec and code agree. It is the first slice of invoicing in 11 (6.4, 6.9, 4.3, 4.4) and builds on 13.2w.

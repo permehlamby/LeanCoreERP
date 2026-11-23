@@ -133,6 +133,23 @@ public sealed partial class FulfilmentCommands
             if ((bool)(await cmd.ExecuteScalarAsync(ct))!) return Reject(Error(sales ? "ORDER.DELIVERY_RETURNED" : "ORDER.RECEIPT_RETURNED", "P6", "/document_id", ("reason", "the return is reversed first")));
         }
 
+        // a delivery is not reversed while an invoice that is not reversed names one of its lines, nor when the delivered quantity of a DELIVERED line would fall below what is invoiced (11, 6.3, D2)
+        if (sales)
+        {
+            const string InvoiceRows = "from core.sales_invoice_line {a} join core.sales_invoice {h} on {h}.tenant_id = {a}.tenant_id and {h}.company_id = {a}.company_id and {h}.sales_invoice_id = {a}.sales_invoice_id " +
+                "left join core.sales_invoice {o} on {o}.tenant_id = {h}.tenant_id and {o}.company_id = {h}.company_id and {o}.sales_invoice_id = {h}.reversal_of_sales_invoice_id " +
+                "where ({h}.invoice_kind = 'INVOICE' or ({h}.invoice_kind = 'REVERSAL' and {o}.invoice_kind = 'INVOICE'))";
+            string named = InvoiceRows.Replace("{a}", "l").Replace("{h}", "h").Replace("{o}", "o") + " and l.tenant_id = d.tenant_id and l.company_id = d.company_id and l.delivery_id = d.delivery_id and l.delivery_line_no = d.line_no";
+            string byOrder = InvoiceRows.Replace("{a}", "l2").Replace("{h}", "h2").Replace("{o}", "o2") + " and l2.tenant_id = d.tenant_id and l2.company_id = d.company_id and l2.sales_order_id = d.sales_order_id and l2.sales_order_line_no = d.sales_order_line_no";
+            await using var cmd = tx.Command(
+                "select exists (select 1 from core.sales_delivery_line d where d.tenant_id = @t and d.company_id = @c and d.delivery_id = @i and (" +
+                $"(select coalesce(sum(l.base_quantity), 0) {named}) > 0 or exists (select 1 from core.sales_order_line ol where ol.tenant_id = d.tenant_id and ol.company_id = d.company_id and ol.sales_order_id = d.sales_order_id " +
+                "and ol.line_no = d.sales_order_line_no and ol.invoice_policy = 'DELIVERED' and (select coalesce(sum(x.base_quantity), 0) from core.sales_delivery_line x where x.tenant_id = d.tenant_id and x.company_id = d.company_id " +
+                $"and x.sales_order_id = d.sales_order_id and x.sales_order_line_no = d.sales_order_line_no) - d.base_quantity < (select coalesce(sum(l2.base_quantity), 0) {byOrder}))))");
+            cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("c", companyId); cmd.Parameters.AddWithValue("i", originalId);
+            if ((bool)(await cmd.ExecuteScalarAsync(ct))!) return Reject(Error("ORDER.DELIVERY_INVOICED", "P6", "/document_id", ("reason", "the invoice is reversed or credited first")));
+        }
+
         // the number of the mirror document: the series of its type (a type without a mirror type keeps its document type, 14, 11)
         int fiscalYear;
         await using (var cmd = tx.Command("select fiscal_year from core.fiscal_year where tenant_id = @t and company_id = @c and start_date <= @d and end_date >= @d"))

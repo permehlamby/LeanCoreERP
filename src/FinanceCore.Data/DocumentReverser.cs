@@ -28,7 +28,7 @@ public sealed class DocumentReverser(NpgsqlDataSource source)
     internal sealed record ReverseMode(
         string CommandName, string MirrorType, string Origin,
         Func<TenantTransaction, LedgerReader.StoredDocument, CancellationToken, Task<CommandError?>> Precheck,
-        Func<TenantTransaction, Guid, CancellationToken, Task> After);
+        Func<TenantTransaction, Guid, CancellationToken, Task> After, Func<byte[]?>? DetailDigest = null);
 
     public async Task<CommandResult<PostedDocument>> ReverseAsync(
         Guid tenantId, CommandContext ctx, ReverseDocumentRequest req, CancellationToken ct = default)
@@ -264,12 +264,13 @@ public sealed class DocumentReverser(NpgsqlDataSource source)
         string number = PostingRules.FormatNumber(series.Prefix, series.IncludeFiscalYear, series.Separator, series.NumberLength, fiscalYear, sequenceNo);
         string currency = (string)original.Header["transaction_currency"]!;
 
+        byte[]? detailDigest = mode?.DetailDigest?.Invoke();
         var header = new Dictionary<string, object?>
         {
             ["tenant_id"] = tenantId, ["company_id"] = companyId, ["document_id"] = mirrorId, ["ledger_id"] = ledgerId,
             ["document_type"] = mirrorType, ["is_system_generated"] = mode is not null, ["number_series_id"] = series.SeriesId,
             ["fiscal_year"] = fiscalYear, ["sequence_no"] = sequenceNo, ["document_number"] = number, ["fiscal_period"] = periodNo,
-            ["soft_close_override"] = recheck.SoftCloseOverride, ["migration_batch_id"] = null, ["detail_digest"] = null,
+            ["soft_close_override"] = recheck.SoftCloseOverride, ["migration_batch_id"] = null, ["detail_digest"] = detailDigest,
             ["document_date"] = reversalDate, ["posting_date"] = reversalDate, ["posted_at"] = postedAt, ["transaction_currency"] = currency,
             ["reversal_of_document_id"] = req.DocumentId, ["reversal_reason_code"] = req.ReasonCode, ["auto_reversal_date"] = null,
             ["ic_transaction_id"] = null, ["ic_counterpart_company_id"] = null, ["origin"] = mode?.Origin ?? "EXTERNAL",
@@ -311,7 +312,7 @@ public sealed class DocumentReverser(NpgsqlDataSource source)
         byte[] rowHash = LedgerHash2.RowHash(header, chainSeq, headHash, LedgerHash2.LineDigest(lineHashes));
 
         await InsertDocumentAsync(tx, tenantId, companyId, ctx, req, mirrorId, ledgerId, series.SeriesId, fiscalYear, periodNo, sequenceNo,
-            number, recheck.SoftCloseOverride, postedAt, currency, reversalDate, chainSeq, headHash, rowHash, mirrorType, mode is not null, mode?.Origin ?? "EXTERNAL", cmdName, ct);
+            number, recheck.SoftCloseOverride, postedAt, currency, reversalDate, chainSeq, headHash, rowHash, mirrorType, mode is not null, mode?.Origin ?? "EXTERNAL", cmdName, detailDigest, ct);
         if (await LegalSnapshots.WriteAsync(tx, tenantId, companyId, mirrorId, fiscalYear, reversalDate, postedAt, ct, copyFromDocumentId: req.DocumentId) is { } noSnapshot)
             return Reject(noSnapshot);
         foreach (var m in mirrorLines) await InsertLineAsync(tx, m, req.DocumentId, ct);
@@ -490,15 +491,16 @@ public sealed class DocumentReverser(NpgsqlDataSource source)
     private static async Task InsertDocumentAsync(
         TenantTransaction tx, Guid tenantId, Guid companyId, CommandContext ctx, ReverseDocumentRequest req, Guid mirrorId, Guid ledgerId,
         Guid seriesId, int fiscalYear, int period, long sequenceNo, string number, bool softOverride, DateTime postedAt, string currency,
-        DateOnly reversalDate, long chainSeq, byte[] prevHash, byte[] rowHash, string mirrorType, bool system, string origin, string commandName, CancellationToken ct)
+        DateOnly reversalDate, long chainSeq, byte[] prevHash, byte[] rowHash, string mirrorType, bool system, string origin, string commandName, byte[]? detailDigest, CancellationToken ct)
     {
         await using var cmd = tx.Command(
             "insert into core.journal_document (tenant_id, company_id, document_id, ledger_id, document_type, is_system_generated, " +
             "number_series_id, fiscal_year, sequence_no, document_number, fiscal_period, soft_close_override, document_date, posting_date, " +
             "posted_at, transaction_currency, reversal_of_document_id, reversal_reason_code, origin, source_system, idempotency_key, " +
-            "command_name, posted_by, correlation_id, chain_seq, prev_hash, row_hash, hash_version) " +
+            "command_name, posted_by, correlation_id, chain_seq, prev_hash, row_hash, hash_version, detail_digest) " +
             "values (@t, @c, @id, @l, @dt, @sys, @s, @fy, @seq, @num, @fp, @soft, @dd, @pd, @at, @tc, @orig, @reason, @origin, @src, @key, " +
-            "@cmd, @by, @corr, @cs, @prev, @row, @hv)");
+            "@cmd, @by, @corr, @cs, @prev, @row, @hv, @detail)");
+        cmd.Parameters.Add(new NpgsqlParameter("detail", NpgsqlDbType.Bytea) { Value = (object?)detailDigest ?? DBNull.Value });
         cmd.Parameters.AddWithValue("t", tenantId);
         cmd.Parameters.AddWithValue("c", companyId);
         cmd.Parameters.AddWithValue("id", mirrorId);

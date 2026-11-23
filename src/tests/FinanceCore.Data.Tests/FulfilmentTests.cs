@@ -598,6 +598,65 @@ public class FulfilmentTests
     }
 
     [Fact]
+    public async Task ASalesInvoiceIsReversedWithItsLinkRecordsAndTheQuantityCanBeInvoicedAgain()
+    {
+        var s = await SetupAsync();
+        var t = s.T;
+        var inv = await InvoiceSetupAsync(s);
+        await ReceiveAsync(s, "r1", await PurchaseOrderAsync(s, "po", 100, 10), 100);
+        var so = await SalesOrderAsync(s, "so", GoodsLine(s, 30, 25));
+        var delivery = (await s.Cmds.PostDeliveryAsync(t.TenantId, Ctx(s, "d1", "sales.deliver"), new(t.CompanyId, new DateOnly(2026, 3, 12), [new("D1", so.OrderId, 1, 10, "C62")]))).Value!;
+        var invoice = (await Invoice(s, "i1", new SalesInvoiceLineInput("L1", so.OrderId, 1, DeliveryLineRefs: [new(delivery.DocumentId, 1)]))).Value!;
+        var commands = new SalesInvoiceCommands(t.App);
+        Task<CommandResult<ReversedSalesInvoice>> Reverse(string key, Guid id, string reason = "CORRECTION", string permission = "sales.invoice") =>
+            commands.ReverseAsync(t.TenantId, Ctx(s, key, permission), new(t.CompanyId, id, reason));
+
+        // the delivery is protected while the invoice names it, and the journal is not reversed through the finance command
+        Assert.Equal(["ORDER.DELIVERY_INVOICED"], Codes(await s.Cmds.ReverseDeliveryAsync(t.TenantId, Ctx(s, "dr", "sales.deliver"), new(t.CompanyId, delivery.DocumentId, "CORRECTION"))));
+        Assert.Equal(["REVERSAL.TYPE_NOT_REVERSIBLE"], Codes(await new DocumentReverser(t.App).ReverseAsync(t.TenantId, t.Context("jr", "journal.reverse"), new(invoice.JournalDocumentId, null, "CORRECTION", null))));
+
+        var r = await Reverse("rev", invoice.SalesInvoiceId);
+        Assert.True(r.Status == CommandStatus.Ok, Describe(r));
+        var m = r.Value!;
+        Assert.Equal((0m, 0m, 0m), (
+            await t.ScalarAsync<decimal>($"select coalesce(sum(amount_lc), 0) from core.journal_line where tenant_id = @t and company_id = '{t.CompanyId}' and account_id = '{inv.Receivable}'"),
+            await t.ScalarAsync<decimal>($"select coalesce(sum(amount_lc), 0) from core.journal_line where tenant_id = @t and company_id = '{t.CompanyId}' and account_id = '{inv.Revenue}'"),
+            await t.ScalarAsync<decimal>($"select coalesce(sum(amount_lc), 0) from core.journal_line where tenant_id = @t and company_id = '{t.CompanyId}' and account_id = '{inv.Vat}'")));
+        Assert.Equal(("reversed", "AR_INVOICE", "ORDER", "sales-invoices:reverse", true), (
+            await t.ScalarAsync<string>($"select status from core.journal_document where tenant_id = @t and document_id = '{invoice.JournalDocumentId}'"),
+            await t.ScalarAsync<string>($"select document_type from core.journal_document where tenant_id = @t and document_id = '{m.JournalDocumentId}'"),
+            await t.ScalarAsync<string>($"select origin from core.journal_document where tenant_id = @t and document_id = '{m.JournalDocumentId}'"),
+            await t.ScalarAsync<string>($"select command_name from core.journal_document where tenant_id = @t and document_id = '{m.JournalDocumentId}'"),
+            await t.ScalarAsync<bool>($"select detail_digest is not null from core.journal_document where tenant_id = @t and document_id = '{m.JournalDocumentId}'")));
+        Assert.Equal(2L, await t.ScalarAsync<long>($"select count(*) from core.journal_line_open_item where tenant_id = @t and clearing_status = 'CLEARED' and document_id in ('{invoice.JournalDocumentId}', '{m.JournalDocumentId}')"));
+        Assert.Equal(("REVERSAL", invoice.SalesInvoiceId, -10m, -250m, "CORRECTION"), (
+            await t.ScalarAsync<string>($"select invoice_kind from core.sales_invoice where tenant_id = @t and sales_invoice_id = '{m.ReversalInvoiceId}'"),
+            await t.ScalarAsync<Guid>($"select reversal_of_sales_invoice_id from core.sales_invoice where tenant_id = @t and sales_invoice_id = '{m.ReversalInvoiceId}'"),
+            await t.ScalarAsync<decimal>($"select base_quantity from core.sales_invoice_line where tenant_id = @t and sales_invoice_id = '{m.ReversalInvoiceId}' and line_no = 1"),
+            await t.ScalarAsync<decimal>($"select net_amount from core.sales_invoice_line where tenant_id = @t and sales_invoice_id = '{m.ReversalInvoiceId}' and line_no = 1"),
+            await t.ScalarAsync<string>($"select reason_code from core.sales_invoice where tenant_id = @t and sales_invoice_id = '{m.ReversalInvoiceId}'")));
+
+        // the quantity is open to invoice again, the reversal cannot be repeated or reversed, and the delivery can now be reversed
+        var again = await Invoice(s, "i2", new SalesInvoiceLineInput("L1", so.OrderId, 1, DeliveryLineRefs: [new(delivery.DocumentId, 1)]));
+        Assert.True(again.Status == CommandStatus.Ok, Describe(again));
+        Assert.Equal(["REVERSAL.ALREADY_REVERSED"], Codes(await Reverse("rev2", invoice.SalesInvoiceId)));
+        Assert.Equal(["REVERSAL.TYPE_NOT_REVERSIBLE"], Codes(await Reverse("rev3", m.ReversalInvoiceId)));
+        Assert.Equal(["REVERSAL.NOT_FOUND"], Codes(await Reverse("rev4", Guid.NewGuid())));
+        Assert.Equal(["REVERSAL.REASON_NOT_ALLOWED"], Codes(await Reverse("rev5", again.Value!.SalesInvoiceId, "RETURN")));
+        Assert.Equal(["AUTH.PERMISSION_MISSING"], Codes(await Reverse("rev6", again.Value.SalesInvoiceId, "CORRECTION", "sales.order")));
+        var replay = await Reverse("rev", invoice.SalesInvoiceId);
+        Assert.True(replay.IdempotentReplay);
+        Assert.Equal(m.ReversalInvoiceId, replay.Value!.ReversalInvoiceId);
+        Assert.Equal(CommandStatus.Ok, (await Reverse("rev7", again.Value.SalesInvoiceId, "ERROR")).Status);
+        Assert.Equal(CommandStatus.Ok, (await s.Cmds.ReverseDeliveryAsync(t.TenantId, Ctx(s, "dr2", "sales.deliver"), new(t.CompanyId, delivery.DocumentId, "CORRECTION"))).Status);
+        foreach (string chain in new[] { "LEDGER", "CLEARING" })
+        {
+            var verify = await new ChainVerification(t.App).VerifyAsync(t.TenantId, t.Context("v" + chain, "chain.verify"), new(t.CompanyId, chain));
+            Assert.True(verify.Status == CommandStatus.Ok && verify.Value!.Ok, chain + " " + Describe(verify));
+        }
+    }
+
+    [Fact]
     public async Task AGoodsLineWithPolicyOrderedIsInvoicedBeforeDeliveryAtTheOrderedQuantityAndTheOverToleranceIsOnlyTheCeiling()
     {
         var s = await SetupAsync();
