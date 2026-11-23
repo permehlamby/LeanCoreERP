@@ -896,6 +896,8 @@ public class FulfilmentTests
             ("ap", payable), ("vat", vat), ("ex", expense));
         // the GR/IR account takes the tax code of a matched stock line, so it may not forbid it
         await t.ExecuteAsync($"update core.gl_account set tax_code_rule = 'OPTIONAL' where tenant_id = @t and account_id = '{s.GrIr}'");
+        // the number series of the stock document of a cost adjustment (the series of the stock documents of the test tenant)
+        await t.ExecuteAsync("insert into core.number_series_assignment (tenant_id, company_id, document_type, series_id, effective_from, created_by) select @t, @c, 'STOCK_DOC_COST_ADJUSTMENT', series_id, date '2026-01-01', 'test' from core.number_series where tenant_id = @t and series_code = 'STK'");
         var det = new AccountDeterminationCommands(t.App);
         foreach (var (role, account) in new[] { ("AP_CONTROL", payable), ("PURCHASE_EXPENSE", expense) })
             Assert.Equal(CommandStatus.Ok, (await det.CreateAsync(t.TenantId, t.Context("det-" + role, "write.config"), new(t.CompanyId, D(("role_code", role), ("valid_from", "2026-01-01"), ("priority", 1), ("account_id", account))))).Status);
@@ -963,11 +965,10 @@ public class FulfilmentTests
             await t.ScalarAsync<string>($"select clearing_method from core.clearing where tenant_id = @t and clearing_id = '{line.GrIrClearingId}'"),
             await t.ScalarAsync<long>($"select count(*) from core.clearing_item where tenant_id = @t and clearing_id = '{line.GrIrClearingId}'")));
 
-        // the supplier invoice number is used once; a wrong control total, a price that differs from the receipt and too much quantity are rejected without a trace
+        // the supplier invoice number is used once; a wrong control total and too much quantity are rejected without a trace
         long invoices = await t.ScalarAsync<long>("select count(*) from core.purchase_invoice where tenant_id = @t");
         Assert.Equal(["ORDER.DUPLICATE_SUPPLIER_INVOICE"], Codes(await PostPurchaseInvoice(s, "i2", "SI-1", 500, new PurchaseInvoiceLineInput("L1", po.OrderId, 1, 40, 10, 400, pur.Code, 100))));
         Assert.Equal(["MATCH.GROSS_MISMATCH"], Codes(await PostPurchaseInvoice(s, "i3", "SI-3", 499, new PurchaseInvoiceLineInput("L1", po.OrderId, 1, 40, 10, 400, pur.Code, 100))));
-        Assert.Equal(["LIMIT.INVOICE_PRICE_DIFFERENCE_NOT_BUILT"], Codes(await PostPurchaseInvoice(s, "i4", "SI-4", 550, new PurchaseInvoiceLineInput("L1", po.OrderId, 1, 40, 11, 440, pur.Code, 110))));
         Assert.Equal(["MATCH.QUANTITY_EXCEEDS_RECEIVED"], Codes(await PostPurchaseInvoice(s, "i5", "SI-5", 512.5m, new PurchaseInvoiceLineInput("L1", po.OrderId, 1, 41, 10, 410, pur.Code, 102.5m))));
         Assert.Equal(["AUTH.PERMISSION_MISSING"], Codes(await new PurchaseInvoiceCommands(t.App).PostAsync(t.TenantId, Ctx(s, "i6", "sales.invoice"),
             new(t.CompanyId, s.Supplier, "SI-6", new DateOnly(2026, 3, 20), "DKK", 500, [new PurchaseInvoiceLineInput("L1", po.OrderId, 1, 40, 10, 400, pur.Code, 100)]))));
@@ -1006,5 +1007,56 @@ public class FulfilmentTests
         Assert.Null(m.GrIrClearingId);
         Assert.Equal(["MATCH.QUANTITY_EXCEEDS_ORDERED"], Codes(await PostPurchaseInvoice(s, "i2", "SI-2", 3750, new PurchaseInvoiceLineInput("L1", po.OrderId, 1, 6, 500, 3000, pur.Code, 750))));   // 5 are invoiced, 10 are ordered
         Assert.Equal(CommandStatus.Ok, (await PostPurchaseInvoice(s, "i3", "SI-3", 3125, new PurchaseInvoiceLineInput("L1", po.OrderId, 1, 5, 500, 2500, pur.Code, 625))).Status);
+    }
+
+    [Fact]
+    public async Task APurchaseInvoiceWithAPriceDifferenceAdjustsTheCostOfTheStockOnHandAndPostsTheConsumedPartToCogs()
+    {
+        var s = await SetupAsync();
+        var t = s.T;
+        var pur = await PurchaseSetupAsync(s);
+        var po = await DomesticPurchaseOrderAsync(s, "po", 100, 10);
+        var receipt = await ReceiveAsync(s, "r1", po, 100);   // 1000 in stock and in GR/IR
+
+        // 60 at 11 against 10: 660 against 600, the 60 more is all on hand and raises the cost of the stock
+        var r = await PostPurchaseInvoice(s, "i1", "SI-1", 825, new PurchaseInvoiceLineInput("L1", po.OrderId, 1, 60, 11, 660, pur.Code, 165));
+        Assert.True(r.Status == CommandStatus.Ok, Describe(r));
+        var m = r.Value!;
+        Assert.NotNull(m.StockDocumentId);
+        Assert.Equal((600m, 60m, 0m, 165m, -825m), (await SumOfAsync(s, m.JournalDocumentId, s.GrIr), await SumOfAsync(s, m.JournalDocumentId, s.Inventory), await SumOfAsync(s, m.JournalDocumentId, s.Cogs),
+            await SumOfAsync(s, m.JournalDocumentId, pur.InputVat), await SumOfAsync(s, m.JournalDocumentId, pur.Payable)));
+        Assert.Equal(60m, m.Lines[0].BaseQuantity - 0m);
+        Assert.Equal(("STOCK_COST_ADJUSTMENT", m.JournalDocumentId, "purchase-invoices:post"), (
+            await t.ScalarAsync<string>($"select document_type from core.stock_document where tenant_id = @t and stock_document_id = '{m.StockDocumentId}'"),
+            await t.ScalarAsync<Guid>($"select journal_document_id from core.stock_document where tenant_id = @t and stock_document_id = '{m.StockDocumentId}'"),
+            await t.ScalarAsync<string>($"select command_name from core.stock_document where tenant_id = @t and stock_document_id = '{m.StockDocumentId}'")));
+        Assert.Equal(("COST_ADJUST", "INVOICE", 0m, 60m, 1060m, 100m), (
+            await t.ScalarAsync<string>($"select movement_type from core.stock_movement where tenant_id = @t and stock_document_id = '{m.StockDocumentId}'"),
+            await t.ScalarAsync<string>($"select cost_source from core.stock_movement where tenant_id = @t and stock_document_id = '{m.StockDocumentId}'"),
+            await t.ScalarAsync<decimal>($"select base_quantity from core.stock_movement where tenant_id = @t and stock_document_id = '{m.StockDocumentId}'"),
+            await t.ScalarAsync<decimal>($"select value_lc from core.stock_movement where tenant_id = @t and stock_document_id = '{m.StockDocumentId}'"),
+            await t.ScalarAsync<decimal>($"select cost_value_after_lc from core.stock_movement where tenant_id = @t and stock_document_id = '{m.StockDocumentId}'"),
+            await t.ScalarAsync<decimal>($"select cost_qty_after from core.stock_movement where tenant_id = @t and stock_document_id = '{m.StockDocumentId}'")));
+        Assert.Equal((1060m, -400m), (await BalanceAsync(s, s.Inventory), await BalanceAsync(s, s.GrIr)));
+        Assert.Equal(("PARTIAL", "CLEARED"), (await ItemStatusAsync(s, receipt.JournalDocumentId!.Value), await ItemStatusAsync(s, m.JournalDocumentId)));
+
+        // 70 of the 100 are sold, so 30 are left; the last 40 are invoiced at 9: 360 against 400, minus 40, of which 30 is on hand and 10 consumed
+        var so = await SalesOrderAsync(s, "so", GoodsLine(s, 70, 25));
+        Assert.Equal(CommandStatus.Ok, (await s.Cmds.PostDeliveryAsync(t.TenantId, Ctx(s, "d1", "sales.deliver"), new(t.CompanyId, new DateOnly(2026, 3, 13), [new("D1", so.OrderId, 1, 70, "C62")]))).Status);
+        var r2 = await PostPurchaseInvoice(s, "i2", "SI-2", 450, new PurchaseInvoiceLineInput("L1", po.OrderId, 1, 40, 9, 360, pur.Code, 90));
+        Assert.True(r2.Status == CommandStatus.Ok, Describe(r2));
+        var m2 = r2.Value!;
+        Assert.Equal((400m, -30m, -10m), (await SumOfAsync(s, m2.JournalDocumentId, s.GrIr), await SumOfAsync(s, m2.JournalDocumentId, s.Inventory), await SumOfAsync(s, m2.JournalDocumentId, s.Cogs)));
+        Assert.Equal(0m, await BalanceAsync(s, s.GrIr));
+        Assert.Equal("CLEARED", await ItemStatusAsync(s, receipt.JournalDocumentId!.Value));
+        Assert.Equal((-30m, 288m, 30m), (
+            await t.ScalarAsync<decimal>($"select value_lc from core.stock_movement where tenant_id = @t and stock_document_id = '{m2.StockDocumentId}'"),
+            await t.ScalarAsync<decimal>($"select cost_value_after_lc from core.stock_movement where tenant_id = @t and stock_document_id = '{m2.StockDocumentId}'"),
+            await t.ScalarAsync<decimal>($"select cost_qty_after from core.stock_movement where tenant_id = @t and stock_document_id = '{m2.StockDocumentId}'")));
+        foreach (string chain in new[] { "LEDGER", "CLEARING" })   // the STOCK chain has no verification yet (11, 12)
+        {
+            var verify = await new ChainVerification(t.App).VerifyAsync(t.TenantId, t.Context("v" + chain, "chain.verify"), new(t.CompanyId, chain));
+            Assert.True(verify.Status == CommandStatus.Ok && verify.Value!.Ok, chain + " " + Describe(verify));
+        }
     }
 }

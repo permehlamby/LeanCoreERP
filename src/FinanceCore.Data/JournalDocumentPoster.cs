@@ -146,7 +146,7 @@ public sealed class JournalDocumentPoster(NpgsqlDataSource source)
     /// records, ADR-052), whether the poster writes the command log and commits, and what runs once the document is inserted (the link records).
     /// </summary>
     internal sealed record PostEmbedding(
-        string CommandName, string Origin, string? BalancingLineRef, Func<EmbeddedFacts, byte[]?>? DetailDigest, bool WriteLog, bool Commit, Func<TenantTransaction, PostedDocument, EmbeddedFacts, Task>? After);
+        string CommandName, string Origin, string? BalancingLineRef, Func<EmbeddedFacts, byte[]?>? DetailDigest, bool WriteLog, bool Commit, Func<TenantTransaction, PostedDocument, EmbeddedFacts, Task>? After, Guid? DocumentId = null, Func<EmbeddedFacts, Task<byte[]?>>? DetailDigestAsync = null);
 
     /// <summary>What the posting worked out that the order command needs for its link records: the request with the balancing amount in, and the tax plan.</summary>
     internal sealed record EmbeddedFacts(PostJournalDocumentRequest Request, TaxPlan Tax);
@@ -366,14 +366,14 @@ public sealed class JournalDocumentPoster(NpgsqlDataSource source)
         if (recheck.Errors.Count > 0) return CommandResult<PostedDocument>.Rejected(recheck.Errors);
 
         // Build the document and its hashes. Everything the hash needs is known here.
-        Guid documentId = Guid.NewGuid();
+        Guid documentId = embedding?.DocumentId ?? Guid.NewGuid();
         DateTime now = DateTime.UtcNow;
         DateTime postedAt = new(now.Ticks - now.Ticks % 10, DateTimeKind.Utc);   // microseconds, as the database stores them
         long chainSeq = headSeq + 1;
         string number = PostingRules.FormatNumber(series.Prefix, series.IncludeFiscalYear, series.Separator, series.NumberLength, fiscalYear, sequenceNo);
         bool softOverride = recheck.SoftCloseOverride;
 
-        byte[]? detailDigest = embedding?.DetailDigest?.Invoke(new EmbeddedFacts(req, taxPlan));
+        byte[]? detailDigest = embedding?.DetailDigestAsync is { } digestAsync ? await digestAsync(new EmbeddedFacts(req, taxPlan)) : embedding?.DetailDigest?.Invoke(new EmbeddedFacts(req, taxPlan));
         var header = new Dictionary<string, object?>
         {
             ["tenant_id"] = tenantId, ["company_id"] = req.CompanyId, ["document_id"] = documentId, ["ledger_id"] = ledgerId.Value,

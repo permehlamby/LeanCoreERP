@@ -43,6 +43,13 @@ public sealed partial class PurchaseInvoiceCommands(NpgsqlDataSource source)
 
     private sealed class Link(Guid? receiptId, int? receiptLineNo, decimal baseQuantity, decimal net, ReceiptLine? receipt)
     {
+        /// <summary>The receipt value of the link, the difference to the invoice value and its parts on hand and consumed (local currency), and where the on-hand part goes (7.2).</summary>
+        public decimal ReceiptLc { get; set; }
+        public decimal Diff { get; set; }
+        public decimal OnHand { get; set; }
+        public decimal Consumed { get; set; }
+        public Guid? Warehouse { get; set; }
+        public Guid? Location { get; set; }
         public Guid? ReceiptId { get; } = receiptId;
         public int? ReceiptLineNo { get; } = receiptLineNo;
         public decimal BaseQuantity { get; } = baseQuantity;
@@ -66,7 +73,7 @@ public sealed partial class PurchaseInvoiceCommands(NpgsqlDataSource source)
         {
             PurchaseInvoiceLineInput l = req.Lines![i];
             string p = $"/lines/{i}";
-            if (string.IsNullOrWhiteSpace(l.LineRef) || l.LineRef.Length > 100) Invalid(p + "/line_ref", "required, at most 100 characters");
+            if (string.IsNullOrWhiteSpace(l.LineRef) || l.LineRef.Length > 90) Invalid(p + "/line_ref", "required, at most 90 characters");
             else if (req.Lines.Take(i).Any(x => x.LineRef == l.LineRef)) errors.Add(Error("SCHEMA.DUPLICATE_LINE_REF", "P1", p + "/line_ref", ("line_ref", l.LineRef)));
             if (l.PurchaseOrderId == Guid.Empty || l.PurchaseOrderLineNo < 1) errors.Add(Error("ORDER.INVOICE_LINE_REFERENCE_MISSING", "P1", p + "/purchase_order_id", ("line_ref", l.LineRef)));
             if (l.Quantity <= 0m || Math.Round(l.Quantity, 6) != l.Quantity) Invalid(p + "/quantity", "more than 0, at most 6 fraction digits");
@@ -265,48 +272,105 @@ public sealed partial class PurchaseInvoiceCommands(NpgsqlDataSource source)
         }
         if (errors.Count > 0) return CommandResult<PurchaseInvoiceResult>.Rejected(errors);
 
-        // the finance document: a debit line per invoice line with the tax facts of the order line, and the payable that the pipeline balances
+        // the receipt value R of every link, from the GR/IR items as they stand now (read again under the locks, in the callbacks below), and the difference to the invoice value (7.2)
+        var plan = new MatchPlan();
+        var costRead = new Dictionary<Guid, (decimal Qty, decimal Value)>();
+        int lcScale = await ScaleOfAsync(tx, currency, ct);
+        if (work.Any(w => w.Stock))
+        {
+            var located = await LocateItemsAsync(tx, tenantId, companyId, work, ct);
+            var items = await ReadItemsAsync(tx, tenantId, companyId, located, false, ct);
+            await ComputeSharesAsync(tx, tenantId, companyId, work, located, items, plan, ct);
+            foreach (Work w in work.Where(x => x.Stock))
+                foreach (Link k in w.Links)
+                {
+                    k.ReceiptLc = -plan.Shares[k].Lc;
+                    k.Diff = k.Net - k.ReceiptLc;
+                    if (k.Diff == 0m) continue;
+                    if (!costRead.TryGetValue(w.Line.ItemId, out var cs)) costRead[w.Line.ItemId] = cs = await CostBalanceAsync(tx, tenantId, companyId, w.Line.ItemId, ct);
+                    decimal onHandQuantity = Math.Min(k.BaseQuantity, cs.Qty);
+                    k.OnHand = Math.Round(k.Diff * onHandQuantity / k.BaseQuantity, lcScale, MidpointRounding.AwayFromZero);
+                    k.Consumed = k.Diff - k.OnHand;
+                    if (k.OnHand == 0m) continue;
+                    var place = await MovementPlaceAsync(tx, tenantId, companyId, k.Receipt!, ct);
+                    if (place is null) { errors.Add(Error("MATCH.NO_RECEIPT", "P2", $"/lines/{w.Index}", ("reason", "the movement of the receipt line is not found"))); continue; }
+                    (k.Warehouse, k.Location) = place.Value;
+                }
+            if (errors.Count > 0) return CommandResult<PurchaseInvoiceResult>.Rejected(errors);
+        }
+        bool adjusts = work.Any(w => w.Links.Any(k => k.OnHand != 0m));
+
+        // the finance document: a debit line per invoice line with the tax facts of the order line, the difference lines of a stock line, and the payable that the pipeline balances
         var lines = new List<RequestLine>();
+        var lineNos = new Dictionary<int, LineNos>();
         foreach (Work w in work)
+        {
             lines.Add(new RequestLine(w.Input.LineRef, w.Account, w.Input.NetAmount, TaxClassId: w.Line.TaxClassId, TaxDate: req.InvoiceDate, OriginCountry: w.Line.Origin, DestinationCountry: w.Line.Destination,
                 TaxCodeId: w.Input.TaxCodeId, TaxAmountTc: w.Input.TaxAmount, OpenItem: w.Stock ? new OpenItemRequest(null, req.InvoiceDate) : null));
+            var nos = new LineNos { Main = lines.Count };
+            lineNos[w.Index] = nos;
+            decimal diff = w.Links.Sum(k => k.Diff), onHand = w.Links.Sum(k => k.OnHand), consumed = w.Links.Sum(k => k.Consumed);
+            if (diff == 0m) continue;
+            // the GR/IR debit is the invoice value; what it exceeds the receipt value by goes back to GR/IR and to inventory and cost of goods sold (7.2)
+            lines.Add(new RequestLine(w.Input.LineRef + "#GA", w.Account, -diff, OpenItem: new OpenItemRequest(null, req.InvoiceDate)));
+            nos.Adjust = lines.Count;
+            if (onHand != 0m)
+            {
+                var inventory = await AccountDeterminationResolver.ResolveAsync(tx, tenantId, companyId, "INVENTORY", w.Line.ItemGroup, w.Line.Warehouse, null, w.Line.ItemId, postingDate, ct);
+                if (inventory is null) return Reject(Error("INVENTORY.ACCOUNT_DETERMINATION_MISSING", "P5", $"/lines/{w.Index}", ("role_code", "INVENTORY"), ("item_id", w.Line.ItemId)));
+                lines.Add(new RequestLine(w.Input.LineRef + "#IV", inventory.AccountId, onHand));
+            }
+            if (consumed != 0m)
+            {
+                var cogs = await AccountDeterminationResolver.ResolveAsync(tx, tenantId, companyId, "COGS", w.Line.ItemGroup, w.Line.Warehouse, null, w.Line.ItemId, postingDate, ct);
+                if (cogs is null) return Reject(Error("INVENTORY.ACCOUNT_DETERMINATION_MISSING", "P5", $"/lines/{w.Index}", ("role_code", "COGS"), ("item_id", w.Line.ItemId)));
+                lines.Add(new RequestLine(w.Input.LineRef + "#CG", cogs.AccountId, consumed));
+            }
+        }
         const string ApRef = "AP";
         DateOnly? due = req.DueDate ?? (terms is null ? req.InvoiceDate : null);
         lines.Add(new RequestLine(ApRef, apAccount.AccountId, 0m, OpenItem: new OpenItemRequest(supplier, req.InvoiceDate, terms, due)));
         var journal = new PostJournalDocumentRequest(companyId, null, "AP_INVOICE", req.InvoiceDate, postingDate, currency, null, null, req.SourceDocumentRef, lines, supplier);
 
-        Guid invoiceId = Guid.NewGuid();
+        Guid invoiceId = Guid.NewGuid(), journalId = Guid.NewGuid();
+        Guid? stockId = adjusts ? Guid.NewGuid() : null;
         var clearingIds = work.Where(w => w.Stock).Select(w => w.Account).Distinct().ToDictionary(a => a, _ => Guid.NewGuid());
         List<Dictionary<string, object?>> linkRows = [];
         var headerDigest = new Dictionary<string, object?>
         {
             ["purchase_invoice_id"] = invoiceId, ["invoice_kind"] = "INVOICE", ["supplier_partner_id"] = supplier, ["supplier_invoice_number"] = req.SupplierInvoiceNumber, ["invoice_date"] = req.InvoiceDate,
-            ["due_date"] = req.DueDate, ["currency"] = currency, ["gross_amount"] = req.GrossAmount, ["stock_document_id"] = null, ["credits_invoice_id"] = null, ["credit_kind"] = null,
+            ["due_date"] = req.DueDate, ["currency"] = currency, ["gross_amount"] = req.GrossAmount, ["stock_document_id"] = stockId, ["credits_invoice_id"] = null, ["credit_kind"] = null,
             ["reversal_of_purchase_invoice_id"] = null, ["reason_code"] = null, ["line_count"] = work.Sum(w => w.Links.Count)
         };
-        byte[]? DigestOf(JournalDocumentPoster.EmbeddedFacts facts)
+        byte[] DigestOf(JournalDocumentPoster.EmbeddedFacts facts)
         {
             linkRows = [];
             foreach (Work w in work)
             {
                 TaxLineSeed? tax = facts.Tax.Lines.FirstOrDefault(t => t.Bases.Any(b => b.Index == w.Index));
                 Guid? code = tax?.CodeId ?? (facts.Tax.BaseCodes.TryGetValue(w.Index, out Guid c) ? c : null);
-                decimal unitPrice = w.Input.UnitPrice;
                 foreach (Link k in w.Links)
-                {
-                    decimal taxShare = w.Input.TaxAmount!.Value;   // one tax amount per invoice line: the first link row holds it, so the rows add up to the supplier's amount
                     linkRows.Add(new Dictionary<string, object?>
                     {
                         ["line_no"] = linkRows.Count + 1, ["line_kind"] = "MATCHED", ["purchase_order_id"] = w.Input.PurchaseOrderId, ["purchase_order_line_no"] = w.Input.PurchaseOrderLineNo,
                         ["receipt_id"] = k.ReceiptId, ["receipt_line_no"] = k.ReceiptLineNo, ["stock_document_id"] = null, ["stock_document_line_no"] = null, ["base_quantity"] = k.BaseQuantity,
-                        ["unit_price"] = unitPrice, ["net_amount"] = k.Net, ["tax_amount"] = w.Links[0] == k ? taxShare : 0m, ["order_unit_price"] = w.Line.UnitPrice, ["match_mode_used"] = w.MatchMode,
-                        ["tolerance_used"] = w.MatchMode == "TWO_WAY" ? w.Line.OverTolerancePct : null, ["price_difference_lc"] = 0m, ["on_hand_part_lc"] = 0m, ["consumed_part_lc"] = 0m,
+                        ["unit_price"] = w.Input.UnitPrice, ["net_amount"] = k.Net, ["tax_amount"] = w.Links[0] == k ? w.Input.TaxAmount!.Value : 0m, ["order_unit_price"] = w.Line.UnitPrice, ["match_mode_used"] = w.MatchMode,
+                        ["tolerance_used"] = w.MatchMode == "TWO_WAY" ? w.Line.OverTolerancePct : null, ["price_difference_lc"] = k.Diff, ["on_hand_part_lc"] = k.OnHand, ["consumed_part_lc"] = k.Consumed,
                         ["dropship_part_lc"] = 0m, ["unreceived_gr_ir_lc"] = 0m, ["gr_ir_clearing_id"] = k.ReceiptId is null ? null : clearingIds[w.Account], ["tax_code_id"] = code,
-                        ["tax_code_version_id"] = tax?.VersionId, ["tax_date"] = tax?.TaxDate, ["journal_line_no"] = w.Index + 1, ["line_ref"] = w.Input.LineRef
+                        ["tax_code_version_id"] = tax?.VersionId, ["tax_date"] = tax?.TaxDate, ["journal_line_no"] = lineNos[w.Index].Main, ["line_ref"] = w.Input.LineRef
                     });
-                }
             }
             return PurchaseInvoiceRules.Digest(headerDigest, linkRows.Select(r => (IReadOnlyDictionary<string, object?>)r.Where(kv => kv.Key != "line_ref").ToDictionary(kv => kv.Key, kv => kv.Value)).ToList());
+        }
+
+        // the digest the journal document binds: the link digest alone, or with the stock document of a cost adjustment, which is prepared here under the LEDGER lock of the poster
+        StockDraft? stockDraft = null;
+        async Task<byte[]?> DetailAsync(JournalDocumentPoster.EmbeddedFacts facts)
+        {
+            byte[] link = DigestOf(facts);
+            if (stockId is null) return link;
+            stockDraft = await PrepareStockAsync(tx, tenantId, companyId, ctx, stockId.Value, journalId, req.InvoiceDate, postingDate, currency, work, costRead, link, ct);
+            return CombinedDigest(link, stockDraft.RowHash);
         }
 
         Guid logId = Guid.Empty;
@@ -315,25 +379,41 @@ public sealed partial class PurchaseInvoiceCommands(NpgsqlDataSource source)
         {
             taxTotal = facts.Tax.Lines.Sum(x => x.TaxTc);
             gross = -facts.Request.Lines.Single(x => x.LineRef == ApRef).AmountTc;
-            await InsertHeaderAsync(t, tenantId, companyId, ctx, req, supplier, currency, invoiceId, posted.DocumentId, ct);
+            await InsertHeaderAsync(t, tenantId, companyId, ctx, req, supplier, currency, invoiceId, posted.DocumentId, stockId, ct);
             // the clearing first: what the invoices took of a receipt line before this one is read from the link rows, which this invoice has not inserted yet
-            if (clearingIds.Count > 0) await ClearGrIrAsync(t, tenantId, companyId, ctx, work, posted, clearingIds, invoiceId, postingDate, ct);
+            if (clearingIds.Count > 0) await ClearGrIrAsync(t, tenantId, companyId, ctx, work, posted, clearingIds, invoiceId, postingDate, lineNos, ct);
             foreach (var row in linkRows) await InsertLineAsync(t, tenantId, companyId, invoiceId, row, ct);
+            if (stockDraft is not null) await InsertStockAsync(t, tenantId, companyId, ctx, stockDraft, req.InvoiceDate, postingDate, currency, ct);
             logId = await CommandSupport.WriteLogAsync(t, tenantId, companyId, ctx, CommandName, fingerprint, "PURCHASE_INVOICE", invoiceId, ct);
             await CommandSupport.WriteOutboxAsync(t, tenantId, companyId, ctx, "invoice.posted", "PURCHASE_INVOICE", $"{companyId:D}/{invoiceId:D}", "POSTED", DateTime.UtcNow, isAudit: true,
                 JsonSerializer.Serialize(new Dictionary<string, object?> { ["chain_type"] = "LEDGER", ["row_hash"] = posted.RowHash, ["chain_seq"] = posted.ChainSeq }),
                 JsonSerializer.Serialize(new Dictionary<string, object?> { ["document_number"] = posted.DocumentNumber, ["supplier_partner_id"] = supplier, ["lines"] = linkRows.Count, ["journal_document_id"] = posted.DocumentId }), ct);
         }
 
-        var embedding = new JournalDocumentPoster.PostEmbedding(CommandName, "ORDER", ApRef, DigestOf, WriteLog: false, Commit: false, AfterAsync);
+        var embedding = new JournalDocumentPoster.PostEmbedding(CommandName, "ORDER", ApRef, null, WriteLog: false, Commit: false, AfterAsync, journalId, DetailAsync);
         var postedResult = await _poster.PostCoreAsync(tx, tenantId, ctx, journal, fingerprint, embedding, ct);
         if (postedResult.Status != CommandStatus.Ok) return CommandResult<PurchaseInvoiceResult>.Rejected(postedResult.Errors.ToList());
         PostedDocument doc = postedResult.Value!;
         var result = new PurchaseInvoiceResult(invoiceId, doc.DocumentId, doc.DocumentNumber, work.Sum(w => w.Input.NetAmount), taxTotal, gross, doc.RowHash,
             linkRows.Select(r => new PurchaseInvoiceLineResult((int)r["line_no"]!, (string)r["line_ref"]!, (Guid)r["purchase_order_id"]!, (int)r["purchase_order_line_no"]!, (Guid?)r["receipt_id"], (int?)r["receipt_line_no"],
-                (decimal)r["base_quantity"]!, (decimal)r["net_amount"]!, (decimal)r["tax_amount"]!, (string)r["match_mode_used"]!, (int)r["journal_line_no"]!, (Guid?)r["gr_ir_clearing_id"])).ToList(), clearingIds.Values.Cast<Guid?>().FirstOrDefault());
-        await tx.CommitAsync(ct);   // the deferred checks of the journal document and of the clearing, the outbox position
+                (decimal)r["base_quantity"]!, (decimal)r["net_amount"]!, (decimal)r["tax_amount"]!, (string)r["match_mode_used"]!, (int)r["journal_line_no"]!, (Guid?)r["gr_ir_clearing_id"])).ToList(),
+            clearingIds.Values.Cast<Guid?>().FirstOrDefault(), stockId);
+        await tx.CommitAsync(ct);   // the deferred checks of the journal document and of the clearing, the chain of the stock document, the outbox position
         return CommandResult<PurchaseInvoiceResult>.Ok(result, logId, postedResult.Warnings);
+    }
+
+    /// <summary>The journal lines of an invoice line: the main line and, when the invoice value differs from the receipt value, the GR/IR reversal of the difference.</summary>
+    private sealed class LineNos
+    {
+        public int Main { get; set; }
+        public int? Adjust { get; set; }
+    }
+
+    /// <summary>What the GR/IR items give for the links of the invoice: the share of each receipt item that a link takes, and the cleared amounts of the items after all links.</summary>
+    private sealed class MatchPlan
+    {
+        public Dictionary<Link, Share> Shares { get; } = [];
+        public Dictionary<(Guid, int), (decimal Tc, decimal Lc, decimal Gc, decimal? Rc)> Cleared { get; } = [];
     }
 
     /// <summary>One open item of a receipt: its line amounts and what is cleared of it.</summary>
@@ -341,15 +421,9 @@ public sealed partial class PurchaseInvoiceCommands(NpgsqlDataSource source)
 
     private sealed record Share(GrIrItem Item, decimal Tc, decimal Lc, decimal Gc, decimal? Rc);
 
-    /// <summary>
-    /// The GR/IR match of 7.2 (03): per GR/IR account, under the CLEARING head, the GR/IR credit of each receipt line the invoice takes is cleared by the share the invoice takes, against the GR/IR
-    /// debit lines of the invoice, in one clearing of method AUTO_MATCH. The shares are proportional to the base quantity; the share that completes a receipt line takes the rest of the item. The
-    /// items net to zero in every currency: a difference means a price difference or an exchange difference, which is not built here (LIMIT.INVOICE_PRICE_DIFFERENCE_NOT_BUILT).
-    /// </summary>
-    private static async Task ClearGrIrAsync(
-        TenantTransaction tx, Guid tenantId, Guid companyId, CommandContext ctx, List<Work> work, PostedDocument invoice, Dictionary<Guid, Guid> clearingIds, Guid invoiceId, DateOnly date, CancellationToken ct)
+    /// <summary>The GR/IR open item of every receipt line the invoice takes, found through the stock document of the receipt.</summary>
+    private static async Task<Dictionary<(Guid, int), (Guid Doc, int Line)>> LocateItemsAsync(TenantTransaction tx, Guid tenantId, Guid companyId, List<Work> work, CancellationToken ct)
     {
-        // the receipt items, located through the stock document of the receipt, locked in id order and read under the lock (7.2, locks)
         var wanted = new Dictionary<(Guid, int), (Guid Doc, int Line)>();
         foreach (Work w in work.Where(x => x.Stock))
             foreach (Link k in w.Links)
@@ -359,6 +433,13 @@ public sealed partial class PurchaseInvoiceCommands(NpgsqlDataSource source)
                 if (line is null) throw new MatchRejection(Error("MATCH.NO_RECEIPT", "P4", "/lines", ("receipt_id", k.ReceiptId), ("line_no", k.ReceiptLineNo), ("reason", "the GR/IR item of the receipt line is not found")));
                 wanted[(k.ReceiptId!.Value, k.ReceiptLineNo!.Value)] = (journalId, line.Value);
             }
+        return wanted;
+    }
+
+    /// <summary>The items with their amounts and cleared amounts, locked in id order when asked (7.2, locks).</summary>
+    private static async Task<Dictionary<(Guid, int), GrIrItem>> ReadItemsAsync(
+        TenantTransaction tx, Guid tenantId, Guid companyId, Dictionary<(Guid, int), (Guid Doc, int Line)> wanted, bool forUpdate, CancellationToken ct)
+    {
         var items = new Dictionary<(Guid, int), GrIrItem>();
         foreach (var d in wanted.Values.Distinct().OrderBy(v => v.Doc).ThenBy(v => v.Line))
         {
@@ -366,56 +447,91 @@ public sealed partial class PurchaseInvoiceCommands(NpgsqlDataSource source)
                 "select l.amount_tc, l.amount_lc, l.amount_gc, l.amount_rc, l.currency_gc, l.currency_rc, oi.cleared_amount_tc, oi.cleared_amount_lc, oi.cleared_amount_gc, oi.cleared_amount_rc, d.transaction_currency, l.account_id " +
                 "from core.journal_line_open_item oi join core.journal_line l on l.tenant_id = oi.tenant_id and l.company_id = oi.company_id and l.document_id = oi.document_id and l.line_no = oi.line_no " +
                 "join core.journal_document d on d.tenant_id = l.tenant_id and d.company_id = l.company_id and d.document_id = l.document_id " +
-                "where oi.tenant_id = @t and oi.company_id = @c and oi.document_id = @d and oi.line_no = @n for update of oi");
+                "where oi.tenant_id = @t and oi.company_id = @c and oi.document_id = @d and oi.line_no = @n" + (forUpdate ? " for update of oi" : ""));
             cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("c", companyId); cmd.Parameters.AddWithValue("d", d.Doc); cmd.Parameters.AddWithValue("n", d.Line);
             await using var r = await cmd.ExecuteReaderAsync(ct);
             await r.ReadAsync(ct);
             items[d] = new GrIrItem(d.Doc, d.Line, r.GetGuid(11), r.GetString(10).Trim(), r.GetDecimal(0), r.GetDecimal(1), r.GetDecimal(2), r.IsDBNull(3) ? null : r.GetDecimal(3), r.GetDecimal(6), r.GetDecimal(7),
                 r.GetDecimal(8), r.IsDBNull(9) ? null : r.GetDecimal(9), r.GetString(4).Trim(), r.IsDBNull(5) ? null : r.GetString(5).Trim());
         }
+        return items;
+    }
+
+    /// <summary>
+    /// The share of a receipt item that each link takes, signed as the item (a credit is negative): proportional to the base quantity, the share that completes a receipt line takes the rest of the
+    /// item, so no rounding remains.
+    /// </summary>
+    private static async Task ComputeSharesAsync(
+        TenantTransaction tx, Guid tenantId, Guid companyId, List<Work> work, Dictionary<(Guid, int), (Guid Doc, int Line)> wanted, Dictionary<(Guid, int), GrIrItem> items, MatchPlan plan, CancellationToken ct)
+    {
+        int gcScale = await ScaleOfAsync(tx, items.Values.First().GcCurrency, ct);
+        int? rcScale = items.Values.First().RcCurrency is { } rcCurrency ? await ScaleOfAsync(tx, rcCurrency, ct) : null;
+        var running = new Dictionary<(Guid, int), decimal>();
+        foreach (Work w in work.Where(x => x.Stock))
+            foreach (Link k in w.Links)
+            {
+                var key = (k.ReceiptId!.Value, k.ReceiptLineNo!.Value);
+                GrIrItem item = items[wanted[key]];
+                (decimal Tc, decimal Lc, decimal Gc, decimal? Rc) so = plan.Cleared.TryGetValue(wanted[key], out var seen) ? seen : (item.ClearedTc, item.ClearedLc, item.ClearedGc, item.ClearedRc);
+                decimal before = await InvoicedByReceiptLineAsync(tx, tenantId, companyId, k.ReceiptId.Value, k.ReceiptLineNo.Value, ct);
+                running[key] = running.GetValueOrDefault(key) + k.BaseQuantity;
+                bool completes = before + running[key] >= k.Receipt!.BaseQuantity;
+                decimal ratio = k.BaseQuantity / k.Receipt.BaseQuantity;
+                decimal tc = completes ? item.Tc - so.Tc : Math.Round(item.Tc * ratio, 4, MidpointRounding.AwayFromZero);
+                decimal lc = completes ? item.Lc - so.Lc : Math.Round(item.Lc * ratio, 4, MidpointRounding.AwayFromZero);
+                decimal gc = completes ? item.Gc - so.Gc : Math.Round(item.Gc * ratio, gcScale, MidpointRounding.AwayFromZero);
+                decimal? rc = item.Rc is null ? null : completes ? item.Rc - so.Rc : Math.Round(item.Rc.Value * ratio, rcScale ?? 4, MidpointRounding.AwayFromZero);
+                plan.Cleared[wanted[key]] = (so.Tc + tc, so.Lc + lc, so.Gc + gc, rc is null ? null : (so.Rc ?? 0m) + rc);
+                plan.Shares[k] = new Share(item, tc, lc, gc, rc);
+            }
+    }
+
+    /// <summary>
+    /// The GR/IR match of 7.2 (03): per GR/IR account, under the CLEARING head, the GR/IR credit of each receipt line the invoice takes is cleared by the share the invoice takes, against the GR/IR
+    /// debit lines of the invoice (the main line at the invoice value and, with a price difference, the line that gives the difference back), in one clearing of method AUTO_MATCH. The items net to
+    /// zero in the transaction and local currency; the group and reporting amounts of the main item are those that make the clearing net to zero too.
+    /// </summary>
+    private static async Task ClearGrIrAsync(
+        TenantTransaction tx, Guid tenantId, Guid companyId, CommandContext ctx, List<Work> work, PostedDocument invoice, Dictionary<Guid, Guid> clearingIds, Guid invoiceId, DateOnly date,
+        Dictionary<int, LineNos> lineNos, CancellationToken ct)
+    {
+        // the receipt items, locked in id order and read under the lock; the shares are worked out again and must be those the difference was made from
+        var wanted = await LocateItemsAsync(tx, tenantId, companyId, work, ct);
+        var items = await ReadItemsAsync(tx, tenantId, companyId, wanted, true, ct);
+        var plan = new MatchPlan();
+        await ComputeSharesAsync(tx, tenantId, companyId, work, wanted, items, plan, ct);
+        foreach (Work w in work.Where(x => x.Stock))
+            foreach (Link k in w.Links)
+                if (-plan.Shares[k].Lc != k.ReceiptLc) throw new MatchRejection(new CommandError("SYSTEM.CONFLICT", "P7", "", null, true));
 
         (long headSeq, byte[] headHash, _) = await CommandSupport.LockOrCreateHeadAsync(tx, tenantId, companyId, ClearingHash2.ChainType, "", LedgerHash2.Genesis(tenantId, companyId, ClearingHash2.ChainType, ""), ct);
         DateTime at = DateTime.UtcNow;
         at = new DateTime(at.Ticks - at.Ticks % 10, DateTimeKind.Utc);
-        int gcScale = await ScaleOfAsync(tx, items.Values.First().GcCurrency, ct);
-        int? rcScale = items.Values.First().RcCurrency is { } rcCurrency ? await ScaleOfAsync(tx, rcCurrency, ct) : null;
 
-        // the shares of one account at a time, signed as the item (a credit is negative)
-        var running = new Dictionary<(Guid, int), decimal>();
-        var clearedSoFar = new Dictionary<(Guid, int), (decimal Tc, decimal Lc, decimal Gc, decimal? Rc)>();
         foreach (var group in work.Where(x => x.Stock).GroupBy(x => x.Account).OrderBy(g => g.Key))
         {
-            var shares = new Dictionary<(Guid, int), Share>();
+            var shares = new Dictionary<(Guid, int), (GrIrItem Item, decimal Tc, decimal Lc, decimal Gc, decimal? Rc)>();
             var invoiceItems = new List<(int LineNo, string Currency, decimal Tc, decimal Lc, decimal Gc, decimal? Rc)>();
             foreach (Work w in group)
             {
                 decimal sumTc = 0m, sumLc = 0m, sumGc = 0m; decimal? sumRc = 0m;
                 foreach (Link k in w.Links)
                 {
-                    var key = (k.ReceiptId!.Value, k.ReceiptLineNo!.Value);
-                    GrIrItem item = items[wanted[key]];
-                    if (item.AccountId != group.Key) throw new MatchRejection(Error("LIMIT.INVOICE_PRICE_DIFFERENCE_NOT_BUILT", "P4", $"/lines/{w.Index}", ("reason", "the GR/IR account of the invoice line differs from that of the receipt"), ("line_ref", w.Input.LineRef)));
-                    (decimal Tc, decimal Lc, decimal Gc, decimal? Rc) so = clearedSoFar.TryGetValue(wanted[key], out var seen) ? seen : (item.ClearedTc, item.ClearedLc, item.ClearedGc, item.ClearedRc);
-                    decimal before = await InvoicedByReceiptLineAsync(tx, tenantId, companyId, k.ReceiptId.Value, k.ReceiptLineNo.Value, ct);
-                    running[key] = running.GetValueOrDefault(key) + k.BaseQuantity;
-                    bool completes = before + running[key] >= k.Receipt!.BaseQuantity;
-                    decimal ratio = k.BaseQuantity / k.Receipt.BaseQuantity;
-                    decimal tc = completes ? item.Tc - so.Tc : Math.Round(item.Tc * ratio, 4, MidpointRounding.AwayFromZero);
-                    decimal lc = completes ? item.Lc - so.Lc : Math.Round(item.Lc * ratio, 4, MidpointRounding.AwayFromZero);
-                    decimal gc = completes ? item.Gc - so.Gc : Math.Round(item.Gc * ratio, gcScale, MidpointRounding.AwayFromZero);
-                    decimal? rc = item.Rc is null ? null : completes ? item.Rc - so.Rc : Math.Round(item.Rc.Value * ratio, rcScale ?? 4, MidpointRounding.AwayFromZero);
-                    clearedSoFar[wanted[key]] = (so.Tc + tc, so.Lc + lc, so.Gc + gc, rc is null ? null : (so.Rc ?? 0m) + rc);
-                    shares[wanted[key]] = shares.TryGetValue(wanted[key], out Share? have)
-                        ? new Share(item, have.Tc + tc, have.Lc + lc, have.Gc + gc, have.Rc is null ? null : have.Rc + rc)
-                        : new Share(item, tc, lc, gc, rc);
-                    sumTc -= tc; sumLc -= lc; sumGc -= gc; sumRc = sumRc is null || rc is null ? null : sumRc - rc;
+                    Share s = plan.Shares[k];
+                    if (s.Item.AccountId != group.Key) throw new MatchRejection(Error("LIMIT.INVOICE_PRICE_DIFFERENCE_NOT_BUILT", "P4", $"/lines/{w.Index}", ("reason", "the GR/IR account of the invoice line differs from that of the receipt"), ("line_ref", w.Input.LineRef)));
+                    var key = (s.Item.DocumentId, s.Item.LineNo);
+                    shares[key] = shares.TryGetValue(key, out var have) ? (s.Item, have.Tc + s.Tc, have.Lc + s.Lc, have.Gc + s.Gc, have.Rc is null ? null : have.Rc + s.Rc) : (s.Item, s.Tc, s.Lc, s.Gc, s.Rc);
+                    sumTc -= s.Tc; sumLc -= s.Lc; sumGc -= s.Gc; sumRc = sumRc is null || s.Rc is null ? null : sumRc - s.Rc;
                 }
-                // the invoice line is cleared in full by what its shares sum to; a difference in the transaction or local amount is a price difference. The group and reporting amounts of the
-                // invoice item are those of the shares, so the clearing nets to zero in them: the cent that the two roundings can differ by stays on the account.
-                PostedLine jl = invoice.Lines.Single(x => x.LineNo == w.Index + 1);
-                if (jl.AmountTc != sumTc || jl.AmountLc != sumLc)
-                    throw new MatchRejection(Error("LIMIT.INVOICE_PRICE_DIFFERENCE_NOT_BUILT", "P4", $"/lines/{w.Index}", ("invoice_value_lc", jl.AmountLc), ("receipt_value_lc", sumLc), ("line_ref", w.Input.LineRef)));
-                invoiceItems.Add((jl.LineNo, jl.CurrencyLc, jl.AmountTc, jl.AmountLc, sumGc, sumRc));
+                // the invoice lines are cleared in full by what the shares sum to: a difference in the transaction or local amount means the match is not what the difference was made from
+                LineNos nos = lineNos[w.Index];
+                PostedLine main = invoice.Lines.Single(x => x.LineNo == nos.Main);
+                PostedLine? adjust = nos.Adjust is { } an ? invoice.Lines.Single(x => x.LineNo == an) : null;
+                if (main.AmountTc + (adjust?.AmountTc ?? 0m) != sumTc || main.AmountLc + (adjust?.AmountLc ?? 0m) != sumLc)
+                    throw new MatchRejection(Error("LIMIT.INVOICE_PRICE_DIFFERENCE_NOT_BUILT", "P4", $"/lines/{w.Index}", ("invoice_value_lc", main.AmountLc + (adjust?.AmountLc ?? 0m)), ("receipt_value_lc", sumLc), ("line_ref", w.Input.LineRef)));
+                // the group and reporting amounts of the main item are what is left of the shares after the adjustment line, so the clearing nets to zero in them
+                invoiceItems.Add((main.LineNo, main.CurrencyLc, main.AmountTc, main.AmountLc, sumGc - (adjust?.AmountGc ?? 0m), sumRc is null ? null : sumRc - (adjust?.AmountRc ?? 0m)));
+                if (adjust is not null) invoiceItems.Add((adjust.LineNo, adjust.CurrencyLc, adjust.AmountTc, adjust.AmountLc, adjust.AmountGc, adjust.AmountRc));
             }
 
             Guid clearingId = clearingIds[group.Key];
@@ -423,7 +539,7 @@ public sealed partial class PurchaseInvoiceCommands(NpgsqlDataSource source)
             string baseKey = ctx.IdempotencyKey.Length > 90 ? ctx.IdempotencyKey[..90] : ctx.IdempotencyKey;
             CommandContext cctx = ctx with { IdempotencyKey = $"{baseKey}#C{clearingIds.Keys.Order().ToList().IndexOf(group.Key) + 1}" };
             var all = new List<(Guid Doc, int Line, string Currency, decimal Tc, decimal Lc, decimal Gc, decimal? Rc)>();
-            foreach (Share s in shares.Values.OrderBy(s => s.Item.DocumentId).ThenBy(s => s.Item.LineNo)) all.Add((s.Item.DocumentId, s.Item.LineNo, s.Item.Currency, s.Tc, s.Lc, s.Gc, s.Rc));
+            foreach (var s in shares.Values.OrderBy(s => s.Item.DocumentId).ThenBy(s => s.Item.LineNo)) all.Add((s.Item.DocumentId, s.Item.LineNo, s.Item.Currency, s.Tc, s.Lc, s.Gc, s.Rc));
             foreach (var ii in invoiceItems.OrderBy(i => i.LineNo)) all.Add((invoice.DocumentId, ii.LineNo, ii.Currency, ii.Tc, ii.Lc, ii.Gc, ii.Rc));
             string matchingRef = invoiceId.ToString("D");
             var body = new Dictionary<string, object?>
@@ -442,9 +558,9 @@ public sealed partial class PurchaseInvoiceCommands(NpgsqlDataSource source)
             await ClearingPoster.InsertClearingAsync(tx, tenantId, synthetic, cctx, clearingId, null, seq, invoice.FiscalYear, invoice.FiscalPeriod, at, headHash, rowHash, "CLEAR", null, CommandName, ct);
             for (int k = 0; k < all.Count; k++)
                 await ClearingPoster.InsertItemAsync(tx, tenantId, synthetic, clearingId, k + 1, all[k].Doc, all[k].Line, all[k].Currency, all[k].Tc, all[k].Lc, all[k].Gc, all[k].Rc, ct);
-            foreach (Share s in shares.Values)
+            foreach (var s in shares.Values)
             {
-                var total = clearedSoFar[(s.Item.DocumentId, s.Item.LineNo)];
+                var total = plan.Cleared[(s.Item.DocumentId, s.Item.LineNo)];
                 string status = total.Tc == s.Item.Tc && total.Lc == s.Item.Lc ? "CLEARED" : "PARTIAL";
                 await ClearingPoster.UpdateOpenItemAsync(tx, tenantId, companyId, s.Item.DocumentId, s.Item.LineNo, clearingId, status, total.Tc, total.Lc, total.Gc, total.Rc, ct);
             }
@@ -554,11 +670,12 @@ public sealed partial class PurchaseInvoiceCommands(NpgsqlDataSource source)
     }
 
     private static async Task InsertHeaderAsync(
-        TenantTransaction t, Guid tenantId, Guid companyId, CommandContext ctx, PostPurchaseInvoiceRequest req, Guid supplier, string currency, Guid invoiceId, Guid journalId, CancellationToken ct)
+        TenantTransaction t, Guid tenantId, Guid companyId, CommandContext ctx, PostPurchaseInvoiceRequest req, Guid supplier, string currency, Guid invoiceId, Guid journalId, Guid? stockId, CancellationToken ct)
     {
         await using var cmd = t.Command(
             "insert into core.purchase_invoice (tenant_id, company_id, purchase_invoice_id, invoice_kind, supplier_partner_id, supplier_invoice_number, invoice_date, due_date, currency, gross_amount, journal_document_id, " +
-            "source_system, source_document_ref, created_by, correlation_id, idempotency_key) values (@t, @c, @id, 'INVOICE', @s, @num, @d, @due, @cur, @g, @j, @src, @ref, @by, @corr, @key)");
+            "stock_document_id, source_system, source_document_ref, created_by, correlation_id, idempotency_key) values (@t, @c, @id, 'INVOICE', @s, @num, @d, @due, @cur, @g, @j, @sd, @src, @ref, @by, @corr, @key)");
+        cmd.Parameters.Add(new NpgsqlParameter("sd", NpgsqlDbType.Uuid) { Value = (object?)stockId ?? DBNull.Value });
         cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("c", companyId); cmd.Parameters.AddWithValue("id", invoiceId); cmd.Parameters.AddWithValue("s", supplier);
         cmd.Parameters.AddWithValue("num", req.SupplierInvoiceNumber); cmd.Parameters.AddWithValue("d", req.InvoiceDate); cmd.Parameters.AddWithValue("cur", currency); cmd.Parameters.AddWithValue("g", req.GrossAmount);
         cmd.Parameters.AddWithValue("j", journalId); cmd.Parameters.AddWithValue("src", ctx.SourceSystem); cmd.Parameters.AddWithValue("by", ctx.Actor); cmd.Parameters.AddWithValue("corr", ctx.CorrelationId);
@@ -573,7 +690,8 @@ public sealed partial class PurchaseInvoiceCommands(NpgsqlDataSource source)
         await using var cmd = t.Command(
             "insert into core.purchase_invoice_line (tenant_id, company_id, purchase_invoice_id, line_no, line_kind, purchase_order_id, purchase_order_line_no, receipt_id, receipt_line_no, base_quantity, unit_price, net_amount, " +
             "tax_amount, order_unit_price, match_mode_used, tolerance_used, price_difference_lc, on_hand_part_lc, consumed_part_lc, dropship_part_lc, unreceived_gr_ir_lc, gr_ir_clearing_id, tax_code_id, tax_code_version_id, " +
-            "tax_date, journal_line_no) values (@t, @c, @id, @n, 'MATCHED', @o, @ol, @r, @rl, @bq, @up, @net, @tax, @oup, @mm, @tol, 0, 0, 0, 0, 0, @gc, @tc, @tv, @td, @jl)");
+            "tax_date, journal_line_no) values (@t, @c, @id, @n, 'MATCHED', @o, @ol, @r, @rl, @bq, @up, @net, @tax, @oup, @mm, @tol, @pd, @oh, @co, 0, 0, @gc, @tc, @tv, @td, @jl)");
+        cmd.Parameters.AddWithValue("pd", row["price_difference_lc"]!); cmd.Parameters.AddWithValue("oh", row["on_hand_part_lc"]!); cmd.Parameters.AddWithValue("co", row["consumed_part_lc"]!);
         cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("c", companyId); cmd.Parameters.AddWithValue("id", invoiceId); cmd.Parameters.AddWithValue("n", row["line_no"]!);
         cmd.Parameters.AddWithValue("o", row["purchase_order_id"]!); cmd.Parameters.AddWithValue("ol", row["purchase_order_line_no"]!); cmd.Parameters.AddWithValue("bq", row["base_quantity"]!);
         cmd.Parameters.AddWithValue("up", row["unit_price"]!); cmd.Parameters.AddWithValue("net", row["net_amount"]!); cmd.Parameters.AddWithValue("tax", row["tax_amount"]!); cmd.Parameters.AddWithValue("oup", row["order_unit_price"]!);
@@ -590,13 +708,13 @@ public sealed partial class PurchaseInvoiceCommands(NpgsqlDataSource source)
 
     private static async Task<PurchaseInvoiceResult> LoadAsync(TenantTransaction tx, Guid tenantId, Guid companyId, Guid id, CancellationToken ct)
     {
-        Guid journal; decimal grossAmount;
-        await using (var cmd = tx.Command("select journal_document_id, gross_amount from core.purchase_invoice where tenant_id = @t and company_id = @c and purchase_invoice_id = @i"))
+        Guid journal; decimal grossAmount; Guid? stock;
+        await using (var cmd = tx.Command("select journal_document_id, gross_amount, stock_document_id from core.purchase_invoice where tenant_id = @t and company_id = @c and purchase_invoice_id = @i"))
         {
             cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("c", companyId); cmd.Parameters.AddWithValue("i", id);
             await using var r = await cmd.ExecuteReaderAsync(ct);
             await r.ReadAsync(ct);
-            journal = r.GetGuid(0); grossAmount = r.GetDecimal(1);
+            journal = r.GetGuid(0); grossAmount = r.GetDecimal(1); stock = r.IsDBNull(2) ? null : r.GetGuid(2);
         }
         string number; byte[] hash;
         await using (var cmd = tx.Command("select document_number, row_hash from core.journal_document where tenant_id = @t and company_id = @c and document_id = @d"))
@@ -623,6 +741,6 @@ public sealed partial class PurchaseInvoiceCommands(NpgsqlDataSource source)
             }
         }
         decimal net = lines.Sum(l => l.NetAmount), tax = lines.Sum(l => l.TaxAmount);
-        return new PurchaseInvoiceResult(id, journal, number, net, tax, grossAmount, Canonical.FormatHex32(hash), lines, clearing);
+        return new PurchaseInvoiceResult(id, journal, number, net, tax, grossAmount, Canonical.FormatHex32(hash), lines, clearing, stock);
     }
 }

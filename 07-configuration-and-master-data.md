@@ -805,6 +805,16 @@ For the resources `gl-accounts`, `business-partners` (with PII, company relation
 
 These deltas are applied in 02 and 06 with this spec.
 
+### 13.2ae Price difference of a purchase invoice (F-IMPL-59, 2026-11-23)
+
+PROPOSED, written down so that spec and code agree. It builds on 13.2ad and on 10, 5.6 and 6.6.
+
+1. **Difference.** For each link of a stock line, I is the invoice share and R the share of the GR/IR credit item of the receipt line. The difference I minus R is never rejected (7.2). The main GR/IR line stays at I with the tax facts; a second GR/IR line (open item without partner) gives the difference back, so GR/IR keeps R; INVENTORY gets the on-hand part and COGS the consumed part (signs follow the difference).
+2. **Split.** Moving average: on hand is the lesser of the matched quantity and the quantity of the cost key; on-hand part = difference x on hand / matched quantity, rounded to the currency; the consumed part is the rest. The cost state is read before the posting and again under the STOCK head lock, a change is SYSTEM.CONFLICT (retryable).
+3. **Stock document.** The on-hand parts are COST_ADJUST movements (quantity 0, cost_source INVOICE) of one STOCK_COST_ADJUSTMENT document (series STOCK_DOC_COST_ADJUSTMENT) whose derived journal is the journal document of the invoice. The stock document binds the digest of the link records; the journal document binds the digest of that digest and the row hash of the stock document. The link rows store the difference and its two parts, the invoice stores the stock document.
+4. **Lock order.** LEDGER (the poster), CLEARING, STOCK; the receipt items are locked in id order before the clearing.
+5. **Not built.** Verification of the STOCK chain, FIFO layers, foreign currency, the reversal of the adjustment (with the reversal of the invoice).
+
 ### 13.2ad Purchase invoices, first slice (F-IMPL-58, 2026-11-23)
 
 PROPOSED, written down so that spec and code agree. It builds on 11, 7.1 and 7.2 and on the clearing domain (03).
@@ -813,7 +823,7 @@ PROPOSED, written down so that spec and code agree. It builds on 11, 7.1 and 7.2
 2. **Three-way lines.** A line for a stock item takes at most received less returned less invoiced (MATCH.QUANTITY_EXCEEDS_RECEIVED) and is allocated to the named receipt lines or the oldest with uninvoiced quantity; one link row per receipt line. **Two-way lines.** A line for a service or non-stock item is matched against ordered plus the line over tolerance (MATCH.QUANTITY_EXCEEDS_ORDERED, a code of this slice) and booked to PURCHASE_EXPENSE.
 3. **Document.** An AP_INVOICE with origin ORDER: a debit per line (GR/IR as an open item without partner for stock, PURCHASE_EXPENSE otherwise), the tax of the pipeline checked against the supplier's amount with the ADR-027 tolerance, the payable as the balance with the supplier's open item. The control total is checked against the same tolerance (MATCH.GROSS_MISMATCH). The link rows are bound by the detail_digest of the journal document. The supplier invoice number is used once per supplier and company (ORDER.DUPLICATE_SUPPLIER_INVOICE).
 4. **GR/IR match.** In the same transaction one clearing of method AUTO_MATCH per GR/IR account clears the share of the receipt's GR/IR credit that the invoice takes against the invoice debit. The share is proportional to the base quantity; the share that completes a receipt line is the rest of the item, so no rounding remains on the account. The items net to zero in every currency.
-5. **Price difference.** Not built: a stock line whose invoice value differs from the receipt value is rejected with LIMIT.INVOICE_PRICE_DIFFERENCE_NOT_BUILT, because the on-hand and consumed parts need the COST_ADJUST movement (10, 6.6). Nothing is posted for such an invoice. The same code stands for a difference in the GR/IR account of the receipt and the invoice line.
+5. **Price difference.** Built in 13.2ae. Before that slice a stock line whose invoice value differs from the receipt value was rejected with LIMIT.INVOICE_PRICE_DIFFERENCE_NOT_BUILT; the code remains for a difference between the GR/IR account of the receipt and that of the invoice line.
 6. **Not built.** TWO_WAY stock lines, order lines with returns, foreign currency, direct receipts, charges, the reversal, purchase credit notes, the partial deduction check, service receipts, the write-off of GR/IR residuals, the reads.
 
 ### 13.2ac Sales credit notes (F-IMPL-57, 2026-11-23)

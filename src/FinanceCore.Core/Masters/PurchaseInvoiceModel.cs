@@ -22,7 +22,7 @@ public sealed record PurchaseInvoiceLineResult(
 
 public sealed record PurchaseInvoiceResult(
     Guid PurchaseInvoiceId, Guid JournalDocumentId, string DocumentNumber, decimal NetAmount, decimal TaxAmount, decimal GrossAmount, string RowHash,
-    IReadOnlyList<PurchaseInvoiceLineResult> Lines, Guid? GrIrClearingId);
+    IReadOnlyList<PurchaseInvoiceLineResult> Lines, Guid? GrIrClearingId, Guid? StockDocumentId = null);
 
 public static class PurchaseInvoiceRules
 {
