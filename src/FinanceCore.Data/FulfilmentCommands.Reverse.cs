@@ -149,6 +149,17 @@ public sealed partial class FulfilmentCommands
             cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("c", companyId); cmd.Parameters.AddWithValue("i", originalId);
             if ((bool)(await cmd.ExecuteScalarAsync(ct))!) return Reject(Error("ORDER.DELIVERY_INVOICED", "P6", "/document_id", ("reason", "the invoice is reversed or credited first")));
         }
+        else
+        {
+            // a receipt is not reversed while a supplier invoice that is not reversed is matched to one of its lines: the matched quantity would exceed what is received (11, 7.1, ORDER.RECEIPT_INVOICED)
+            await using var cmd = tx.Command(
+                "select exists (select 1 from core.purchase_receipt_line d where d.tenant_id = @t and d.company_id = @c and d.receipt_id = @i and (select coalesce(sum(l.base_quantity), 0) from core.purchase_invoice_line l " +
+                "join core.purchase_invoice h on h.tenant_id = l.tenant_id and h.company_id = l.company_id and h.purchase_invoice_id = l.purchase_invoice_id " +
+                "left join core.purchase_invoice o on o.tenant_id = h.tenant_id and o.company_id = h.company_id and o.purchase_invoice_id = h.reversal_of_purchase_invoice_id " +
+                "where l.tenant_id = d.tenant_id and l.company_id = d.company_id and l.receipt_id = d.receipt_id and l.receipt_line_no = d.line_no and (h.invoice_kind = 'INVOICE' or (h.invoice_kind = 'REVERSAL' and o.invoice_kind = 'INVOICE'))) > 0)");
+            cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("c", companyId); cmd.Parameters.AddWithValue("i", originalId);
+            if ((bool)(await cmd.ExecuteScalarAsync(ct))!) return Reject(Error("ORDER.RECEIPT_INVOICED", "P6", "/document_id", ("reason", "the supplier invoice is reversed first")));
+        }
 
         // the number of the mirror document: the series of its type (a type without a mirror type keeps its document type, 14, 11)
         int fiscalYear;

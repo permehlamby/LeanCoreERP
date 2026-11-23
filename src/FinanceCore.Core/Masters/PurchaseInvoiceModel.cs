@@ -69,3 +69,8 @@ public static class PurchaseInvoiceRules
                     l.NetAmount.ToString(CultureInfo.InvariantCulture), l.TaxCodeId?.ToString("D") ?? "-", l.TaxAmount?.ToString(CultureInfo.InvariantCulture) ?? "-",
                     string.Join(",", (l.ReceiptLineRefs ?? []).Select(x => $"{x.ReceiptId:D}/{x.ReceiptLineNo}"))))));
 }
+
+// ---- purchase-invoices:reverse (11, 7.4, permission purchase.invoice): the owning command of an order-built AP_INVOICE, its cost adjustment and the clearing of its GR/IR items. posting_date defaults to the posting date of the invoice.
+public sealed record ReversePurchaseInvoiceRequest(Guid CompanyId, Guid PurchaseInvoiceId, string ReasonCode, DateOnly? PostingDate = null);
+
+public sealed record ReversedPurchaseInvoice(Guid PurchaseInvoiceId, Guid ReversalInvoiceId, Guid JournalDocumentId, string DocumentNumber, string RowHash, Guid? StockReversalId);

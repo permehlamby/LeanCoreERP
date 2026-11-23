@@ -1059,4 +1059,70 @@ public class FulfilmentTests
             Assert.True(verify.Status == CommandStatus.Ok && verify.Value!.Ok, chain + " " + Describe(verify));
         }
     }
+
+    private static Task<CommandResult<ReversedPurchaseInvoice>> ReversePurchaseInvoice(S s, string key, Guid invoice) =>
+        new PurchaseInvoiceCommands(s.T.App).ReverseAsync(s.T.TenantId, Ctx(s, key, "purchase.invoice"), new(s.T.CompanyId, invoice, "CORRECTION"));
+
+    [Fact]
+    public async Task APurchaseInvoiceIsReversedWithItsCostAdjustmentAndItsGrIrClearingAndCanBeInvoicedAgain()
+    {
+        var s = await SetupAsync();
+        var t = s.T;
+        var pur = await PurchaseSetupAsync(s);
+        var po = await DomesticPurchaseOrderAsync(s, "po", 100, 10);
+        var receipt = await ReceiveAsync(s, "r1", po, 100);
+        var m = (await PostPurchaseInvoice(s, "i1", "SI-1", 825, new PurchaseInvoiceLineInput("L1", po.OrderId, 1, 60, 11, 660, pur.Code, 165))).Value!;
+        Assert.Equal((1060m, -400m, "PARTIAL"), (await BalanceAsync(s, s.Inventory), await BalanceAsync(s, s.GrIr), await ItemStatusAsync(s, receipt.JournalDocumentId!.Value)));
+
+        // the receipt cannot be reversed while the invoice is matched to it (11, 7.1)
+        Assert.Equal(["ORDER.RECEIPT_INVOICED"], Codes(await s.Cmds.ReverseReceiptAsync(t.TenantId, Ctx(s, "rr", "purchase.receive"), new(t.CompanyId, receipt.DocumentId, "CORRECTION"))));
+        Assert.Equal(["AUTH.PERMISSION_MISSING"], Codes(await new PurchaseInvoiceCommands(t.App).ReverseAsync(t.TenantId, Ctx(s, "x0", "sales.invoice"), new(t.CompanyId, m.PurchaseInvoiceId, "CORRECTION"))));
+
+        var r = await ReversePurchaseInvoice(s, "rev1", m.PurchaseInvoiceId);
+        Assert.True(r.Status == CommandStatus.Ok, Describe(r));
+        var rv = r.Value!;
+        Assert.NotNull(rv.StockReversalId);
+        // the ledger, the stock and the GR/IR account are where they were before the invoice; the payable is clear
+        Assert.Equal((1000m, -1000m, 0m, 0m), (await BalanceAsync(s, s.Inventory), await BalanceAsync(s, s.GrIr), await BalanceAsync(s, pur.Payable), await BalanceAsync(s, pur.InputVat)));
+        Assert.Equal("OPEN", await ItemStatusAsync(s, receipt.JournalDocumentId!.Value));
+        Assert.Equal(("AP_INVOICE", "reversed", "STOCK_REVERSAL", "reversed", -60m, 1000m), (
+            await t.ScalarAsync<string>($"select document_type from core.journal_document where tenant_id = @t and document_id = '{rv.JournalDocumentId}'"),
+            await t.ScalarAsync<string>($"select status from core.journal_document where tenant_id = @t and document_id = '{m.JournalDocumentId}'"),
+            await t.ScalarAsync<string>($"select document_type from core.stock_document where tenant_id = @t and stock_document_id = '{rv.StockReversalId}'"),
+            await t.ScalarAsync<string>($"select status from core.stock_document where tenant_id = @t and stock_document_id = '{m.StockDocumentId}'"),
+            await t.ScalarAsync<decimal>($"select value_lc from core.stock_movement where tenant_id = @t and stock_document_id = '{rv.StockReversalId}'"),
+            await t.ScalarAsync<decimal>($"select cost_value_after_lc from core.stock_movement where tenant_id = @t and stock_document_id = '{rv.StockReversalId}'")));
+        Assert.Equal(1L, await t.ScalarAsync<long>($"select count(*) from core.purchase_invoice where tenant_id = @t and reversal_of_purchase_invoice_id = '{m.PurchaseInvoiceId}'"));
+        Assert.Equal(["REVERSAL.ALREADY_REVERSED"], Codes(await ReversePurchaseInvoice(s, "rev2", m.PurchaseInvoiceId)));
+
+        // the quantity is free again: the same 60 can be invoiced, and the receipt can now be reversed only when nothing is matched
+        var again = await PostPurchaseInvoice(s, "i2", "SI-2", 825, new PurchaseInvoiceLineInput("L1", po.OrderId, 1, 60, 11, 660, pur.Code, 165));
+        Assert.True(again.Status == CommandStatus.Ok, Describe(again));
+        Assert.Equal((1060m, -400m), (await BalanceAsync(s, s.Inventory), await BalanceAsync(s, s.GrIr)));
+        Assert.True((await ReversePurchaseInvoice(s, "rev1", m.PurchaseInvoiceId)).IdempotentReplay);
+        foreach (string chain in new[] { "LEDGER", "CLEARING" })
+        {
+            var verify = await new ChainVerification(t.App).VerifyAsync(t.TenantId, t.Context("v" + chain, "chain.verify"), new(t.CompanyId, chain));
+            Assert.True(verify.Status == CommandStatus.Ok && verify.Value!.Ok, chain + " " + Describe(verify));
+        }
+    }
+
+    [Fact]
+    public async Task ThePurchaseInvoiceIsNotReversedWhenItsCostAdjustmentIsConsumed()
+    {
+        var s = await SetupAsync();
+        var t = s.T;
+        var pur = await PurchaseSetupAsync(s);
+        var po = await DomesticPurchaseOrderAsync(s, "po", 100, 10);
+        await ReceiveAsync(s, "r1", po, 100);
+        var m = (await PostPurchaseInvoice(s, "i1", "SI-1", 825, new PurchaseInvoiceLineInput("L1", po.OrderId, 1, 60, 11, 660, pur.Code, 165))).Value!;
+        // all 100 are sold, so the 60 that the invoice added to the cost are gone with the goods
+        var so = await SalesOrderAsync(s, "so", GoodsLine(s, 100, 25));
+        Assert.Equal(CommandStatus.Ok, (await s.Cmds.PostDeliveryAsync(t.TenantId, Ctx(s, "d1", "sales.deliver"), new(t.CompanyId, new DateOnly(2026, 3, 13), [new("D1", so.OrderId, 1, 100, "C62")]))).Status);
+        long journals = await t.ScalarAsync<long>("select count(*) from core.journal_document where tenant_id = @t");
+        Assert.Equal(["INVENTORY.RECEIPT_CONSUMED"], Codes(await ReversePurchaseInvoice(s, "rev1", m.PurchaseInvoiceId)));
+        Assert.Equal(journals, await t.ScalarAsync<long>("select count(*) from core.journal_document where tenant_id = @t"));
+        Assert.Equal("posted", await t.ScalarAsync<string>($"select status from core.journal_document where tenant_id = @t and document_id = '{m.JournalDocumentId}'"));
+        Assert.Equal("CLEARED", await ItemStatusAsync(s, m.JournalDocumentId));   // the reset is rolled back with the rest
+    }
 }

@@ -28,7 +28,9 @@ public sealed class DocumentReverser(NpgsqlDataSource source)
     internal sealed record ReverseMode(
         string CommandName, string MirrorType, string Origin,
         Func<TenantTransaction, LedgerReader.StoredDocument, CancellationToken, Task<CommandError?>> Precheck,
-        Func<TenantTransaction, Guid, CancellationToken, Task> After, Func<byte[]?>? DetailDigest = null);
+        Func<TenantTransaction, Guid, CancellationToken, Task> After, Func<byte[]?>? DetailDigest = null,
+        Func<TenantTransaction, LedgerReader.StoredDocument, DateOnly, int, int, DateTime, long, byte[], CancellationToken, Task<(long Seq, byte[] Hash)>>? ResetClearings = null,
+        Func<TenantTransaction, Guid, Task<byte[]?>>? DetailDigestAsync = null);
 
     public async Task<CommandResult<PostedDocument>> ReverseAsync(
         Guid tenantId, CommandContext ctx, ReverseDocumentRequest req, CancellationToken ct = default)
@@ -231,6 +233,14 @@ public sealed class DocumentReverser(NpgsqlDataSource source)
             return CommandResult<PostedDocument>.Rejected(recheck.Errors.Select(e => e with { Path = "reversal_date" }).ToList());
         int periodNo = recheck.PeriodNo!.Value;
 
+        // An owning command that cleared items of the original itself (the GR/IR match of a purchase invoice) resets those clearings first, under the CLEARING head, so that the items are open again
+        if (mode?.ResetClearings is { } resetClearings && original.OpenItems.Count > 0)
+        {
+            DateTime resetAt = DateTime.UtcNow;
+            resetAt = new DateTime(resetAt.Ticks - resetAt.Ticks % 10, DateTimeKind.Utc);
+            (clearingSeq, clearingHash) = await resetClearings(tx, original, reversalDate, fiscalYear, periodNo, resetAt, clearingSeq, clearingHash, ct);
+        }
+
         // The open items of the original, sorted by key (04, 6.3), and none of them may be cleared in any amount (ADR-039)
         if (original.OpenItems.Count > 0)
         {
@@ -264,7 +274,7 @@ public sealed class DocumentReverser(NpgsqlDataSource source)
         string number = PostingRules.FormatNumber(series.Prefix, series.IncludeFiscalYear, series.Separator, series.NumberLength, fiscalYear, sequenceNo);
         string currency = (string)original.Header["transaction_currency"]!;
 
-        byte[]? detailDigest = mode?.DetailDigest?.Invoke();
+        byte[]? detailDigest = mode?.DetailDigestAsync is { } digestAsync ? await digestAsync(tx, mirrorId) : mode?.DetailDigest?.Invoke();
         var header = new Dictionary<string, object?>
         {
             ["tenant_id"] = tenantId, ["company_id"] = companyId, ["document_id"] = mirrorId, ["ledger_id"] = ledgerId,

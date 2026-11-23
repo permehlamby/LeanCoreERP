@@ -805,6 +805,17 @@ For the resources `gl-accounts`, `business-partners` (with PII, company relation
 
 These deltas are applied in 02 and 06 with this spec.
 
+### 13.2af Reversal of purchase invoices (F-IMPL-60, 2026-11-23)
+
+PROPOSED, written down so that spec and code agree. It builds on 13.2ad, 13.2ae and 11, 7.4, 6.8.
+
+1. **Built.** `purchase-invoices:reverse` (`purchase.invoice`), fields `purchase_invoice_id`, `reason_code` (the external list of 6.8), `posting_date` (default the posting date of the invoice). It is the owning command of the AP_INVOICE: `journal-documents:reverse` refuses it.
+2. **One transaction.** The clearings that the invoice made are reset (a RESET clearing, the GR/IR items of the receipts and of the invoice are open again), the journal document is reversed (mirror of type AP_INVOICE, the open items of the invoice are cleared against the mirror), the cost adjustment is mirrored, and mirror link rows with negative quantities and amounts are inserted.
+3. **Cost adjustment.** A STOCK_REVERSAL document with one COST_ADJUST line per original line at the original value, opposite sign; the original stock document is reversed. If the cost key would be left with a negative value, or with a value and no quantity, the reversal is refused with INVENTORY.RECEIPT_CONSUMED and nothing is posted.
+4. **Digests.** The mirror journal document binds the digest of the mirror link rows and the row hash of the stock mirror, as the invoice does.
+5. **Refusals.** REVERSAL.ALREADY_REVERSED, REVERSAL.HAS_CLEARED_LINES (a payable cleared by a payment, a GR/IR item cleared by a write-off), ORDER.INVOICE_HAS_CREDIT_NOTES, INVENTORY.RECEIPT_CONSUMED. `purchase-receipts:reverse` is refused with ORDER.RECEIPT_INVOICED while an invoice that is not reversed is matched to a line of the receipt.
+6. **Not built.** The partial deduction check, the allocation rule (no landed costs), purchase credit notes, FIFO.
+
 ### 13.2ae Price difference of a purchase invoice (F-IMPL-59, 2026-11-23)
 
 PROPOSED, written down so that spec and code agree. It builds on 13.2ad and on 10, 5.6 and 6.6.
