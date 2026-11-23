@@ -881,4 +881,130 @@ public class FulfilmentTests
         Assert.Equal(before, await t.ScalarAsync<long>("select count(*) from core.sales_return where tenant_id = @t"));
         Assert.Equal("posted", await t.ScalarAsync<string>($"select status from core.sales_return where tenant_id = @t and return_id = '{back.DocumentId}'"));
     }
+    // ---- purchase invoices (F-IMPL-58): purchase-invoices:post
+
+    private sealed record Pur(Guid Payable, Guid InputVat, Guid Expense, Guid Code);
+
+    /// <summary>The payable control account, an input VAT account, an expense account that needs a tax code, a DK registration with an input code of 25 per cent and the rule for DK to DK, the determinations.</summary>
+    private static async Task<Pur> PurchaseSetupAsync(S s)
+    {
+        var t = s.T;
+        Guid payable = Guid.NewGuid(), vat = Guid.NewGuid(), expense = Guid.NewGuid();
+        await t.ExecuteAsync(
+            "insert into core.gl_account (tenant_id, company_id, account_id, account_no, name, account_type, tax_code_rule, open_item_mode) values " +
+            "(@t, @c, @ap, 'PUR-AP', 'Payables', 'LIABILITY', 'FORBIDDEN', 'CONTROL'), (@t, @c, @vat, 'PUR-VAT', 'Input VAT', 'ASSET', 'FORBIDDEN', 'NONE'), (@t, @c, @ex, 'PUR-EXP', 'Purchases', 'EXPENSE', 'MANDATORY', 'NONE')",
+            ("ap", payable), ("vat", vat), ("ex", expense));
+        // the GR/IR account takes the tax code of a matched stock line, so it may not forbid it
+        await t.ExecuteAsync($"update core.gl_account set tax_code_rule = 'OPTIONAL' where tenant_id = @t and account_id = '{s.GrIr}'");
+        var det = new AccountDeterminationCommands(t.App);
+        foreach (var (role, account) in new[] { ("AP_CONTROL", payable), ("PURCHASE_EXPENSE", expense) })
+            Assert.Equal(CommandStatus.Ok, (await det.CreateAsync(t.TenantId, t.Context("det-" + role, "write.config"), new(t.CompanyId, D(("role_code", role), ("valid_from", "2026-01-01"), ("priority", 1), ("account_id", account))))).Status);
+        var tax = new TaxCommands(t.App);
+        var reg = await tax.CreateRegistrationAsync(t.TenantId, t.Context("w-reg", "write.config"), new(D(("company_id", t.CompanyId), ("country_code", "DK"), ("vat_id", "DK12345678"), ("scheme", "STANDARD"),
+            ("filing_frequency", "QUARTERLY"), ("correction_method", "ADJUST_NEXT"), ("return_currency", "DKK"), ("valid_from", "2026-01-01"))));
+        Assert.True(reg.Status == CommandStatus.Ok, Describe(reg));
+        var code = await tax.CreateCodeAsync(t.TenantId, t.Context("w-c", "write.config"), new(D(("company_id", t.CompanyId), ("code", "I25"), ("description", "I25"), ("tax_type", "INPUT"), ("vat_registration_id", reg.Value!.EntityId))));
+        Assert.True(code.Status == CommandStatus.Ok, Describe(code));
+        var version = await tax.CreateVersionAsync(t.TenantId, t.Context("w-v", "write.config"), new(code.Value!.EntityId, D(("valid_from", "2026-01-01"), ("vat_account_id", vat), ("rate", 25m)), []));
+        Assert.True(version.Status == CommandStatus.Ok, Describe(version));
+        var rule = await new TaxDeterminationCommands(t.App).CreateRuleAsync(t.TenantId, t.Context("w-r", "write.config"), new(t.CompanyId,
+            D(("valid_from", "2026-01-01"), ("priority", 10), ("tax_code_id", code.Value.EntityId), ("origin_country", "DK"), ("destination_country", "DK")), []));
+        Assert.True(rule.Status == CommandStatus.Ok, Describe(rule));
+        return new Pur(payable, vat, expense, code.Value.EntityId);
+    }
+
+    private static async Task<OrderResult> DomesticPurchaseOrderAsync(S s, string key, decimal qty, decimal price, Guid? item = null, string unit = "C62")
+    {
+        var r = await s.Orders.CreateAsync(OrderKind.Purchase, s.T.TenantId, Ctx(s, key, "purchase.order"), new(
+            D(("company_id", s.T.CompanyId), ("order_date", "2026-03-01"), ("order_currency", "DKK"), ("supplier_partner_id", s.Supplier), ("ship_from_country", "DK")),
+            [D(("item_id", item ?? s.Item), ("quantity", qty), ("unit_code", unit), ("unit_price", price), ("warehouse_id", s.Warehouse))]));
+        Assert.True(r.Status == CommandStatus.Ok, Describe(r));
+        return r.Value!;
+    }
+
+    private static Task<CommandResult<PurchaseInvoiceResult>> PostPurchaseInvoice(S s, string key, string number, decimal gross, params PurchaseInvoiceLineInput[] lines) =>
+        new PurchaseInvoiceCommands(s.T.App).PostAsync(s.T.TenantId, Ctx(s, key, "purchase.invoice"), new(s.T.CompanyId, s.Supplier, number, new DateOnly(2026, 3, 20), "DKK", gross, lines, SourceDocumentRef: "SUP-REF"));
+
+    private static Task<decimal> SumOfAsync(S s, Guid document, Guid account) =>
+        s.T.ScalarAsync<decimal>($"select coalesce(sum(amount_lc), 0) from core.journal_line where tenant_id = @t and document_id = '{document}' and account_id = '{account}'");
+
+    private static Task<string> ItemStatusAsync(S s, Guid document) =>
+        s.T.ScalarAsync<string>($"select oi.clearing_status from core.journal_line_open_item oi join core.journal_line l using (tenant_id, company_id, document_id, line_no) where oi.tenant_id = @t and oi.document_id = '{document}' and l.account_id = '{s.GrIr}'");
+
+    [Fact]
+    public async Task APurchaseInvoiceIsMatchedThreeWayAndClearsTheGrIrItemsOfTheReceipts()
+    {
+        var s = await SetupAsync();
+        var t = s.T;
+        var pur = await PurchaseSetupAsync(s);
+        var po = await DomesticPurchaseOrderAsync(s, "po", 100, 10);
+        Assert.Equal(["MATCH.QUANTITY_EXCEEDS_RECEIVED"], Codes(await PostPurchaseInvoice(s, "i0", "SI-0", 125, new PurchaseInvoiceLineInput("L1", po.OrderId, 1, 10, 10, 100, pur.Code, 25))));   // nothing is received yet
+        var receipt = await ReceiveAsync(s, "r1", po, 100);
+
+        // 60 of the 100 at the order price: Dr GR/IR 600, Dr input VAT 150, Cr payable 750
+        var r = await PostPurchaseInvoice(s, "i1", "SI-1", 750, new PurchaseInvoiceLineInput("L1", po.OrderId, 1, 60, 10, 600, pur.Code, 150));
+        Assert.True(r.Status == CommandStatus.Ok, Describe(r));
+        var m = r.Value!;
+        Assert.Equal((600m, 150m, 750m, "GL-2026-000001"), (m.NetAmount, m.TaxAmount, m.GrossAmount, m.DocumentNumber));
+        var line = Assert.Single(m.Lines);
+        Assert.Equal((receipt.DocumentId, 1, 60m, "THREE_WAY", 1), (line.ReceiptId, line.ReceiptLineNo, line.BaseQuantity, line.MatchModeUsed, line.JournalLineNo));
+        Assert.NotNull(line.GrIrClearingId);
+        Assert.Equal((600m, 150m, -750m), (await SumOfAsync(s, m.JournalDocumentId, s.GrIr), await SumOfAsync(s, m.JournalDocumentId, pur.InputVat), await SumOfAsync(s, m.JournalDocumentId, pur.Payable)));
+        Assert.Equal(("AP_INVOICE", "ORDER", "purchase-invoices:post"), (
+            await t.ScalarAsync<string>($"select document_type from core.journal_document where tenant_id = @t and document_id = '{m.JournalDocumentId}'"),
+            await t.ScalarAsync<string>($"select origin from core.journal_document where tenant_id = @t and document_id = '{m.JournalDocumentId}'"),
+            await t.ScalarAsync<string>($"select command_name from core.journal_document where tenant_id = @t and document_id = '{m.JournalDocumentId}'")));
+        Assert.True(await t.ScalarAsync<bool>($"select detail_digest is not null from core.journal_document where tenant_id = @t and document_id = '{m.JournalDocumentId}'"));
+
+        // the GR/IR credit of the receipt is cleared by 600 of its 1000, the invoice debit in full, in one clearing of method AUTO_MATCH
+        Assert.Equal(-400m, await BalanceAsync(s, s.GrIr));
+        Assert.Equal(("PARTIAL", "CLEARED"), (await ItemStatusAsync(s, receipt.JournalDocumentId!.Value), await ItemStatusAsync(s, m.JournalDocumentId)));
+        Assert.Equal(("AUTO_MATCH", 2L), (
+            await t.ScalarAsync<string>($"select clearing_method from core.clearing where tenant_id = @t and clearing_id = '{line.GrIrClearingId}'"),
+            await t.ScalarAsync<long>($"select count(*) from core.clearing_item where tenant_id = @t and clearing_id = '{line.GrIrClearingId}'")));
+
+        // the supplier invoice number is used once; a wrong control total, a price that differs from the receipt and too much quantity are rejected without a trace
+        long invoices = await t.ScalarAsync<long>("select count(*) from core.purchase_invoice where tenant_id = @t");
+        Assert.Equal(["ORDER.DUPLICATE_SUPPLIER_INVOICE"], Codes(await PostPurchaseInvoice(s, "i2", "SI-1", 500, new PurchaseInvoiceLineInput("L1", po.OrderId, 1, 40, 10, 400, pur.Code, 100))));
+        Assert.Equal(["MATCH.GROSS_MISMATCH"], Codes(await PostPurchaseInvoice(s, "i3", "SI-3", 499, new PurchaseInvoiceLineInput("L1", po.OrderId, 1, 40, 10, 400, pur.Code, 100))));
+        Assert.Equal(["LIMIT.INVOICE_PRICE_DIFFERENCE_NOT_BUILT"], Codes(await PostPurchaseInvoice(s, "i4", "SI-4", 550, new PurchaseInvoiceLineInput("L1", po.OrderId, 1, 40, 11, 440, pur.Code, 110))));
+        Assert.Equal(["MATCH.QUANTITY_EXCEEDS_RECEIVED"], Codes(await PostPurchaseInvoice(s, "i5", "SI-5", 512.5m, new PurchaseInvoiceLineInput("L1", po.OrderId, 1, 41, 10, 410, pur.Code, 102.5m))));
+        Assert.Equal(["AUTH.PERMISSION_MISSING"], Codes(await new PurchaseInvoiceCommands(t.App).PostAsync(t.TenantId, Ctx(s, "i6", "sales.invoice"),
+            new(t.CompanyId, s.Supplier, "SI-6", new DateOnly(2026, 3, 20), "DKK", 500, [new PurchaseInvoiceLineInput("L1", po.OrderId, 1, 40, 10, 400, pur.Code, 100)]))));
+        Assert.Equal(invoices, await t.ScalarAsync<long>("select count(*) from core.purchase_invoice where tenant_id = @t"));
+        Assert.Equal(-400m, await BalanceAsync(s, s.GrIr));
+
+        // the rest completes the receipt line: its item is cleared in full and the GR/IR account is empty
+        var rest = await PostPurchaseInvoice(s, "i7", "SI-7", 500, new PurchaseInvoiceLineInput("L1", po.OrderId, 1, 40, 10, 400, pur.Code, 100));
+        Assert.True(rest.Status == CommandStatus.Ok, Describe(rest));
+        Assert.Equal(0m, await BalanceAsync(s, s.GrIr));
+        Assert.Equal("CLEARED", await ItemStatusAsync(s, receipt.JournalDocumentId!.Value));
+        Assert.Equal(["MATCH.QUANTITY_EXCEEDS_RECEIVED"], Codes(await PostPurchaseInvoice(s, "i8", "SI-8", 12.5m, new PurchaseInvoiceLineInput("L1", po.OrderId, 1, 1, 10, 10, pur.Code, 2.5m))));
+
+        // the replay and the chains
+        var replay = await PostPurchaseInvoice(s, "i1", "SI-1", 750, new PurchaseInvoiceLineInput("L1", po.OrderId, 1, 60, 10, 600, pur.Code, 150));
+        Assert.True(replay.IdempotentReplay);
+        Assert.Equal(m.PurchaseInvoiceId, replay.Value!.PurchaseInvoiceId);
+        foreach (string chain in new[] { "LEDGER", "CLEARING" })
+        {
+            var verify = await new ChainVerification(t.App).VerifyAsync(t.TenantId, t.Context("v" + chain, "chain.verify"), new(t.CompanyId, chain));
+            Assert.True(verify.Status == CommandStatus.Ok && verify.Value!.Ok, chain + " " + Describe(verify));
+        }
+    }
+
+    [Fact]
+    public async Task APurchaseInvoiceForAServiceIsBookedToTheExpenseAccountWithinTheOrderQuantity()
+    {
+        var s = await SetupAsync();
+        var pur = await PurchaseSetupAsync(s);
+        var po = await DomesticPurchaseOrderAsync(s, "po", 10, 500, s.Service, "HUR");
+        var r = await PostPurchaseInvoice(s, "i1", "SI-1", 3125, new PurchaseInvoiceLineInput("L1", po.OrderId, 1, 5, 500, 2500, pur.Code, 625));
+        Assert.True(r.Status == CommandStatus.Ok, Describe(r));
+        var m = r.Value!;
+        Assert.Equal((2500m, 625m, 3125m), (m.NetAmount, m.TaxAmount, m.GrossAmount));
+        Assert.Equal((2500m, 625m, -3125m, "TWO_WAY"), (await SumOfAsync(s, m.JournalDocumentId, pur.Expense), await SumOfAsync(s, m.JournalDocumentId, pur.InputVat), await SumOfAsync(s, m.JournalDocumentId, pur.Payable), m.Lines[0].MatchModeUsed));
+        Assert.Null(m.GrIrClearingId);
+        Assert.Equal(["MATCH.QUANTITY_EXCEEDS_ORDERED"], Codes(await PostPurchaseInvoice(s, "i2", "SI-2", 3750, new PurchaseInvoiceLineInput("L1", po.OrderId, 1, 6, 500, 3000, pur.Code, 750))));   // 5 are invoiced, 10 are ordered
+        Assert.Equal(CommandStatus.Ok, (await PostPurchaseInvoice(s, "i3", "SI-3", 3125, new PurchaseInvoiceLineInput("L1", po.OrderId, 1, 5, 500, 2500, pur.Code, 625))).Status);
+    }
 }

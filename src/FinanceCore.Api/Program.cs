@@ -27,6 +27,7 @@ builder.Services.AddSingleton(sp => new FulfilmentCommands(sp.GetRequiredService
 builder.Services.AddSingleton(sp => new ReturnCommands(sp.GetRequiredService<NpgsqlDataSource>()));
 builder.Services.AddSingleton(sp => new SalesInvoiceCommands(sp.GetRequiredService<NpgsqlDataSource>()));
 builder.Services.AddSingleton(sp => new SalesCreditNoteCommands(sp.GetRequiredService<NpgsqlDataSource>()));
+builder.Services.AddSingleton(sp => new PurchaseInvoiceCommands(sp.GetRequiredService<NpgsqlDataSource>()));
 builder.Services.AddSingleton(sp => new OrderCommands(sp.GetRequiredService<NpgsqlDataSource>()));
 builder.Services.AddSingleton(sp => new OrderSettingCommands(sp.GetRequiredService<NpgsqlDataSource>()));
 builder.Services.AddSingleton(sp => new OrderReads(sp.GetRequiredService<NpgsqlDataSource>()));

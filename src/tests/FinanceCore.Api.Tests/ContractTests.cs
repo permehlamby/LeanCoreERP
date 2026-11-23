@@ -93,7 +93,8 @@ public class ContractTests
         Assert.Equal("sales.invoice", catalog.Find("sales-invoices:reverse")?.Permission);
         Assert.Equal("sales.invoice", catalog.Find("sales-credit-notes:create")?.Permission);
         Assert.Equal("sales.invoice", catalog.Find("sales-credit-notes:reverse")?.Permission);
-        Assert.Equal(4, catalog.All.Count);
+        Assert.Equal("purchase.invoice", catalog.Find("purchase-invoices:post")?.Permission);
+        Assert.Equal(5, catalog.All.Count);
     }
 
     [Fact]
@@ -300,7 +301,8 @@ public class ContractTests
         "ORDER.ORDER_NOT_OPEN", "ORDER.LINE_NOT_OPEN",           // 11, 4.4 says an order and a line are changed only while open, without naming a code (F-IMPL-49)
         "ORDER.QUANTITY_BELOW_PROGRESS", "ORDER.LINE_HAS_PROGRESS",   // 11, 4.4 limits a quantity, a warehouse and a cancel by progress without naming codes (F-IMPL-51)
         "ORDER.RECEIPT_RETURNED",   // 11, 6.3 names ORDER.DELIVERY_RETURNED for a delivery; the same rule for a receipt has no code (F-IMPL-53)
-        "ORDER.INVOICE_EXCEEDS_OPEN", "ORDER.ACCOUNT_DETERMINATION_MISSING"   // 11, 6.4 limits an invoice by open to invoice and uses the REVENUE and AR_CONTROL roles without naming codes (F-IMPL-55)
+        "ORDER.INVOICE_EXCEEDS_OPEN", "ORDER.ACCOUNT_DETERMINATION_MISSING",   // 11, 6.4 limits an invoice by open to invoice and uses the REVENUE and AR_CONTROL roles without naming codes (F-IMPL-55)
+        "MATCH.QUANTITY_EXCEEDS_ORDERED"   // 11, 7.2 limits a two-way line by ordered plus tolerance without naming a code (F-IMPL-58)
     ];
 
     /// <summary>The index of 06 writes a code in full (`AREA.NAME`) or, inside the row of its area, as the bare name (`NAME`).</summary>

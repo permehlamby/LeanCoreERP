@@ -134,9 +134,9 @@ public class OpenItemTests
         }
         Assert.Contains("L1 column cannot change", await Error($"update core.journal_line_open_item set partner_id = gen_random_uuid() where {key}"));
         Assert.Contains("L1 column cannot change", await Error($"update core.journal_line_open_item set legacy_document_ref = 'x' where {key}"));
-        // the S columns belong to the clearing role: the posting role has no grant, and a clearing that does not exist is no clearing
+        // the S columns belong to the clearing role (and, since 0040 and 0046, to the stock and posting roles that clear in their own transaction): the period role has no grant, and a clearing that does not exist is no clearing
         string asRole(string role) => $"select set_config('app.tenant_id', @t::text, true); set local role {role}; ";
-        Assert.Contains("permission denied", await Error(asRole("cmd_post") + $"update core.journal_line_open_item set cleared_amount_tc = 1 where {key}"));
+        Assert.Contains("permission denied", await Error(asRole("cmd_period") + $"update core.journal_line_open_item set cleared_amount_tc = 1 where {key}"));
         Assert.Contains("foreign key", await Error(asRole("cmd_clearing") +
             $"update core.journal_line_open_item set clearing_status = 'CLEARED', last_clearing_id = gen_random_uuid() where {key}"));
         Assert.Contains("without a matching change_log row", await Error($"update core.journal_line_open_item set due_date = date '2026-06-01' where {key}"));

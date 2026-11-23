@@ -267,7 +267,7 @@ public class ClearingTableTests
         var s = await CreateAsync();
         Ln a = await PostOpen(s, "a", 1000m), b = await PostOpen(s, "b", -1000m);
 
-        Assert.Contains("permission denied", await Fail(() => Clear(s, "p1", [Full(a), Full(b)], s.GlOpen, role: "cmd_post")));
+        Assert.Contains("permission denied", await Fail(() => Clear(s, "p1", [Full(a), Full(b)], s.GlOpen, role: "cmd_period")));   // the posting role clears since 0046 (the GR/IR match of a purchase invoice), the period role does not
         Assert.Contains("permission denied", await Fail(() => Clear(s, "p2", [Full(a), Full(b)], s.GlOpen, role: "cmd_config")));
         Assert.Equal(0L, await s.Tenant.ScalarAsync<long>("select count(*) from core.clearing where tenant_id = @t"));
 
