@@ -1394,13 +1394,19 @@ public class FulfilmentTests
             await t.ScalarAsync<Guid>($"select stock_document_id from core.purchase_invoice_line where tenant_id = @t and purchase_invoice_id = '{m.PurchaseInvoiceId}'"),
             await t.ScalarAsync<long>($"select stock_document_line_no from core.purchase_invoice_line where tenant_id = @t and purchase_invoice_id = '{m.PurchaseInvoiceId}'")));
 
-        // the limits of the receipt line, the two reference forms and the credit and the reversal of the receipt
+        // the limits of the receipt line, the two reference forms, the credit and the reversal of the receipt
         Assert.Equal(["MATCH.QUANTITY_EXCEEDS_RECEIVED"], Codes(await PostPurchaseInvoice(s, "i2", "SI-2", 512.5m, DirectLine(receipt.StockDocumentId, 41, 10, 410, pur.Code, 102.5m))));
         Assert.Equal(["MATCH.NO_RECEIPT"], Codes(await PostPurchaseInvoice(s, "i3", "SI-3", 125, DirectLine(Guid.NewGuid(), 10, 10, 100, pur.Code, 25))));
         var po = await DomesticPurchaseOrderAsync(s, "po", 10, 10);
         Assert.Equal(["ORDER.INVOICE_LINE_REFERENCE_MISSING"], Codes(await PostPurchaseInvoice(s, "i4", "SI-4", 125, new PurchaseInvoiceLineInput("L1", po.OrderId, 1, 10, 10, 100, pur.Code, 25, ReceiptRef: new GrIrDirectReceiptRef(receipt.StockDocumentId, 1)))));
         Assert.Equal(["ORDER.INVOICE_LINE_REFERENCE_MISSING"], Codes(await PostPurchaseInvoice(s, "i5", "SI-5", 125, new PurchaseInvoiceLineInput("L1", Guid.Empty, 0, 10, 10, 100, pur.Code, 25))));
-        Assert.Equal(["LIMIT.CREDIT_DIRECT_RECEIPT_NOT_BUILT"], Codes(await PostCredit(s, "c1", "CN-1", m.PurchaseInvoiceId, 12.5m, new PurchaseCreditLineInput("C1", 1, 10, 2.5m))));
+        // a credit note against the line of a receipt without an order: the price correction goes to the stock on hand as for an order line, and the invoice waits for its credit note to be reversed
+        var credit = await PostCredit(s, "c1", "CN-1", m.PurchaseInvoiceId, 82.5m, new PurchaseCreditLineInput("C1", 1, 66, 16.5m));
+        Assert.True(credit.Status == CommandStatus.Ok, Describe(credit));
+        Assert.Equal((994m, -66m, 66m), (await BalanceAsync(s, s.Inventory), await SumOfAsync(s, credit.Value!.JournalDocumentId, s.Inventory), await t.ScalarAsync<decimal>($"select -value_lc from core.stock_movement where tenant_id = @t and stock_document_id = '{credit.Value.StockDocumentId}'")));
+        Assert.Equal(["ORDER.CREDIT_EXCEEDS_INVOICED"], Codes(await PostCredit(s, "c2", "CN-2", m.PurchaseInvoiceId, 744m, new PurchaseCreditLineInput("C1", 1, 595, 149m))));
+        Assert.Equal(["ORDER.INVOICE_HAS_CREDIT_NOTES"], Codes(await ReversePurchaseInvoice(s, "rev0", m.PurchaseInvoiceId)));
+        Assert.Equal(CommandStatus.Ok, (await ReverseCredit(s, "revc", credit.Value.CreditNoteId)).Status);
         Assert.Equal(["ORDER.RECEIPT_INVOICED"], Codes(await new StockCommands(t.App).ReverseAsync(t.TenantId, Ctx(s, "sr", "stock.reverse"), new(t.CompanyId, receipt.StockDocumentId, "CORRECTION"))));
 
         // the invoice is reversed with its adjustment and the GR/IR clearing, then matched again

@@ -805,6 +805,15 @@ For the resources `gl-accounts`, `business-partners` (with PII, company relation
 
 These deltas are applied in 02 and 06 with this spec.
 
+### 13.2al Credit note against a receipt without an order (F-IMPL-67, 2026-11-25)
+
+PROPOSED, written down so that spec and code agree. It builds on 13.2ah and 13.2ak.
+
+1. **Built.** `purchase-credit-notes:post` credits a line of an invoice that was matched to a receipt without an order. The facts of the line (item, tax class, countries, warehouse) are those of the receipt movement; a stock item is credited as a stock line: GR/IR pair, INVENTORY for the part on hand (the warehouse and location of the movement) and COGS for the part consumed, a COST_ADJUST movement for the part on hand.
+2. **Link rows.** Without an order the credit row has no order id and no order line number.
+3. **Caps and reversal.** As 13.2ah and 13.2ai.
+4. **Not built.** The return credit, returns of a receipt without an order.
+
 ### 13.2ak Receipts without an order (F-IMPL-66, 2026-11-25)
 
 PROPOSED, written down so that spec and code agree. It builds on 11, 7.2 (D3), 10, section 7 and 13.2ad to 13.2aj.
