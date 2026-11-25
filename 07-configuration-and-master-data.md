@@ -805,6 +805,16 @@ For the resources `gl-accounts`, `business-partners` (with PII, company relation
 
 These deltas are applied in 02 and 06 with this spec.
 
+### 13.2aj Write-off of GR/IR residuals (F-IMPL-64, 2026-11-25)
+
+PROPOSED, written down so that spec and code agree. It builds on 11, 7.5 and 7.5a and on the clearing domain (03).
+
+1. **Built.** `gr-ir:write-off` (`purchase.invoice`): `posting_date`, `reason_code`, `reason_text` (required) and `items[]` with exactly one selector (`open_items`, an order line, or `receipt_ref`, which is LIMIT.GRIR_DIRECT_RECEIPT_NOT_BUILT) and `expected_residual_lc`.
+2. **Residual.** The residual of an item is its line amounts less its cleared amounts. An entry whose sum differs from `expected_residual_lc` is ORDER.GRIR_RESIDUAL_CHANGED with the current value; an item that is not an open GR/IR item of the company, or has no residual, is ORDER.GRIR_ITEM_INVALID.
+3. **Document and clearing.** A GR_IR_WRITE_OFF document: a GR/IR line of the opposite sign per residual and the counter line on the account of the role GR_IR_WRITE_OFF; the residual items and the new lines are cleared against each other in one clearing per GR/IR account. No stock movement, no change of order progress.
+4. **Reversal.** `gr-ir:reverse-write-off`: the reason is CORRECTION or ERROR; the clearing is reset and a mirror document of the same type is posted; ORDER.GRIR_WRITE_OFF_NOT_FOUND, ORDER.GRIR_WRITE_OFF_REVERSED.
+5. **Not built.** The direct receipt selector, foreign currency, `gr-ir:query`.
+
 ### 13.2ai Reversal of purchase credit notes (F-IMPL-63, 2026-11-25)
 
 PROPOSED, written down so that spec and code agree. It builds on 13.2af and 13.2ah and on 11, 7.3.

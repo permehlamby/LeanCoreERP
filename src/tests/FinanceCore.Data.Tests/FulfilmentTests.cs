@@ -1289,4 +1289,76 @@ public class FulfilmentTests
             Assert.True(verify.Status == CommandStatus.Ok && verify.Value!.Ok, chain + " " + Describe(verify));
         }
     }
+
+    /// <summary>The counter account of a write-off (an expense account without open items), its determination and the series of the document type (the series of the supplier invoices).</summary>
+    private static async Task<Guid> WriteOffSetupAsync(S s)
+    {
+        var t = s.T;
+        Guid account = await AccountAsync(t, "WO-ACC", "EXPENSE", "NONE");
+        Assert.Equal(CommandStatus.Ok, (await new AccountDeterminationCommands(t.App).CreateAsync(t.TenantId, t.Context("det-wo", "write.config"),
+            new(t.CompanyId, D(("role_code", "GR_IR_WRITE_OFF"), ("valid_from", "2026-01-01"), ("priority", 1), ("account_id", account))))).Status);
+        await t.ExecuteAsync("insert into core.number_series_assignment (tenant_id, company_id, document_type, series_id, effective_from, created_by) select @t, @c, 'GR_IR_WRITE_OFF', series_id, date '2026-01-01', 'test' from core.number_series_assignment where tenant_id = @t and document_type = 'AP_INVOICE' limit 1");
+        return account;
+    }
+
+    private static Task<CommandResult<GrIrWriteOffResult>> WriteOff(S s, string key, decimal expected, Guid order, string reason = "NO_INVOICE") =>
+        new PurchaseInvoiceCommands(s.T.App).WriteOffAsync(s.T.TenantId, Ctx(s, key, "purchase.invoice"), new(s.T.CompanyId, new DateOnly(2026, 4, 1), reason, "never invoiced", [new GrIrWriteOffItem(expected, PurchaseOrderId: order, PurchaseOrderLineNo: 1)]));
+
+    private static Task<CommandResult<ReversedGrIrWriteOff>> ReverseWriteOff(S s, string key, Guid document, string reason = "CORRECTION") =>
+        new PurchaseInvoiceCommands(s.T.App).ReverseWriteOffAsync(s.T.TenantId, Ctx(s, key, "purchase.invoice"), new(s.T.CompanyId, document, reason));
+
+    [Fact]
+    public async Task AGrIrResidualIsWrittenOffAgainstTheWriteOffAccountAndTheWriteOffCanBeReversed()
+    {
+        var s = await SetupAsync();
+        var t = s.T;
+        var pur = await PurchaseSetupAsync(s);
+        Guid wo = await WriteOffSetupAsync(s);
+        var po = await DomesticPurchaseOrderAsync(s, "po", 100, 10);
+        var receipt = await ReceiveAsync(s, "r1", po, 100);
+        var inv = (await PostPurchaseInvoice(s, "i1", "SI-1", 750, new PurchaseInvoiceLineInput("L1", po.OrderId, 1, 60, 10, 600, pur.Code, 150))).Value!;
+        Assert.Equal(-400m, await BalanceAsync(s, s.GrIr));   // 400 of the 1000 received are never invoiced
+
+        Assert.Equal(["ORDER.GRIR_RESIDUAL_CHANGED"], Codes(await WriteOff(s, "w1", -300, po.OrderId)));
+        Assert.Equal(["ORDER.GRIR_ITEM_INVALID"], Codes(await new PurchaseInvoiceCommands(t.App).WriteOffAsync(t.TenantId, Ctx(s, "w2", "purchase.invoice"),
+            new(t.CompanyId, new DateOnly(2026, 4, 1), "X", "x", [new GrIrWriteOffItem(0m, OpenItems: [new GrIrItemRef(inv.JournalDocumentId, 1)])]))));   // the invoice item is cleared
+        Assert.Equal(["LIMIT.GRIR_DIRECT_RECEIPT_NOT_BUILT"], Codes(await new PurchaseInvoiceCommands(t.App).WriteOffAsync(t.TenantId, Ctx(s, "w3", "purchase.invoice"),
+            new(t.CompanyId, new DateOnly(2026, 4, 1), "X", "x", [new GrIrWriteOffItem(-400m, ReceiptRef: new GrIrDirectReceiptRef(Guid.NewGuid(), 1))]))));
+        Assert.Equal(["SCHEMA.INVALID_VALUE"], Codes(await new PurchaseInvoiceCommands(t.App).WriteOffAsync(t.TenantId, Ctx(s, "w4", "purchase.invoice"),
+            new(t.CompanyId, new DateOnly(2026, 4, 1), "X", "x", [new GrIrWriteOffItem(-400m)]))));
+        Assert.Equal(["AUTH.PERMISSION_MISSING"], Codes(await new PurchaseInvoiceCommands(t.App).WriteOffAsync(t.TenantId, Ctx(s, "w5", "sales.invoice"),
+            new(t.CompanyId, new DateOnly(2026, 4, 1), "X", "x", [new GrIrWriteOffItem(-400m, PurchaseOrderId: po.OrderId, PurchaseOrderLineNo: 1)]))));
+
+        var r = await WriteOff(s, "w6", -400, po.OrderId);
+        Assert.True(r.Status == CommandStatus.Ok, Describe(r));
+        var m = r.Value!;
+        Assert.Equal((-400m, 1), (m.TotalResidualLc, m.ItemCount));
+        Assert.Equal(("GR_IR_WRITE_OFF", "ORDER", "gr-ir:write-off"), (
+            await t.ScalarAsync<string>($"select document_type from core.journal_document where tenant_id = @t and document_id = '{m.JournalDocumentId}'"),
+            await t.ScalarAsync<string>($"select origin from core.journal_document where tenant_id = @t and document_id = '{m.JournalDocumentId}'"),
+            await t.ScalarAsync<string>($"select command_name from core.journal_document where tenant_id = @t and document_id = '{m.JournalDocumentId}'")));
+        Assert.Equal((0m, -400m, "CLEARED"), (await BalanceAsync(s, s.GrIr), await BalanceAsync(s, wo), await ItemStatusAsync(s, receipt.JournalDocumentId!.Value)));
+        Assert.Equal(["ORDER.GRIR_ITEM_INVALID"], Codes(await WriteOff(s, "w7", 0, po.OrderId)));   // nothing is left to write off
+
+        // the reversal: the reason is CORRECTION or ERROR, the document is a write-off, and it is reversed once
+        Assert.Equal(["REVERSAL.REASON_NOT_ALLOWED"], Codes(await ReverseWriteOff(s, "x1", m.JournalDocumentId, "AUTO_REVERSAL")));
+        Assert.Equal(["ORDER.GRIR_WRITE_OFF_NOT_FOUND"], Codes(await ReverseWriteOff(s, "x2", inv.JournalDocumentId)));
+        var rv = await ReverseWriteOff(s, "x3", m.JournalDocumentId);
+        Assert.True(rv.Status == CommandStatus.Ok, Describe(rv));
+        Assert.Equal((-400m, 0m, "PARTIAL", "reversed"), (await BalanceAsync(s, s.GrIr), await BalanceAsync(s, wo), await ItemStatusAsync(s, receipt.JournalDocumentId!.Value),
+            await t.ScalarAsync<string>($"select status from core.journal_document where tenant_id = @t and document_id = '{m.JournalDocumentId}'")));
+        Assert.Equal("GR_IR_WRITE_OFF", await t.ScalarAsync<string>($"select document_type from core.journal_document where tenant_id = @t and document_id = '{rv.Value!.ReversalDocumentId}'"));
+        Assert.Equal(["ORDER.GRIR_WRITE_OFF_REVERSED"], Codes(await ReverseWriteOff(s, "x4", m.JournalDocumentId)));
+        Assert.True((await ReverseWriteOff(s, "x3", m.JournalDocumentId)).IdempotentReplay);
+
+        // the residual is open again and can be written off again
+        var again = await WriteOff(s, "w8", -400, po.OrderId);
+        Assert.True(again.Status == CommandStatus.Ok, Describe(again));
+        Assert.Equal(0m, await BalanceAsync(s, s.GrIr));
+        foreach (string chain in new[] { "LEDGER", "CLEARING", "STOCK" })
+        {
+            var verify = await new ChainVerification(t.App).VerifyAsync(t.TenantId, t.Context("v" + chain, "chain.verify"), new(t.CompanyId, chain));
+            Assert.True(verify.Status == CommandStatus.Ok && verify.Value!.Ok, chain + " " + Describe(verify));
+        }
+    }
 }

@@ -17,5 +17,7 @@ public sealed class InvoiceModule : ICommandModule
         catalog.Add<ReversePurchaseInvoiceRequest, ReversedPurchaseInvoice>("purchase-invoices:reverse", PurchaseInvoiceRules.Permission, (sp, t, c, r, ct) => sp.GetRequiredService<PurchaseInvoiceCommands>().ReverseAsync(t, c, r, ct));
         catalog.Add<PostPurchaseCreditNoteRequest, PurchaseCreditNoteResult>("purchase-credit-notes:post", PurchaseInvoiceRules.Permission, (sp, t, c, r, ct) => sp.GetRequiredService<PurchaseInvoiceCommands>().PostCreditNoteAsync(t, c, r, ct));
         catalog.Add<ReversePurchaseCreditNoteRequest, ReversedPurchaseCreditNote>("purchase-credit-notes:reverse", PurchaseInvoiceRules.Permission, (sp, t, c, r, ct) => sp.GetRequiredService<PurchaseInvoiceCommands>().ReverseCreditNoteAsync(t, c, r, ct));
+        catalog.Add<GrIrWriteOffRequest, GrIrWriteOffResult>("gr-ir:write-off", GrIrRules.Permission, (sp, t, c, r, ct) => sp.GetRequiredService<PurchaseInvoiceCommands>().WriteOffAsync(t, c, r, ct));
+        catalog.Add<ReverseGrIrWriteOffRequest, ReversedGrIrWriteOff>("gr-ir:reverse-write-off", GrIrRules.Permission, (sp, t, c, r, ct) => sp.GetRequiredService<PurchaseInvoiceCommands>().ReverseWriteOffAsync(t, c, r, ct));
     }
 }
