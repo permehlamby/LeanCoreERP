@@ -805,6 +805,17 @@ For the resources `gl-accounts`, `business-partners` (with PII, company relation
 
 These deltas are applied in 02 and 06 with this spec.
 
+### 13.2ai Reversal of purchase credit notes (F-IMPL-63, 2026-11-25)
+
+PROPOSED, written down so that spec and code agree. It builds on 13.2af and 13.2ah and on 11, 7.3.
+
+1. **Built.** `purchase-credit-notes:reverse` (`purchase.invoice`), fields `credit_note_id`, `reason_code` (the external list of 6.8), `posting_date` (default the posting date of the credit note). It is the owning command of the AP_CREDIT: `journal-documents:reverse` refuses it.
+2. **Steps.** The clearing of the GR/IR pair of the credit is reset, the journal document is reversed (mirror of type AP_CREDIT, the open items are cleared against the mirror), the cost adjustment is mirrored by a STOCK_REVERSAL document, and mirror link rows (positive) are inserted that keep the credited invoice line.
+3. **Caps.** The mirror rows give the credited amount back: a reversed credit note no longer counts against ORDER.CREDIT_EXCEEDS_INVOICED.
+4. **Refusals.** REVERSAL.ALREADY_REVERSED, REVERSAL.HAS_CLEARED_LINES (the payable of the credit is cleared), REVERSAL.TYPE_NOT_REVERSIBLE (an invoice is not reversed by this command), INVENTORY.RECEIPT_CONSUMED.
+5. **Order of reversal.** Credit notes first, then the invoice (ORDER.INVOICE_HAS_CREDIT_NOTES, 7.4).
+6. **Not built.** The return credit and its reversal.
+
 ### 13.2ah Purchase credit notes, the amount credit (F-IMPL-62, 2026-11-23)
 
 PROPOSED, written down so that spec and code agree. It builds on 13.2ad to 13.2af and on 11, 7.3.

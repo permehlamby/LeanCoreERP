@@ -16,5 +16,6 @@ public sealed class InvoiceModule : ICommandModule
         catalog.Add<PostPurchaseInvoiceRequest, PurchaseInvoiceResult>("purchase-invoices:post", PurchaseInvoiceRules.Permission, (sp, t, c, r, ct) => sp.GetRequiredService<PurchaseInvoiceCommands>().PostAsync(t, c, r, ct));
         catalog.Add<ReversePurchaseInvoiceRequest, ReversedPurchaseInvoice>("purchase-invoices:reverse", PurchaseInvoiceRules.Permission, (sp, t, c, r, ct) => sp.GetRequiredService<PurchaseInvoiceCommands>().ReverseAsync(t, c, r, ct));
         catalog.Add<PostPurchaseCreditNoteRequest, PurchaseCreditNoteResult>("purchase-credit-notes:post", PurchaseInvoiceRules.Permission, (sp, t, c, r, ct) => sp.GetRequiredService<PurchaseInvoiceCommands>().PostCreditNoteAsync(t, c, r, ct));
+        catalog.Add<ReversePurchaseCreditNoteRequest, ReversedPurchaseCreditNote>("purchase-credit-notes:reverse", PurchaseInvoiceRules.Permission, (sp, t, c, r, ct) => sp.GetRequiredService<PurchaseInvoiceCommands>().ReverseCreditNoteAsync(t, c, r, ct));
     }
 }

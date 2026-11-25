@@ -112,7 +112,7 @@ public sealed partial class ChainVerifier
             // what the journal document binds: the row hash of the stock document, or for a document derived by a purchase invoice the digest of its link digest and its row hash
             if (d.Journal is { } j && journalDigest.TryGetValue(j, out var bound))
             {
-                bool external = d.Command is "purchase-invoices:post" or "purchase-invoices:reverse" or "purchase-credit-notes:post" && d.Detail is not null;
+                bool external = d.Command is "purchase-invoices:post" or "purchase-invoices:reverse" or "purchase-credit-notes:post" or "purchase-credit-notes:reverse" && d.Detail is not null;
                 byte[] wanted = external ? SHA256.HashData([.. d.Detail!, .. d.Row]) : d.Row;
                 if (bound is null || !bound.AsSpan().SequenceEqual(wanted)) problems.Add(new("STOCK.DETAIL_DIGEST_MISMATCH", d.Seq, "the journal document does not bind this stock document"));
             }

@@ -23,9 +23,27 @@ public sealed partial class PurchaseInvoiceCommands
 
     private sealed record PurchaseLink(
         int LineNo, Guid? OrderId, int? OrderLineNo, Guid? ReceiptId, int? ReceiptLineNo, decimal BaseQuantity, decimal UnitPrice, decimal Net, decimal Tax, decimal? OrderUnitPrice, string? MatchMode,
-        decimal? Tolerance, decimal Diff, decimal OnHand, decimal Consumed, Guid? TaxCodeId, Guid? TaxCodeVersionId, DateOnly? TaxDate, int JournalLineNo);
+        decimal? Tolerance, decimal Diff, decimal OnHand, decimal Consumed, Guid? TaxCodeId, Guid? TaxCodeVersionId, DateOnly? TaxDate, int JournalLineNo, int? CreditsLineNo);
 
-    public async Task<CommandResult<ReversedPurchaseInvoice>> ReverseAsync(Guid tenantId, CommandContext ctx, ReversePurchaseInvoiceRequest req, CancellationToken ct = default)
+    /// <summary>What differs between the reversal of an invoice and that of a credit note: the kind of the original, the command, the type of the mirror journal document.</summary>
+    private sealed record ReverseKind(string Expected, string Command, string MirrorType, bool Credit);
+
+    private static readonly ReverseKind InvoiceReversal = new("INVOICE", ReverseCommandName, "AP_INVOICE", false);
+    private static readonly ReverseKind CreditReversal = new("CREDIT_NOTE", "purchase-credit-notes:reverse", "AP_CREDIT", true);
+
+    public Task<CommandResult<ReversedPurchaseInvoice>> ReverseAsync(Guid tenantId, CommandContext ctx, ReversePurchaseInvoiceRequest req, CancellationToken ct = default) =>
+        ReverseInternalAsync(tenantId, ctx, req, InvoiceReversal, ct);
+
+    /// <summary>purchase-credit-notes:reverse (11, 7.3): the owning command of a supplier credit note, its cost adjustment and the clearing of its GR/IR pair; the same reversal as that of an invoice, with the mirror rows restoring the caps.</summary>
+    public async Task<CommandResult<ReversedPurchaseCreditNote>> ReverseCreditNoteAsync(Guid tenantId, CommandContext ctx, ReversePurchaseCreditNoteRequest req, CancellationToken ct = default)
+    {
+        var r = await ReverseInternalAsync(tenantId, ctx, new ReversePurchaseInvoiceRequest(req.CompanyId, req.CreditNoteId, req.ReasonCode, req.PostingDate), CreditReversal, ct);
+        return r.Status != CommandStatus.Ok ? CommandResult<ReversedPurchaseCreditNote>.Rejected(r.Errors.Select(e => e.Path == "/purchase_invoice_id" ? e with { Path = "/credit_note_id" } : e).ToList())
+            : CommandResult<ReversedPurchaseCreditNote>.Ok(new ReversedPurchaseCreditNote(r.Value!.PurchaseInvoiceId, r.Value.ReversalInvoiceId, r.Value.JournalDocumentId, r.Value.DocumentNumber, r.Value.RowHash, r.Value.StockReversalId), r.CommandLogId ?? Guid.Empty, r.Warnings, r.IdempotentReplay);
+    }
+
+
+    private async Task<CommandResult<ReversedPurchaseInvoice>> ReverseInternalAsync(Guid tenantId, CommandContext ctx, ReversePurchaseInvoiceRequest req, ReverseKind k, CancellationToken ct)
     {
         static CommandResult<ReversedPurchaseInvoice> Fail(CommandError e) => CommandResult<ReversedPurchaseInvoice>.Rejected([e]);
         if (!ctx.Permissions.Contains(PurchaseInvoiceRules.Permission)) return Fail(Error("AUTH.PERMISSION_MISSING", "P0", "", ("permission", PurchaseInvoiceRules.Permission)));
@@ -35,7 +53,7 @@ public sealed partial class PurchaseInvoiceCommands
         if (errors.Count > 0) return CommandResult<ReversedPurchaseInvoice>.Rejected(errors);
         if (string.IsNullOrWhiteSpace(req.ReasonCode)) return Fail(Error("REVERSAL.REASON_REQUIRED", "P1", "/reason_code"));
         if (!ReversalRules.ExternalReasons.Contains(req.ReasonCode)) return Fail(Error("REVERSAL.REASON_NOT_ALLOWED", "P1", "/reason_code", ("allowed_values", ReversalRules.ExternalReasons)));
-        byte[] fingerprint = StockReversalRules.Fingerprint(ReverseCommandName, req.CompanyId, req.PurchaseInvoiceId, req.ReasonCode, req.PostingDate);
+        byte[] fingerprint = StockReversalRules.Fingerprint(k.Command, req.CompanyId, req.PurchaseInvoiceId, req.ReasonCode, req.PostingDate);
 
         // the invoice and its journal document: read first, the role of the reversal depends on the document
         Guid journalId; string kind; Guid? originalStockId; Guid supplier; string currency; decimal grossAmount;
@@ -47,7 +65,7 @@ public sealed partial class PurchaseInvoiceCommands
             if (!await r.ReadAsync(ct)) return Fail(Error("REVERSAL.NOT_FOUND", "P2", "/purchase_invoice_id"));
             journalId = r.GetGuid(0); kind = r.GetString(1); originalStockId = r.IsDBNull(2) ? null : r.GetGuid(2); supplier = r.GetGuid(3); currency = r.GetString(4).Trim(); grossAmount = r.GetDecimal(5);
         }
-        if (kind != "INVOICE") return Fail(Error("REVERSAL.TYPE_NOT_REVERSIBLE", "P2", "/purchase_invoice_id", ("invoice_kind", kind)));
+        if (kind != k.Expected) return Fail(Error("REVERSAL.TYPE_NOT_REVERSIBLE", "P2", "/purchase_invoice_id", ("invoice_kind", kind)));
 
         Guid mirrorInvoiceId = Guid.NewGuid();
         Guid? mirrorStockId = originalStockId is null ? null : Guid.NewGuid();
@@ -55,13 +73,13 @@ public sealed partial class PurchaseInvoiceCommands
         List<Guid> clearings = [];
         DateOnly mirrorDate = default;
         StockDraft? stockDraft = null;
-        var reversal = new DocumentReverser.ReverseMode(ReverseCommandName, "AP_INVOICE", "ORDER",
+        var reversal = new DocumentReverser.ReverseMode(k.Command, k.MirrorType, "ORDER",
             async (tx, original, token) =>
             {
                 var lines = new List<PurchaseLink>();
                 await using (var cmd = tx.Command(
                     "select line_no, purchase_order_id, purchase_order_line_no, receipt_id, receipt_line_no, base_quantity, unit_price, net_amount, tax_amount, order_unit_price, match_mode_used, tolerance_used, " +
-                    "price_difference_lc, on_hand_part_lc, consumed_part_lc, tax_code_id, tax_code_version_id, tax_date, journal_line_no, gr_ir_clearing_id from core.purchase_invoice_line " +
+                    "price_difference_lc, on_hand_part_lc, consumed_part_lc, tax_code_id, tax_code_version_id, tax_date, journal_line_no, gr_ir_clearing_id, credits_invoice_line_no from core.purchase_invoice_line " +
                     "where tenant_id = @t and company_id = @c and purchase_invoice_id = @i order by line_no"))
                 {
                     cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("c", req.CompanyId); cmd.Parameters.AddWithValue("i", req.PurchaseInvoiceId);
@@ -71,7 +89,7 @@ public sealed partial class PurchaseInvoiceCommands
                         lines.Add(new PurchaseLink(r.GetInt32(0), r.IsDBNull(1) ? null : r.GetGuid(1), r.IsDBNull(2) ? null : r.GetInt32(2), r.IsDBNull(3) ? null : r.GetGuid(3), r.IsDBNull(4) ? null : r.GetInt32(4),
                             r.GetDecimal(5), r.GetDecimal(6), r.GetDecimal(7), r.GetDecimal(8), r.IsDBNull(9) ? null : r.GetDecimal(9), r.IsDBNull(10) ? null : r.GetString(10).Trim(), r.IsDBNull(11) ? null : r.GetDecimal(11),
                             r.GetDecimal(12), r.GetDecimal(13), r.GetDecimal(14), r.IsDBNull(15) ? null : r.GetGuid(15), r.IsDBNull(16) ? null : r.GetGuid(16),
-                            r.IsDBNull(17) ? null : DateOnly.FromDateTime(r.GetDateTime(17)), r.GetInt32(18)));
+                            r.IsDBNull(17) ? null : DateOnly.FromDateTime(r.GetDateTime(17)), r.GetInt32(18), r.IsDBNull(20) ? null : r.GetInt32(20)));
                         if (!r.IsDBNull(19) && !clearings.Contains(r.GetGuid(19))) clearings.Add(r.GetGuid(19));
                     }
                 }
@@ -85,6 +103,7 @@ public sealed partial class PurchaseInvoiceCommands
                     while (await r.ReadAsync(token)) { }
                 }
                 // a credit note of the invoice that is not reversed is reversed first (7.4, Q25)
+                if (!k.Credit)
                 await using (var cmd = tx.Command(
                     "select exists (select 1 from core.purchase_invoice c where c.tenant_id = @t and c.company_id = @c and c.credits_invoice_id = @i and c.invoice_kind = 'CREDIT_NOTE' " +
                     "and not exists (select 1 from core.purchase_invoice m where m.tenant_id = c.tenant_id and m.company_id = c.company_id and m.reversal_of_purchase_invoice_id = c.purchase_invoice_id))"))
@@ -113,8 +132,9 @@ public sealed partial class PurchaseInvoiceCommands
                 {
                     await using var cmd = tx.Command(
                         "insert into core.purchase_invoice_line (tenant_id, company_id, purchase_invoice_id, line_no, line_kind, purchase_order_id, purchase_order_line_no, receipt_id, receipt_line_no, base_quantity, " +
-                        "unit_price, net_amount, tax_amount, order_unit_price, match_mode_used, tolerance_used, price_difference_lc, on_hand_part_lc, consumed_part_lc, tax_code_id, tax_code_version_id, tax_date, journal_line_no) " +
-                        "values (@t, @c, @id, @n, 'MATCHED', @o, @ol, @r, @rl, @bq, @up, @net, @tax, @oup, @mm, @tol, @pd, @oh, @co, @tc, @tv, @td, @jl)");
+                        "unit_price, net_amount, tax_amount, order_unit_price, match_mode_used, tolerance_used, price_difference_lc, on_hand_part_lc, consumed_part_lc, tax_code_id, tax_code_version_id, tax_date, journal_line_no, credits_invoice_line_no) " +
+                        "values (@t, @c, @id, @n, 'MATCHED', @o, @ol, @r, @rl, @bq, @up, @net, @tax, @oup, @mm, @tol, @pd, @oh, @co, @tc, @tv, @td, @jl, @cl)");
+                    cmd.Parameters.Add(new NpgsqlParameter("cl", NpgsqlDbType.Integer) { Value = (object?)l.CreditsLineNo ?? DBNull.Value });
                     cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("c", req.CompanyId); cmd.Parameters.AddWithValue("id", mirrorInvoiceId); cmd.Parameters.AddWithValue("n", l.LineNo);
                     cmd.Parameters.AddWithValue("bq", l.BaseQuantity); cmd.Parameters.AddWithValue("up", l.UnitPrice); cmd.Parameters.AddWithValue("net", l.Net); cmd.Parameters.AddWithValue("tax", l.Tax);
                     cmd.Parameters.AddWithValue("pd", l.Diff); cmd.Parameters.AddWithValue("oh", l.OnHand); cmd.Parameters.AddWithValue("co", l.Consumed); cmd.Parameters.AddWithValue("jl", l.JournalLineNo);
@@ -146,7 +166,7 @@ public sealed partial class PurchaseInvoiceCommands
             {
                 int n = 0;
                 foreach (Guid clearing in clearings)
-                    (seq, hash) = await ResetClearingAsync(tx, tenantId, req.CompanyId, ctx, clearing, req.PurchaseInvoiceId, ++n, date, fiscalYear, periodNo, at, seq, hash, token);
+                    (seq, hash) = await ResetClearingAsync(tx, tenantId, req.CompanyId, ctx, clearing, req.PurchaseInvoiceId, k.Command, ++n, date, fiscalYear, periodNo, at, seq, hash, token);
                 return (seq, hash);
             },
             // the mirror journal binds the digest of the mirror link rows and the row hash of the stock mirror, prepared under the LEDGER and CLEARING locks
@@ -158,16 +178,22 @@ public sealed partial class PurchaseInvoiceCommands
                     ["currency"] = currency, ["gross_amount"] = -grossAmount, ["stock_document_id"] = mirrorStockId, ["credits_invoice_id"] = null, ["credit_kind"] = null,
                     ["reversal_of_purchase_invoice_id"] = req.PurchaseInvoiceId, ["reason_code"] = req.ReasonCode, ["line_count"] = mirrorLines.Count
                 };
-                byte[] link = PurchaseInvoiceRules.Digest(header, mirrorLines.Select(l => (IReadOnlyDictionary<string, object?>)new Dictionary<string, object?>
+                var rowsOf = mirrorLines.Select(l =>
+                {
+                    var d = new Dictionary<string, object?>
                 {
                     ["line_no"] = l.LineNo, ["line_kind"] = "MATCHED", ["purchase_order_id"] = l.OrderId, ["purchase_order_line_no"] = l.OrderLineNo, ["receipt_id"] = l.ReceiptId, ["receipt_line_no"] = l.ReceiptLineNo,
                     ["stock_document_id"] = null, ["stock_document_line_no"] = null, ["base_quantity"] = l.BaseQuantity, ["unit_price"] = l.UnitPrice, ["net_amount"] = l.Net, ["tax_amount"] = l.Tax,
                     ["order_unit_price"] = l.OrderUnitPrice, ["match_mode_used"] = l.MatchMode, ["tolerance_used"] = l.Tolerance, ["price_difference_lc"] = l.Diff, ["on_hand_part_lc"] = l.OnHand,
                     ["consumed_part_lc"] = l.Consumed, ["dropship_part_lc"] = 0m, ["unreceived_gr_ir_lc"] = 0m, ["gr_ir_clearing_id"] = null, ["tax_code_id"] = l.TaxCodeId,
                     ["tax_code_version_id"] = l.TaxCodeVersionId, ["tax_date"] = l.TaxDate, ["journal_line_no"] = l.JournalLineNo
-                }).ToList());
+                };
+                    if (k.Credit) { d["credits_invoice_line_no"] = l.CreditsLineNo; d["return_id"] = null; d["return_line_no"] = null; }
+                    return (IReadOnlyDictionary<string, object?>)d;
+                }).ToList();
+                byte[] link = k.Credit ? PurchaseCreditRules.Digest(header, rowsOf) : PurchaseInvoiceRules.Digest(header, rowsOf);
                 if (originalStockId is null) return link;
-                stockDraft = await PrepareStockMirrorAsync(tx, tenantId, req.CompanyId, ctx, originalStockId.Value, mirrorStockId!.Value, mirrorJournalId, mirrorDate, req.ReasonCode, currency, link, default);
+                stockDraft = await PrepareStockMirrorAsync(tx, tenantId, req.CompanyId, ctx, originalStockId.Value, mirrorStockId!.Value, mirrorJournalId, mirrorDate, req.ReasonCode, currency, link, k.Command, default);
                 return CombinedDigest(link, stockDraft.RowHash);
             });
         var reverser = new DocumentReverser(source);
@@ -199,7 +225,7 @@ public sealed partial class PurchaseInvoiceCommands
     /// mirror journal of the invoice. Under the STOCK head lock; a result that leaves the cost key with a value and no quantity, or a negative value, is INVENTORY.RECEIPT_CONSUMED.
     /// </summary>
     private static async Task<StockDraft> PrepareStockMirrorAsync(
-        TenantTransaction tx, Guid tenantId, Guid companyId, CommandContext ctx, Guid originalStockId, Guid stockId, Guid journalId, DateOnly date, string reasonCode, string currency, byte[] linkDigest, CancellationToken ct)
+        TenantTransaction tx, Guid tenantId, Guid companyId, CommandContext ctx, Guid originalStockId, Guid stockId, Guid journalId, DateOnly date, string reasonCode, string currency, byte[] linkDigest, string commandName, CancellationToken ct)
     {
         var recheck = await JournalDocumentPoster.CheckPeriodAsync(tx, tenantId, companyId, date, ctx, true, ct);
         if (recheck.Errors.Count > 0) throw new MatchRejection(recheck.Errors[0]);
@@ -251,19 +277,19 @@ public sealed partial class PurchaseInvoiceCommands
             ["stock_document_id"] = stockId, ["document_type"] = "STOCK_REVERSAL", ["number_series_id"] = series.SeriesId, ["fiscal_year"] = fiscalYear, ["sequence_no"] = sequenceNo,
             ["document_number"] = number, ["fiscal_period"] = periodNo, ["document_date"] = date, ["posting_date"] = date, ["posted_at"] = at, ["reason_code"] = reasonCode,
             ["reversal_of_stock_document_id"] = originalStockId, ["journal_document_id"] = journalId, ["soft_close_override"] = recheck.SoftCloseOverride, ["currency_tc"] = currency,
-            ["source_system"] = ctx.SourceSystem, ["source_document_ref"] = null, ["idempotency_key"] = ctx.IdempotencyKey, ["command_name"] = ReverseCommandName, ["posted_by"] = ctx.Actor,
+            ["source_system"] = ctx.SourceSystem, ["source_document_ref"] = null, ["idempotency_key"] = ctx.IdempotencyKey, ["command_name"] = commandName, ["posted_by"] = ctx.Actor,
             ["correlation_id"] = ctx.CorrelationId, ["movement_count"] = movements.Count, ["detail_digest"] = linkDigest, ["movement_digest"] = movementDigest, ["hash_version"] = StockHash2.Version
         };
         byte[] rowHash = StockHash2.RowHash(tenantId, companyId, chainSeq, prev, body);
         return new StockDraft(stockId, journalId, chainSeq, prev, rowHash, sequenceNo, number, fiscalYear, periodNo, recheck.SoftCloseOverride, series.SeriesId, at, linkDigest, movementDigest, movements,
-            "STOCK_REVERSAL", reasonCode, originalStockId, ReverseCommandName);
+            "STOCK_REVERSAL", reasonCode, originalStockId, commandName);
     }
 
     /// <summary>
     /// The reset of one clearing that the invoice made (03, 5.4): a new clearing of type RESET with the mirrored items, opposite in sign. The open items get their cleared amounts and status back.
     /// </summary>
     private static async Task<(long Seq, byte[] Hash)> ResetClearingAsync(
-        TenantTransaction tx, Guid tenantId, Guid companyId, CommandContext ctx, Guid clearingId, Guid invoiceId, int number, DateOnly date, int fiscalYear, int periodNo, DateTime at, long seq0, byte[] hash0, CancellationToken ct)
+        TenantTransaction tx, Guid tenantId, Guid companyId, CommandContext ctx, Guid clearingId, Guid invoiceId, string command, int number, DateOnly date, int fiscalYear, int periodNo, DateTime at, long seq0, byte[] hash0, CancellationToken ct)
     {
         Guid account;
         await using (var cmd = tx.Command("select account_id from core.clearing where tenant_id = @t and company_id = @c and clearing_id = @i"))
@@ -301,7 +327,7 @@ public sealed partial class PurchaseInvoiceCommands
         {
             ["clearing_id"] = resetId, ["clearing_type"] = "RESET", ["clearing_date"] = date, ["fiscal_year"] = fiscalYear, ["fiscal_period"] = periodNo, ["cleared_at"] = at, ["account_id"] = account,
             ["partner_id"] = null, ["document_id"] = null, ["reset_of_clearing_id"] = clearingId, ["clearing_method"] = "AUTO_MATCH", ["matching_ref"] = matchingRef, ["source_system"] = ctx.SourceSystem,
-            ["idempotency_key"] = rctx.IdempotencyKey, ["command_name"] = ReverseCommandName, ["cleared_by"] = ctx.Actor, ["correlation_id"] = ctx.CorrelationId
+            ["idempotency_key"] = rctx.IdempotencyKey, ["command_name"] = command, ["cleared_by"] = ctx.Actor, ["correlation_id"] = ctx.CorrelationId
         };
         var itemRows = items.Select((i, n) => (IReadOnlyDictionary<string, object?>)new Dictionary<string, object?>
         {
@@ -310,7 +336,7 @@ public sealed partial class PurchaseInvoiceCommands
         }).ToList();
         byte[] rowHash = ClearingHash2.RowHash(tenantId, companyId, seq, hash0, body, ClearingHash2.ItemsDigest(itemRows), null);
         var synthetic = new PostClearingRequest(companyId, account, null, date, "AUTO_MATCH", matchingRef, null, []);
-        await ClearingPoster.InsertClearingAsync(tx, tenantId, synthetic, rctx, resetId, null, seq, fiscalYear, periodNo, at, hash0, rowHash, "RESET", clearingId, ReverseCommandName, ct);
+        await ClearingPoster.InsertClearingAsync(tx, tenantId, synthetic, rctx, resetId, null, seq, fiscalYear, periodNo, at, hash0, rowHash, "RESET", clearingId, command, ct);
         for (int n = 0; n < items.Count; n++)
         {
             var i = items[n];

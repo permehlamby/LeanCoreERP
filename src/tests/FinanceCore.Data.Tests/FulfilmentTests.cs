@@ -1238,4 +1238,55 @@ public class FulfilmentTests
         Assert.Equal(CommandStatus.Ok, (await ReversePurchaseInvoice(s, "rev", third.PurchaseInvoiceId)).Status);
         Assert.Equal(["ORDER.INVOICE_REVERSED"], Codes(await PostCredit(s, "c3", "CN-3", third.PurchaseInvoiceId, 125m, new PurchaseCreditLineInput("C1", 1, 100, 25m))));
     }
+
+    private static Task<CommandResult<ReversedPurchaseCreditNote>> ReverseCredit(S s, string key, Guid credit) =>
+        new PurchaseInvoiceCommands(s.T.App).ReverseCreditNoteAsync(s.T.TenantId, Ctx(s, key, "purchase.invoice"), new(s.T.CompanyId, credit, "CORRECTION"));
+
+    [Fact]
+    public async Task APurchaseCreditNoteIsReversedWithItsCostAdjustmentRestoresTheCapAndLetsTheInvoiceBeReversed()
+    {
+        var s = await SetupAsync();
+        var t = s.T;
+        var pur = await PurchaseSetupAsync(s);
+        var po = await DomesticPurchaseOrderAsync(s, "po", 100, 10);
+        await ReceiveAsync(s, "r1", po, 100);
+        var inv = (await PostPurchaseInvoice(s, "i1", "SI-1", 825, new PurchaseInvoiceLineInput("L1", po.OrderId, 1, 60, 11, 660, pur.Code, 165))).Value!;
+        var c = (await PostCredit(s, "c1", "CN-1", inv.PurchaseInvoiceId, 82.5m, new PurchaseCreditLineInput("C1", 1, 66, 16.5m))).Value!;
+        Assert.Equal((994m, 82.5m), (await BalanceAsync(s, s.Inventory), await BalanceAsync(s, pur.Payable) + 825m));
+
+        // the types are kept apart: an invoice is not a credit note and the other way round
+        Assert.Equal(["REVERSAL.TYPE_NOT_REVERSIBLE"], Codes(await ReverseCredit(s, "x1", inv.PurchaseInvoiceId)));
+        Assert.Equal(["REVERSAL.TYPE_NOT_REVERSIBLE"], Codes(await ReversePurchaseInvoice(s, "x2", c.CreditNoteId)));
+        Assert.Equal(["AUTH.PERMISSION_MISSING"], Codes(await new PurchaseInvoiceCommands(t.App).ReverseCreditNoteAsync(t.TenantId, Ctx(s, "x3", "sales.invoice"), new(t.CompanyId, c.CreditNoteId, "CORRECTION"))));
+
+        var r = await ReverseCredit(s, "rev1", c.CreditNoteId);
+        Assert.True(r.Status == CommandStatus.Ok, Describe(r));
+        var rv = r.Value!;
+        Assert.NotNull(rv.StockReversalId);
+        // the ledger and the stock are as before the credit note, and the GR/IR pair of the credit is cleared again by the reversal
+        Assert.Equal((1060m, 0m, 0m), (await BalanceAsync(s, s.Inventory), await BalanceAsync(s, pur.Payable) + 825m, await BalanceAsync(s, pur.InputVat) - 165m));
+        Assert.Equal(("AP_CREDIT", "reversed", "STOCK_REVERSAL", "reversed", 66m, 1060m), (
+            await t.ScalarAsync<string>($"select document_type from core.journal_document where tenant_id = @t and document_id = '{rv.JournalDocumentId}'"),
+            await t.ScalarAsync<string>($"select status from core.journal_document where tenant_id = @t and document_id = '{c.JournalDocumentId}'"),
+            await t.ScalarAsync<string>($"select document_type from core.stock_document where tenant_id = @t and stock_document_id = '{rv.StockReversalId}'"),
+            await t.ScalarAsync<string>($"select status from core.stock_document where tenant_id = @t and stock_document_id = '{c.StockDocumentId}'"),
+            await t.ScalarAsync<decimal>($"select value_lc from core.stock_movement where tenant_id = @t and stock_document_id = '{rv.StockReversalId}'"),
+            await t.ScalarAsync<decimal>($"select cost_value_after_lc from core.stock_movement where tenant_id = @t and stock_document_id = '{rv.StockReversalId}'")));
+        Assert.Equal(["REVERSAL.ALREADY_REVERSED"], Codes(await ReverseCredit(s, "rev2", c.CreditNoteId)));
+        Assert.True((await ReverseCredit(s, "rev1", c.CreditNoteId)).IdempotentReplay);
+
+        // the cap is whole again: all 660 can be credited, and then the invoice is reversed after the credit notes
+        var all = await PostCredit(s, "c2", "CN-2", inv.PurchaseInvoiceId, 825m, new PurchaseCreditLineInput("C1", 1, 660, 165m));
+        Assert.True(all.Status == CommandStatus.Ok, Describe(all));
+        Assert.Equal(["ORDER.INVOICE_HAS_CREDIT_NOTES"], Codes(await ReversePurchaseInvoice(s, "rev3", inv.PurchaseInvoiceId)));
+        Assert.Equal(CommandStatus.Ok, (await ReverseCredit(s, "rev4", all.Value!.CreditNoteId)).Status);
+        var back = await ReversePurchaseInvoice(s, "rev5", inv.PurchaseInvoiceId);
+        Assert.True(back.Status == CommandStatus.Ok, Describe(back));
+        Assert.Equal((1000m, -1000m, 0m), (await BalanceAsync(s, s.Inventory), await BalanceAsync(s, s.GrIr), await BalanceAsync(s, pur.Payable)));
+        foreach (string chain in new[] { "LEDGER", "CLEARING", "STOCK" })
+        {
+            var verify = await new ChainVerification(t.App).VerifyAsync(t.TenantId, t.Context("v" + chain, "chain.verify"), new(t.CompanyId, chain));
+            Assert.True(verify.Status == CommandStatus.Ok && verify.Value!.Ok, chain + " " + Describe(verify));
+        }
+    }
 }

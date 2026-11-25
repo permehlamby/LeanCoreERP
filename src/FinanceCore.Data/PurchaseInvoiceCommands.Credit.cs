@@ -185,7 +185,8 @@ public sealed partial class PurchaseInvoiceCommands
             decimal credited = 0m;
             await using (var cmd = tx.Command(
                 "select coalesce(sum(l.net_amount), 0) from core.purchase_invoice_line l join core.purchase_invoice h on h.tenant_id = l.tenant_id and h.company_id = l.company_id and h.purchase_invoice_id = l.purchase_invoice_id " +
-                "where l.tenant_id = @t and l.company_id = @c and h.credits_invoice_id = @i and l.credits_invoice_line_no = @n"))
+                "left join core.purchase_invoice o on o.tenant_id = h.tenant_id and o.company_id = h.company_id and o.purchase_invoice_id = h.reversal_of_purchase_invoice_id " +
+                "where l.tenant_id = @t and l.company_id = @c and (h.credits_invoice_id = @i or o.credits_invoice_id = @i) and l.credits_invoice_line_no = @n"))
             {
                 cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("c", companyId); cmd.Parameters.AddWithValue("i", req.PurchaseInvoiceId); cmd.Parameters.AddWithValue("n", l.InvoiceLineNo);
                 credited = -(decimal)(await cmd.ExecuteScalarAsync(ct))!;

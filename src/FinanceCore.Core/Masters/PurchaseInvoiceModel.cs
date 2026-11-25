@@ -109,3 +109,8 @@ public static class PurchaseCreditRules
             $"{r.GrossAmount.ToString(CultureInfo.InvariantCulture)}|{r.ReasonCode}|{r.SourceDocumentRef}|" + string.Join("#", r.Lines.Select(l =>
                 string.Join("|", l.LineRef, l.InvoiceLineNo, l.CreditAmountNet.ToString(CultureInfo.InvariantCulture), l.TaxAmount?.ToString(CultureInfo.InvariantCulture) ?? "-", l.TaxCodeId?.ToString("D") ?? "-"))));
 }
+
+// ---- purchase-credit-notes:reverse (11, 7.3, permission purchase.invoice): the owning command of an order-built AP_CREDIT, its cost adjustment and the clearing of its GR/IR pair. posting_date defaults to the posting date of the credit note.
+public sealed record ReversePurchaseCreditNoteRequest(Guid CompanyId, Guid CreditNoteId, string ReasonCode, DateOnly? PostingDate = null);
+
+public sealed record ReversedPurchaseCreditNote(Guid CreditNoteId, Guid ReversalId, Guid JournalDocumentId, string DocumentNumber, string RowHash, Guid? StockReversalId);
