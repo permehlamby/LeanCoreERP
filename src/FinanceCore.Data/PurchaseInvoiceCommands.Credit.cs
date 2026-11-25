@@ -24,7 +24,7 @@ public sealed partial class PurchaseInvoiceCommands
 
     private sealed record InvoiceRow(
         int LineNo, Guid OrderId, int OrderLineNo, Guid? ReceiptId, int? ReceiptLineNo, decimal BaseQuantity, decimal UnitPrice, decimal Net, decimal? OrderUnitPrice, string? MatchMode,
-        decimal? Tolerance, Guid? TaxCodeId, Guid? StockDocId, int? StockLine);
+        decimal? Tolerance, Guid? TaxCodeId, Guid? StockDocId, int? StockLine, decimal Diff, decimal OnHandPart, decimal ConsumedPart);
 
     private sealed class CreditWork(int index, PurchaseCreditLineInput input, InvoiceRow row, OrderLine line, bool stock, Guid account)
     {
@@ -40,6 +40,13 @@ public sealed partial class PurchaseInvoiceCommands
         public Guid? Location { get; set; }
         public int Main { get; set; }
         public int? Adjust { get; set; }
+        /// <summary>A return credit (11, 7.3): the quantity, the share of the GR/IR debit of the return line that it clears, and the amount that the second GR/IR line gives back (the credit less that share). An amount credit gives back the whole credit.</summary>
+        public bool IsReturn => Input.ReturnId is not null;
+        public decimal Quantity { get; set; }
+        public decimal AdjustAmount { get; set; }
+        public Guid ReturnJournal { get; set; }
+        public int ReturnItemLine { get; set; }
+        public decimal ReturnShare { get; set; }
     }
 
     public async Task<CommandResult<PurchaseCreditNoteResult>> PostCreditNoteAsync(Guid tenantId, CommandContext ctx, PostPurchaseCreditNoteRequest req, CancellationToken ct = default)
@@ -63,9 +70,11 @@ public sealed partial class PurchaseInvoiceCommands
             if (l.InvoiceLineNo < 1) errors.Add(Error("ORDER.INVOICE_LINE_REFERENCE_MISSING", "P1", p + "/invoice_line_no", ("line_ref", l.LineRef)));
             if (l.CreditAmountNet <= 0m || Math.Round(l.CreditAmountNet, 4) != l.CreditAmountNet) Invalid(p + "/credit_amount_net", "more than 0, at most 4 fraction digits");
             if (l.TaxAmount is null) errors.Add(Error("SCHEMA.REQUIRED_FIELD_MISSING", "P1", p + "/tax_amount"));
+            bool isReturnKind = req.CreditKind == "RETURN";
+            if (isReturnKind && (l.ReturnId is null || l.ReturnLineNo is null or < 1 || l.Quantity is null or <= 0m || Math.Round(l.Quantity.Value, 6) != l.Quantity)) Invalid(p + "/return_id", "a return line and a quantity");
+            else if (!isReturnKind && (l.ReturnId is not null || l.ReturnLineNo is not null || l.Quantity is not null)) Invalid(p + "/return_id", "only a return credit names a return line");
         }
         if (errors.Count > 0) return CommandResult<PurchaseCreditNoteResult>.Rejected(errors);
-        if (req.CreditKind == "RETURN") return Fail(Error("LIMIT.CREDIT_RETURN_NOT_BUILT", "P1", "/credit_kind"));
         byte[] fingerprint = PurchaseCreditRules.Fingerprint(req);
 
         for (int attempt = 0; ; attempt++)
@@ -136,7 +145,7 @@ public sealed partial class PurchaseInvoiceCommands
         // the rows of the invoice, then position 1 of the lock order: the order rows, sorted
         var rows = new Dictionary<int, InvoiceRow>();
         await using (var cmd = tx.Command(
-            "select line_no, purchase_order_id, purchase_order_line_no, receipt_id, receipt_line_no, base_quantity, unit_price, net_amount, order_unit_price, match_mode_used, tolerance_used, tax_code_id, stock_document_id, stock_document_line_no " +
+            "select line_no, purchase_order_id, purchase_order_line_no, receipt_id, receipt_line_no, base_quantity, unit_price, net_amount, order_unit_price, match_mode_used, tolerance_used, tax_code_id, stock_document_id, stock_document_line_no, price_difference_lc, on_hand_part_lc, consumed_part_lc " +
             "from core.purchase_invoice_line where tenant_id = @t and company_id = @c and purchase_invoice_id = @i and line_kind = 'MATCHED'"))
         {
             cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("c", companyId); cmd.Parameters.AddWithValue("i", req.PurchaseInvoiceId);
@@ -144,7 +153,7 @@ public sealed partial class PurchaseInvoiceCommands
             while (await r.ReadAsync(ct))
                 rows[r.GetInt32(0)] = new InvoiceRow(r.GetInt32(0), r.IsDBNull(1) ? Guid.Empty : r.GetGuid(1), r.IsDBNull(2) ? 0 : r.GetInt32(2), r.IsDBNull(3) ? null : r.GetGuid(3), r.IsDBNull(4) ? null : r.GetInt32(4), r.GetDecimal(5), r.GetDecimal(6), r.GetDecimal(7),
                     r.IsDBNull(8) ? null : r.GetDecimal(8), r.IsDBNull(9) ? null : r.GetString(9).Trim(), r.IsDBNull(10) ? null : r.GetDecimal(10), r.IsDBNull(11) ? null : r.GetGuid(11),
-                    r.IsDBNull(12) ? null : r.GetGuid(12), r.IsDBNull(13) ? null : r.GetInt32(13));
+                    r.IsDBNull(12) ? null : r.GetGuid(12), r.IsDBNull(13) ? null : r.GetInt32(13), r.GetDecimal(14), r.GetDecimal(15), r.GetDecimal(16));
         }
         await using (var cmd = tx.Command("select purchase_order_id from core.purchase_order where tenant_id = @t and company_id = @c and purchase_order_id = any(@ids) order by purchase_order_id for update"))
         {
@@ -178,6 +187,9 @@ public sealed partial class PurchaseInvoiceCommands
         var work = new List<CreditWork>();
         var running = new Dictionary<int, decimal>();
         var costRead = new Dictionary<Guid, (decimal Qty, decimal Value)>();
+        var runningReturn = new Dictionary<(Guid, int), decimal>();
+        var runningQuantity = new Dictionary<int, decimal>();
+        bool isReturn = req.CreditKind == "RETURN";
         for (int i = 0; i < req.Lines.Count; i++)
         {
             PurchaseCreditLineInput l = req.Lines[i];
@@ -206,8 +218,14 @@ public sealed partial class PurchaseInvoiceCommands
             var account = await AccountDeterminationResolver.ResolveAsync(tx, tenantId, companyId, role, ol.ItemGroup, ol.Warehouse, stock ? null : supplier, ol.ItemId, postingDate, ct);
             if (account is null) { errors.Add(Error("ORDER.ACCOUNT_DETERMINATION_MISSING", "P5", p, ("role_code", role), ("item_id", ol.ItemId))); continue; }
             running[l.InvoiceLineNo] = running.GetValueOrDefault(l.InvoiceLineNo) + l.CreditAmountNet;
-            var w = new CreditWork(i, l, row, ol, stock, account.AccountId);
-            if (stock)
+            var w = new CreditWork(i, l, row, ol, stock, account.AccountId) { AdjustAmount = stock ? l.CreditAmountNet : 0m };
+            if (isReturn)
+            {
+                if (!stock || direct is not null) { errors.Add(Error("CONFIG.INVALID_REFERENCE", "P2", p + "/return_id", ("reason", "a return credit credits a line of an order receipt"))); continue; }
+                CommandError? refused = await PlanReturnCreditAsync(tx, tenantId, companyId, req.PurchaseInvoiceId, w, p, runningReturn, runningQuantity, costRead, lcScale, ct);
+                if (refused is not null) { errors.Add(refused); continue; }
+            }
+            else if (stock)
             {
                 if (!costRead.TryGetValue(ol.ItemId, out var cs)) costRead[ol.ItemId] = cs = await CostBalanceAsync(tx, tenantId, companyId, ol.ItemId, ct);
                 decimal onHandQuantity = Math.Min(row.BaseQuantity, cs.Qty);
@@ -233,8 +251,11 @@ public sealed partial class PurchaseInvoiceCommands
                 TaxCodeId: l.TaxCodeId ?? w.Row.TaxCodeId, TaxAmountTc: -l.TaxAmount, OpenItem: w.Stock ? new OpenItemRequest(null, req.CreditDate) : null));
             w.Main = lines.Count;
             if (!w.Stock) continue;
-            lines.Add(new RequestLine(l.LineRef + "#GA", w.Account, l.CreditAmountNet, OpenItem: new OpenItemRequest(null, req.CreditDate)));
-            w.Adjust = lines.Count;
+            if (w.AdjustAmount != 0m)
+            {
+                lines.Add(new RequestLine(l.LineRef + "#GA", w.Account, w.AdjustAmount, OpenItem: new OpenItemRequest(null, req.CreditDate)));
+                w.Adjust = lines.Count;
+            }
             if (w.OnHand != 0m)
             {
                 var inventory = await AccountDeterminationResolver.ResolveAsync(tx, tenantId, companyId, "INVENTORY", w.Line.ItemGroup, w.Line.Warehouse, null, w.Line.ItemId, postingDate, ct);
@@ -272,11 +293,11 @@ public sealed partial class PurchaseInvoiceCommands
                 linkRows.Add(new Dictionary<string, object?>
                 {
                     ["line_no"] = linkRows.Count + 1, ["line_kind"] = "MATCHED", ["purchase_order_id"] = w.Row.OrderId == Guid.Empty ? null : w.Row.OrderId, ["purchase_order_line_no"] = w.Row.OrderId == Guid.Empty ? null : w.Row.OrderLineNo, ["receipt_id"] = null, ["receipt_line_no"] = null,
-                    ["stock_document_id"] = null, ["stock_document_line_no"] = null, ["base_quantity"] = 0m, ["unit_price"] = w.Row.UnitPrice, ["net_amount"] = -w.Input.CreditAmountNet,
+                    ["stock_document_id"] = null, ["stock_document_line_no"] = null, ["base_quantity"] = -w.Quantity, ["unit_price"] = w.Row.UnitPrice, ["net_amount"] = -w.Input.CreditAmountNet,
                     ["tax_amount"] = -w.Input.TaxAmount!.Value, ["order_unit_price"] = w.Row.OrderUnitPrice, ["match_mode_used"] = w.Row.MatchMode, ["tolerance_used"] = w.Row.Tolerance,
-                    ["price_difference_lc"] = w.Stock ? -w.Input.CreditAmountNet : 0m, ["on_hand_part_lc"] = -w.OnHand, ["consumed_part_lc"] = -w.Consumed, ["dropship_part_lc"] = 0m, ["unreceived_gr_ir_lc"] = 0m,
+                    ["price_difference_lc"] = w.Stock ? -w.AdjustAmount : 0m, ["on_hand_part_lc"] = -w.OnHand, ["consumed_part_lc"] = -w.Consumed, ["dropship_part_lc"] = 0m, ["unreceived_gr_ir_lc"] = 0m,
                     ["gr_ir_clearing_id"] = w.Stock ? clearingIds[w.Account] : null, ["tax_code_id"] = code, ["tax_code_version_id"] = tax?.VersionId, ["tax_date"] = tax?.TaxDate, ["journal_line_no"] = w.Main,
-                    ["credits_invoice_line_no"] = w.Input.InvoiceLineNo, ["return_id"] = null, ["return_line_no"] = null, ["line_ref"] = w.Input.LineRef
+                    ["credits_invoice_line_no"] = w.Input.InvoiceLineNo, ["return_id"] = w.Input.ReturnId, ["return_line_no"] = w.Input.ReturnLineNo, ["line_ref"] = w.Input.LineRef
                 });
             }
             return PurchaseCreditRules.Digest(headerDigest, linkRows.Select(r => (IReadOnlyDictionary<string, object?>)r.Where(kv => kv.Key != "line_ref").ToDictionary(kv => kv.Key, kv => kv.Value)).ToList());
@@ -334,23 +355,36 @@ public sealed partial class PurchaseInvoiceCommands
     }
 
     /// <summary>
-    /// The two GR/IR lines of a stock credit line (the credit that carries the tax facts and the line that gives it back) are open items without partner on one account; they are cleared against
-    /// each other in one clearing of method AUTO_MATCH per account, so no GR/IR item stays open for a price correction. The items net to zero in every currency.
+    /// The GR/IR lines of a stock credit line (the credit that carries the tax facts and, when it is not zero, the line that gives the difference back) are open items without partner on one account.
+    /// An amount credit clears them against each other; a return credit clears them against the share of the GR/IR debit that the purchase return left, so no GR/IR item stays open for goods that
+    /// were returned and credited (7.3). One clearing of method AUTO_MATCH per account. The group and reporting amounts of the return share make the items net to zero.
     /// </summary>
     private static async Task ClearCreditPairsAsync(
         TenantTransaction tx, Guid tenantId, Guid companyId, CommandContext ctx, List<CreditWork> works, Guid account, PostedDocument credit, Guid clearingId, Guid creditId, DateOnly date, int number, CancellationToken ct)
     {
+        var items = new List<(Guid Doc, int Line, string Currency, decimal Tc, decimal Lc, decimal Gc, decimal? Rc)>();
+        var returnItems = new List<(Guid Doc, int Line, decimal Tc, decimal Lc, decimal Gc, decimal? Rc)>();
+        foreach (CreditWork w in works)
+        {
+            PostedLine main = credit.Lines.Single(x => x.LineNo == w.Main);
+            PostedLine? adjust = w.Adjust is { } an ? credit.Lines.Single(x => x.LineNo == an) : null;
+            items.Add((credit.DocumentId, main.LineNo, main.CurrencyLc, main.AmountTc, main.AmountLc, main.AmountGc, main.AmountRc));
+            if (adjust is not null) items.Add((credit.DocumentId, adjust.LineNo, adjust.CurrencyLc, adjust.AmountTc, adjust.AmountLc, adjust.AmountGc, adjust.AmountRc));
+            if (!w.IsReturn) continue;
+            // the debit item of the return line, locked and read again: it must still hold the share
+            Residual? now = await ReadResidualAsync(tx, tenantId, companyId, w.ReturnJournal, w.ReturnItemLine, null, null, null, true, ct);
+            if (now is null || now.Lc < w.ReturnShare || main.AmountLc + (adjust?.AmountLc ?? 0m) + w.ReturnShare != 0m || main.AmountTc + (adjust?.AmountTc ?? 0m) + w.ReturnShare != 0m)
+                throw new MatchRejection(new CommandError("SYSTEM.CONFLICT", "P7", "", null, true));
+            decimal gc = -(main.AmountGc + (adjust?.AmountGc ?? 0m));
+            decimal? rc = main.AmountRc is null ? null : -(main.AmountRc + (adjust?.AmountRc ?? 0m));
+            returnItems.Add((w.ReturnJournal, w.ReturnItemLine, w.ReturnShare, w.ReturnShare, gc, rc));
+            items.Add((w.ReturnJournal, w.ReturnItemLine, main.CurrencyLc, w.ReturnShare, w.ReturnShare, gc, rc));
+        }
+        if (items.Sum(i => i.Tc) != 0m || items.Sum(i => i.Lc) != 0m || items.Sum(i => i.Gc) != 0m || items.Sum(i => i.Rc ?? 0m) != 0m)
+            throw new MatchRejection(Error("LIMIT.INVOICE_PRICE_DIFFERENCE_NOT_BUILT", "P4", "/lines", ("reason", "the GR/IR lines of the credit do not net to zero")));
         (long headSeq, byte[] headHash, _) = await CommandSupport.LockOrCreateHeadAsync(tx, tenantId, companyId, ClearingHash2.ChainType, "", LedgerHash2.Genesis(tenantId, companyId, ClearingHash2.ChainType, ""), ct);
         DateTime at = DateTime.UtcNow;
         at = new DateTime(at.Ticks - at.Ticks % 10, DateTimeKind.Utc);
-        var items = new List<PostedLine>();
-        foreach (CreditWork w in works)
-        {
-            items.Add(credit.Lines.Single(x => x.LineNo == w.Main));
-            items.Add(credit.Lines.Single(x => x.LineNo == w.Adjust!.Value));
-        }
-        if (items.Sum(i => i.AmountTc) != 0m || items.Sum(i => i.AmountLc) != 0m || items.Sum(i => i.AmountGc) != 0m || items.Sum(i => i.AmountRc ?? 0m) != 0m)
-            throw new MatchRejection(Error("LIMIT.INVOICE_PRICE_DIFFERENCE_NOT_BUILT", "P4", "/lines", ("reason", "the GR/IR lines of the credit do not net to zero")));
         long seq = headSeq + 1;
         string baseKey = ctx.IdempotencyKey.Length > 90 ? ctx.IdempotencyKey[..90] : ctx.IdempotencyKey;
         CommandContext cctx = ctx with { IdempotencyKey = $"{baseKey}#C{number}" };
@@ -363,22 +397,102 @@ public sealed partial class PurchaseInvoiceCommands
         };
         var itemRows = items.Select((i, k) => (IReadOnlyDictionary<string, object?>)new Dictionary<string, object?>
         {
-            ["tenant_id"] = tenantId, ["company_id"] = companyId, ["clearing_id"] = clearingId, ["item_no"] = k + 1, ["clearing_date"] = date, ["open_item_document_id"] = credit.DocumentId, ["open_item_line_no"] = i.LineNo,
-            ["currency_tc"] = i.CurrencyLc, ["cleared_amount_tc"] = i.AmountTc, ["cleared_amount_lc"] = i.AmountLc, ["cleared_amount_gc"] = i.AmountGc, ["cleared_amount_rc"] = i.AmountRc
+            ["tenant_id"] = tenantId, ["company_id"] = companyId, ["clearing_id"] = clearingId, ["item_no"] = k + 1, ["clearing_date"] = date, ["open_item_document_id"] = i.Doc, ["open_item_line_no"] = i.Line,
+            ["currency_tc"] = i.Currency, ["cleared_amount_tc"] = i.Tc, ["cleared_amount_lc"] = i.Lc, ["cleared_amount_gc"] = i.Gc, ["cleared_amount_rc"] = i.Rc
         }).ToList();
         byte[] rowHash = ClearingHash2.RowHash(tenantId, companyId, seq, headHash, body, ClearingHash2.ItemsDigest(itemRows), null);
         var synthetic = new PostClearingRequest(companyId, account, null, date, "AUTO_MATCH", matchingRef, null, []);
         await ClearingPoster.InsertClearingAsync(tx, tenantId, synthetic, cctx, clearingId, null, seq, credit.FiscalYear, credit.FiscalPeriod, at, headHash, rowHash, "CLEAR", null, CreditCommandName, ct);
         for (int k = 0; k < items.Count; k++)
+            await ClearingPoster.InsertItemAsync(tx, tenantId, synthetic, clearingId, k + 1, items[k].Doc, items[k].Line, items[k].Currency, items[k].Tc, items[k].Lc, items[k].Gc, items[k].Rc, ct);
+        foreach (var i in items.Where(x => x.Doc == credit.DocumentId))
+            await ClearingPoster.UpdateOpenItemAsync(tx, tenantId, companyId, i.Doc, i.Line, clearingId, "CLEARED", i.Tc, i.Lc, i.Gc, i.Rc, ct);
+        foreach (var r in returnItems.GroupBy(x => (x.Doc, x.Line)))
         {
-            PostedLine i = items[k];
-            await ClearingPoster.InsertItemAsync(tx, tenantId, synthetic, clearingId, k + 1, credit.DocumentId, i.LineNo, i.CurrencyLc, i.AmountTc, i.AmountLc, i.AmountGc, i.AmountRc, ct);
-            await ClearingPoster.UpdateOpenItemAsync(tx, tenantId, companyId, credit.DocumentId, i.LineNo, clearingId, "CLEARED", i.AmountTc, i.AmountLc, i.AmountGc, i.AmountRc, ct);
+            // the cleared amounts of the return's item grow by the shares, and it is cleared when the line is
+            decimal addTc = r.Sum(x => x.Tc), addLc = r.Sum(x => x.Lc), addGc = r.Sum(x => x.Gc); decimal? addRc = r.Any(x => x.Rc is not null) ? r.Sum(x => x.Rc ?? 0m) : null;
+            await using var cmd = tx.Command(
+                "select l.amount_tc, l.amount_lc, oi.cleared_amount_tc, oi.cleared_amount_lc, oi.cleared_amount_gc, oi.cleared_amount_rc from core.journal_line_open_item oi join core.journal_line l on l.tenant_id = oi.tenant_id " +
+                "and l.company_id = oi.company_id and l.document_id = oi.document_id and l.line_no = oi.line_no where oi.tenant_id = @t and oi.company_id = @c and oi.document_id = @d and oi.line_no = @n");
+            cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("c", companyId); cmd.Parameters.AddWithValue("d", r.Key.Doc); cmd.Parameters.AddWithValue("n", r.Key.Line);
+            decimal lineTc, lineLc, cTc, cLc, cGc; decimal? cRc;
+            await using (var rd = await cmd.ExecuteReaderAsync(ct))
+            {
+                await rd.ReadAsync(ct);
+                lineTc = rd.GetDecimal(0); lineLc = rd.GetDecimal(1); cTc = rd.GetDecimal(2); cLc = rd.GetDecimal(3); cGc = rd.GetDecimal(4); cRc = rd.IsDBNull(5) ? null : rd.GetDecimal(5);
+            }
+            decimal tc = cTc + addTc, lc = cLc + addLc;
+            await ClearingPoster.UpdateOpenItemAsync(tx, tenantId, companyId, r.Key.Doc, r.Key.Line, clearingId, tc == lineTc && lc == lineLc ? "CLEARED" : "PARTIAL", tc, lc, cGc + addGc, cRc is null && addRc is null ? null : (cRc ?? 0m) + (addRc ?? 0m), ct);
         }
         await ClearingPoster.MoveHeadAsync(tx, tenantId, companyId, ClearingHash2.ChainType, "", seq, rowHash, ClearingHash2.Version, ct);
         await CommandSupport.WriteOutboxAsync(tx, tenantId, companyId, ctx, "clearing.posted", "CLEARING", $"{companyId:D}/{clearingId:D}", "POSTED", at, isAudit: true,
             JsonSerializer.Serialize(new Dictionary<string, object?> { ["chain_type"] = "CLEARING", ["scope"] = "", ["chain_seq"] = seq, ["row_hash"] = Canonical.FormatHex32(rowHash) }),
             JsonSerializer.Serialize(new Dictionary<string, object?> { ["clearing_id"] = clearingId, ["partner_id"] = null, ["account_id"] = account, ["items"] = items.Count }), ct);
+    }
+
+    /// <summary>
+    /// The facts of a return credit line (7.3): the return line (posted, of the order line of the invoice line), the caps (the returned quantity of the return line and the invoiced quantity of the invoice
+    /// line, each less what is credited, ORDER.CREDIT_EXCEEDS_INVOICED with the cap source), the share of the GR/IR debit that the return left (the share that credits the last of the returned quantity takes
+    /// the rest), the difference between the credit and that share and its split into the earlier price difference parts of the invoice line (on hand and consumed, in the proportion in which that line posted
+    /// them), and where the part on hand goes (the warehouse and location of the return).
+    /// </summary>
+    private static async Task<CommandError?> PlanReturnCreditAsync(
+        TenantTransaction tx, Guid tenantId, Guid companyId, Guid invoiceId, CreditWork w, string path, Dictionary<(Guid, int), decimal> runningReturn, Dictionary<int, decimal> runningQuantity,
+        Dictionary<Guid, (decimal Qty, decimal Value)> costRead, int lcScale, CancellationToken ct)
+    {
+        PurchaseCreditLineInput l = w.Input;
+        Guid returnId = l.ReturnId!.Value; int returnLine = l.ReturnLineNo!.Value; decimal q = l.Quantity!.Value;
+        decimal returnedQuantity; Guid orderId; int orderLine; Guid? warehouse, location, stockDocument; int? stockLine;
+        await using (var cmd = tx.Command(
+            "select x.base_quantity, x.purchase_order_id, x.purchase_order_line_no, x.warehouse_id, x.location_id, h.stock_document_id, x.stock_document_line_no from core.purchase_return_line x join core.purchase_return h " +
+            "on h.tenant_id = x.tenant_id and h.company_id = x.company_id and h.return_id = x.return_id where x.tenant_id = @t and x.company_id = @c and x.return_id = @r and x.line_no = @n and h.status = 'posted' and h.reversal_of_return_id is null"))
+        {
+            cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("c", companyId); cmd.Parameters.AddWithValue("r", returnId); cmd.Parameters.AddWithValue("n", returnLine);
+            await using var rd = await cmd.ExecuteReaderAsync(ct);
+            if (!await rd.ReadAsync(ct)) return Error("CONFIG.INVALID_REFERENCE", "P2", path + "/return_id", ("return_id", returnId), ("line_no", returnLine));
+            returnedQuantity = rd.GetDecimal(0); orderId = rd.GetGuid(1); orderLine = rd.GetInt32(2); warehouse = rd.IsDBNull(3) ? null : rd.GetGuid(3); location = rd.IsDBNull(4) ? null : rd.GetGuid(4);
+            stockDocument = rd.IsDBNull(5) ? null : rd.GetGuid(5); stockLine = rd.IsDBNull(6) ? null : rd.GetInt32(6);
+        }
+        if (orderId != w.Row.OrderId || orderLine != w.Row.OrderLineNo || stockDocument is null || stockLine is null || warehouse is null)
+            return Error("CONFIG.INVALID_REFERENCE", "P2", path + "/return_id", ("reason", "the return line is of the order line of the invoice line"));
+        // what is credited of the return line and of the invoice line, in quantity (an amount credit has none, the rows of a reversed credit note give it back)
+        decimal creditedOfReturn, creditedOfInvoice;
+        await using (var cmd = tx.Command("select coalesce(sum(base_quantity), 0) from core.purchase_invoice_line where tenant_id = @t and company_id = @c and return_id = @r and return_line_no = @n"))
+        {
+            cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("c", companyId); cmd.Parameters.AddWithValue("r", returnId); cmd.Parameters.AddWithValue("n", returnLine);
+            creditedOfReturn = -(decimal)(await cmd.ExecuteScalarAsync(ct))!;
+        }
+        await using (var cmd = tx.Command(
+            "select coalesce(sum(l.base_quantity), 0) from core.purchase_invoice_line l join core.purchase_invoice h on h.tenant_id = l.tenant_id and h.company_id = l.company_id and h.purchase_invoice_id = l.purchase_invoice_id " +
+            "left join core.purchase_invoice o on o.tenant_id = h.tenant_id and o.company_id = h.company_id and o.purchase_invoice_id = h.reversal_of_purchase_invoice_id " +
+            "where l.tenant_id = @t and l.company_id = @c and (h.credits_invoice_id = @i or o.credits_invoice_id = @i) and l.credits_invoice_line_no = @n"))
+        {
+            cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("c", companyId); cmd.Parameters.AddWithValue("i", invoiceId); cmd.Parameters.AddWithValue("n", l.InvoiceLineNo);
+            creditedOfInvoice = -(decimal)(await cmd.ExecuteScalarAsync(ct))!;
+        }
+        decimal runningOfReturn = runningReturn.GetValueOrDefault((returnId, returnLine)), runningOfInvoice = runningQuantity.GetValueOrDefault(l.InvoiceLineNo);
+        decimal capReturn = returnedQuantity - creditedOfReturn - runningOfReturn, capInvoice = w.Row.BaseQuantity - creditedOfInvoice - runningOfInvoice;
+        if (q > capReturn) return Error("ORDER.CREDIT_EXCEEDS_INVOICED", "P4", path + "/quantity", ("quantity", q), ("cap", Math.Max(0m, capReturn)), ("cap_source", "RETURN_LINE"));
+        if (q > capInvoice) return Error("ORDER.CREDIT_EXCEEDS_INVOICED", "P4", path + "/quantity", ("quantity", q), ("cap", Math.Max(0m, capInvoice)), ("cap_source", "INVOICE_LINE"));
+        // the debit item of the return and the share that this credit clears
+        Guid journal = await StockJournalAsync(tx, tenantId, companyId, stockDocument.Value, ct);
+        int? itemLine = await FindGrIrItemAsync(tx, tenantId, companyId, new ReceiptLine(Guid.Empty, 0, 0m, null, stockDocument, stockLine, default), journal, ct);
+        Residual? residual = itemLine is null ? null : await ReadResidualAsync(tx, tenantId, companyId, journal, itemLine.Value, w.Line.ItemGroup, w.Line.Warehouse, w.Line.ItemId, false, ct);
+        if (residual is null || residual.Account != w.Account) return Error("ORDER.GRIR_ITEM_INVALID", "P4", path + "/return_id", ("reason", "the GR/IR debit of the return is not open"));
+        var (_, lineLc, _, _) = await ReadLineAmountsAsync(tx, tenantId, companyId, journal, itemLine!.Value, ct);
+        bool completes = creditedOfReturn + runningOfReturn + q == returnedQuantity;
+        decimal share = completes ? residual.Lc : Math.Min(residual.Lc, Math.Round(lineLc * q / returnedQuantity, lcScale, MidpointRounding.AwayFromZero));
+        runningReturn[(returnId, returnLine)] = runningOfReturn + q;
+        runningQuantity[l.InvoiceLineNo] = runningOfInvoice + q;
+        w.Quantity = q; w.ReturnJournal = journal; w.ReturnItemLine = itemLine.Value; w.ReturnShare = share;
+        // the difference between the credit and the share is the earlier price difference of those goods given back, split as the invoice line posted it
+        decimal e = l.CreditAmountNet - share;
+        w.AdjustAmount = e;
+        decimal onHand = w.Row.Diff != 0m ? Math.Round(e * w.Row.OnHandPart / w.Row.Diff, lcScale, MidpointRounding.AwayFromZero) : 0m;
+        w.OnHand = onHand; w.Consumed = e - onHand;
+        if (!costRead.ContainsKey(w.Line.ItemId)) costRead[w.Line.ItemId] = await CostBalanceAsync(tx, tenantId, companyId, w.Line.ItemId, ct);
+        w.Warehouse = warehouse; w.Location = location;
+        return null;
     }
 
     /// <summary>Where the stock of a receipt line is: the warehouse and location of its movement.</summary>
@@ -397,8 +511,11 @@ public sealed partial class PurchaseInvoiceCommands
     {
         await using var cmd = t.Command(
             "insert into core.purchase_invoice_line (tenant_id, company_id, purchase_invoice_id, line_no, line_kind, purchase_order_id, purchase_order_line_no, base_quantity, unit_price, net_amount, tax_amount, " +
-            "order_unit_price, match_mode_used, tolerance_used, price_difference_lc, on_hand_part_lc, consumed_part_lc, gr_ir_clearing_id, tax_code_id, tax_code_version_id, tax_date, journal_line_no, credits_invoice_line_no) " +
-            "values (@t, @c, @id, @n, 'MATCHED', @o, @ol, 0, @up, @net, @tax, @oup, @mm, @tol, @pd, @oh, @co, @gc, @tc, @tv, @td, @jl, @cl)");
+            "order_unit_price, match_mode_used, tolerance_used, price_difference_lc, on_hand_part_lc, consumed_part_lc, gr_ir_clearing_id, tax_code_id, tax_code_version_id, tax_date, journal_line_no, credits_invoice_line_no, return_id, return_line_no) " +
+            "values (@t, @c, @id, @n, 'MATCHED', @o, @ol, @bq, @up, @net, @tax, @oup, @mm, @tol, @pd, @oh, @co, @gc, @tc, @tv, @td, @jl, @cl, @rid, @rln)");
+        cmd.Parameters.AddWithValue("bq", row["base_quantity"]!);
+        cmd.Parameters.Add(new NpgsqlParameter("rid", NpgsqlDbType.Uuid) { Value = row["return_id"] ?? DBNull.Value });
+        cmd.Parameters.Add(new NpgsqlParameter("rln", NpgsqlDbType.Integer) { Value = row["return_line_no"] ?? DBNull.Value });
         cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("c", companyId); cmd.Parameters.AddWithValue("id", creditId); cmd.Parameters.AddWithValue("n", row["line_no"]!);
         cmd.Parameters.Add(new NpgsqlParameter("o", NpgsqlDbType.Uuid) { Value = row["purchase_order_id"] ?? DBNull.Value }); cmd.Parameters.Add(new NpgsqlParameter("ol", NpgsqlDbType.Integer) { Value = row["purchase_order_line_no"] ?? DBNull.Value }); cmd.Parameters.AddWithValue("up", row["unit_price"]!);
         cmd.Parameters.AddWithValue("net", row["net_amount"]!); cmd.Parameters.AddWithValue("tax", row["tax_amount"]!); cmd.Parameters.AddWithValue("pd", row["price_difference_lc"]!);

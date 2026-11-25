@@ -99,9 +99,8 @@ public sealed partial class ReturnCommands
         }
 
         // a return that a credit note that is not reversed credits is reversed after the credit note (11, 5.6)
-        if (kind.Sales)
         {
-            await using var cmd = tx.Command("select exists (select 1 from core.sales_invoice_line where tenant_id = @t and company_id = @c and return_id = @r group by return_line_no having sum(base_quantity) <> 0)");
+            await using var cmd = tx.Command($"select exists (select 1 from core.{(kind.Sales ? "sales_invoice_line" : "purchase_invoice_line")} where tenant_id = @t and company_id = @c and return_id = @r group by return_line_no having sum(base_quantity) <> 0)");
             cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("c", companyId); cmd.Parameters.AddWithValue("r", originalId);
             if ((await cmd.ExecuteScalarAsync(ct)) is true) return Reject(Error("ORDER.RETURN_CREDITED", "P6", "/return_id", ("reason", "the credit note is reversed first")));
         }

@@ -805,6 +805,17 @@ For the resources `gl-accounts`, `business-partners` (with PII, company relation
 
 These deltas are applied in 02 and 06 with this spec.
 
+### 13.2ao Return credit of a purchase credit note (F-IMPL-70, 2026-11-25)
+
+PROPOSED, written down so that spec and code agree. It builds on 11, 7.3 and 13.2ah to 13.2al.
+
+1. **Built.** `purchase-credit-notes:post` with `credit_kind` RETURN. A line names `invoice_line_no`, `return_id`, `return_line_no`, `quantity` (base units), `credit_amount_net` and `tax_amount`.
+2. **Caps.** The returned quantity of the return line and the invoiced quantity of the invoice line, each less what is credited (ORDER.CREDIT_EXCEEDS_INVOICED, cap_source RETURN_LINE or INVOICE_LINE); the net amount of the invoice line less what is credited.
+3. **Document.** Cr GR/IR with the tax facts; the GR/IR debit of the return is cleared by its share of the credited quantity; the difference between the credit and that share is given back on a second GR/IR line and credited to INVENTORY and COGS as the invoice line posted its own price difference (on hand and consumed); the part on hand is a COST_ADJUST at the warehouse of the return.
+4. **Clearing.** One AUTO_MATCH clearing per GR/IR account holds the credit lines and the share of the return; the item of the return is PARTIAL until all its quantity is credited.
+5. **Reversal.** `purchase-credit-notes:reverse` resets the clearing and mirrors the rows with the return line and the positive quantity; `purchase-returns:reverse` is refused with ORDER.RETURN_CREDITED while a credit note credits the return.
+6. **Not built.** A credit against a receipt without an order, a credit across several invoices.
+
 ### 13.2an Charges of a supplier invoice (F-IMPL-69, 2026-11-25)
 
 PROPOSED, written down so that spec and code agree. It builds on 11, 7.2 and 13.2ad.
