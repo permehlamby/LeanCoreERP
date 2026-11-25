@@ -1150,4 +1150,92 @@ public class FulfilmentTests
         Assert.Contains(r.Value.Breaks, b => b is { Kind: "digest_mismatch", Code: "STOCK.MOVEMENT_DIGEST_MISMATCH", ChainSeq: 2 });
         Assert.Contains(r.Value.Breaks, b => b.Code == "STOCK.COST_KEY_MISMATCH");   // the row hash binds the stored digest, so it is the digest that shows the change
     }
+
+    private static Task<CommandResult<PurchaseCreditNoteResult>> PostCredit(S s, string key, string number, Guid invoice, decimal gross, params PurchaseCreditLineInput[] lines) =>
+        new PurchaseInvoiceCommands(s.T.App).PostCreditNoteAsync(s.T.TenantId, Ctx(s, key, "purchase.invoice"), new(s.T.CompanyId, invoice, "AMOUNT", number, new DateOnly(2026, 3, 25), gross, "PRICE", lines));
+
+    private static Task<long> OpenItemsOfAsync(S s, Guid document, Guid account, string status) =>
+        s.T.ScalarAsync<long>($"select count(*) from core.journal_line_open_item oi join core.journal_line l using (tenant_id, company_id, document_id, line_no) where oi.tenant_id = @t and oi.document_id = '{document}' and l.account_id = '{account}' and oi.clearing_status = '{status}'");
+
+    [Fact]
+    public async Task AnAmountCreditNoteCorrectsThePriceOfAStockLineAndTheCostOfTheStockOnHand()
+    {
+        var s = await SetupAsync();
+        var t = s.T;
+        var pur = await PurchaseSetupAsync(s);
+        var po = await DomesticPurchaseOrderAsync(s, "po", 100, 10);
+        await ReceiveAsync(s, "r1", po, 100);
+        var inv = (await PostPurchaseInvoice(s, "i1", "SI-1", 825, new PurchaseInvoiceLineInput("L1", po.OrderId, 1, 60, 11, 660, pur.Code, 165))).Value!;
+        Assert.Equal(1060m, await BalanceAsync(s, s.Inventory));
+
+        // the supplier corrects 66 of the 660: tax 16.5, all on hand because 100 are in stock
+        var r = await PostCredit(s, "c1", "CN-1", inv.PurchaseInvoiceId, 82.5m, new PurchaseCreditLineInput("C1", 1, 66, 16.5m));
+        Assert.True(r.Status == CommandStatus.Ok, Describe(r));
+        var m = r.Value!;
+        Assert.Equal((66m, 16.5m, 82.5m, "AMOUNT"), (m.NetAmount, m.TaxAmount, m.GrossAmount, m.CreditKind));
+        Assert.Equal((0m, -66m, 0m, -16.5m, 82.5m), (await SumOfAsync(s, m.JournalDocumentId, s.GrIr), await SumOfAsync(s, m.JournalDocumentId, s.Inventory), await SumOfAsync(s, m.JournalDocumentId, s.Cogs),
+            await SumOfAsync(s, m.JournalDocumentId, pur.InputVat), await SumOfAsync(s, m.JournalDocumentId, pur.Payable)));
+        Assert.Equal(("AP_CREDIT", "ORDER", "purchase-credit-notes:post"), (
+            await t.ScalarAsync<string>($"select document_type from core.journal_document where tenant_id = @t and document_id = '{m.JournalDocumentId}'"),
+            await t.ScalarAsync<string>($"select origin from core.journal_document where tenant_id = @t and document_id = '{m.JournalDocumentId}'"),
+            await t.ScalarAsync<string>($"select command_name from core.journal_document where tenant_id = @t and document_id = '{m.JournalDocumentId}'")));
+        Assert.NotNull(m.StockDocumentId);
+        Assert.Equal((m.JournalDocumentId, "COST_ADJUST", -66m, 994m, 994m), (
+            await t.ScalarAsync<Guid>($"select journal_document_id from core.stock_document where tenant_id = @t and stock_document_id = '{m.StockDocumentId}'"),
+            await t.ScalarAsync<string>($"select movement_type from core.stock_movement where tenant_id = @t and stock_document_id = '{m.StockDocumentId}'"),
+            await t.ScalarAsync<decimal>($"select value_lc from core.stock_movement where tenant_id = @t and stock_document_id = '{m.StockDocumentId}'"),
+            await t.ScalarAsync<decimal>($"select cost_value_after_lc from core.stock_movement where tenant_id = @t and stock_document_id = '{m.StockDocumentId}'"),
+            await BalanceAsync(s, s.Inventory)));
+        // the two GR/IR lines of the credit are cleared against each other, the payable of the credit is open for the caller to clear
+        Assert.Equal((2L, 0m), (await OpenItemsOfAsync(s, m.JournalDocumentId, s.GrIr, "CLEARED"), await BalanceAsync(s, s.GrIr) + 400m));
+
+        // the cap is the net amount of the invoice line less what is credited: 660 - 66 = 594
+        Assert.Equal(["ORDER.CREDIT_EXCEEDS_INVOICED"], Codes(await PostCredit(s, "c2", "CN-2", inv.PurchaseInvoiceId, 744m, new PurchaseCreditLineInput("C1", 1, 595, 149m))));
+        Assert.Equal(["ORDER.DUPLICATE_SUPPLIER_INVOICE"], Codes(await PostCredit(s, "c3", "CN-1", inv.PurchaseInvoiceId, 12.5m, new PurchaseCreditLineInput("C1", 1, 10, 2.5m))));
+        Assert.Equal(["MATCH.GROSS_MISMATCH"], Codes(await PostCredit(s, "c4", "CN-4", inv.PurchaseInvoiceId, 13m, new PurchaseCreditLineInput("C1", 1, 10, 2.5m))));
+        Assert.Equal(["CONFIG.INVALID_REFERENCE"], Codes(await PostCredit(s, "c5", "CN-5", inv.PurchaseInvoiceId, 12.5m, new PurchaseCreditLineInput("C1", 9, 10, 2.5m))));
+        Assert.Equal(["LIMIT.CREDIT_RETURN_NOT_BUILT"], Codes(await new PurchaseInvoiceCommands(t.App).PostCreditNoteAsync(t.TenantId, Ctx(s, "c6", "purchase.invoice"),
+            new(t.CompanyId, inv.PurchaseInvoiceId, "RETURN", "CN-6", new DateOnly(2026, 3, 25), 12.5m, "PRICE", [new PurchaseCreditLineInput("C1", 1, 10, 2.5m)]))));
+        Assert.Equal(["AUTH.PERMISSION_MISSING"], Codes(await new PurchaseInvoiceCommands(t.App).PostCreditNoteAsync(t.TenantId, Ctx(s, "c7", "sales.invoice"),
+            new(t.CompanyId, inv.PurchaseInvoiceId, "AMOUNT", "CN-7", new DateOnly(2026, 3, 25), 12.5m, "PRICE", [new PurchaseCreditLineInput("C1", 1, 10, 2.5m)]))));
+        // the rest, 594, can be credited, and the invoice cannot be reversed while a credit note stands
+        Assert.Equal(CommandStatus.Ok, (await PostCredit(s, "c8", "CN-8", inv.PurchaseInvoiceId, 742.5m, new PurchaseCreditLineInput("C1", 1, 594, 148.5m))).Status);
+        Assert.Equal(["ORDER.INVOICE_HAS_CREDIT_NOTES"], Codes(await ReversePurchaseInvoice(s, "rev", inv.PurchaseInvoiceId)));
+        foreach (string chain in new[] { "LEDGER", "CLEARING", "STOCK" })
+        {
+            var verify = await new ChainVerification(t.App).VerifyAsync(t.TenantId, t.Context("v" + chain, "chain.verify"), new(t.CompanyId, chain));
+            Assert.True(verify.Status == CommandStatus.Ok && verify.Value!.Ok, chain + " " + Describe(verify));
+        }
+    }
+
+    [Fact]
+    public async Task AnAmountCreditNoteOfAServiceCreditsTheExpenseAndOfSoldStockTheCostOfGoodsSold()
+    {
+        var s = await SetupAsync();
+        var t = s.T;
+        var pur = await PurchaseSetupAsync(s);
+        var svc = await DomesticPurchaseOrderAsync(s, "pos", 10, 500, s.Service, "HUR");
+        var si = (await PostPurchaseInvoice(s, "i1", "SI-1", 3125, new PurchaseInvoiceLineInput("L1", svc.OrderId, 1, 5, 500, 2500, pur.Code, 625))).Value!;
+        var r = await PostCredit(s, "c1", "CN-1", si.PurchaseInvoiceId, 125m, new PurchaseCreditLineInput("C1", 1, 100, 25m));
+        Assert.True(r.Status == CommandStatus.Ok, Describe(r));
+        Assert.Equal((-100m, -25m, 125m), (await SumOfAsync(s, r.Value!.JournalDocumentId, pur.Expense), await SumOfAsync(s, r.Value.JournalDocumentId, pur.InputVat), await SumOfAsync(s, r.Value.JournalDocumentId, pur.Payable)));
+        Assert.Null(r.Value.StockDocumentId);
+
+        // stock that is sold: the correction has nothing on hand to go to and is cost of goods sold
+        var po = await DomesticPurchaseOrderAsync(s, "po", 100, 10);
+        await ReceiveAsync(s, "r1", po, 100);
+        var inv = (await PostPurchaseInvoice(s, "i2", "SI-2", 825, new PurchaseInvoiceLineInput("L1", po.OrderId, 1, 60, 11, 660, pur.Code, 165))).Value!;
+        var so = await SalesOrderAsync(s, "so", GoodsLine(s, 100, 25));
+        Assert.Equal(CommandStatus.Ok, (await s.Cmds.PostDeliveryAsync(t.TenantId, Ctx(s, "d1", "sales.deliver"), new(t.CompanyId, new DateOnly(2026, 3, 13), [new("D1", so.OrderId, 1, 100, "C62")]))).Status);
+        var c = await PostCredit(s, "c2", "CN-2", inv.PurchaseInvoiceId, 75m, new PurchaseCreditLineInput("C1", 1, 60, 15m));
+        Assert.True(c.Status == CommandStatus.Ok, Describe(c));
+        Assert.Equal((0m, -60m, -15m, 75m), (await SumOfAsync(s, c.Value!.JournalDocumentId, s.Inventory), await SumOfAsync(s, c.Value.JournalDocumentId, s.Cogs),
+            await SumOfAsync(s, c.Value.JournalDocumentId, pur.InputVat), await SumOfAsync(s, c.Value.JournalDocumentId, pur.Payable)));
+        Assert.Null(c.Value.StockDocumentId);
+
+        // an invoice that is reversed cannot be credited
+        var third = (await PostPurchaseInvoice(s, "i3", "SI-3", 3125, new PurchaseInvoiceLineInput("L1", svc.OrderId, 1, 5, 500, 2500, pur.Code, 625))).Value!;
+        Assert.Equal(CommandStatus.Ok, (await ReversePurchaseInvoice(s, "rev", third.PurchaseInvoiceId)).Status);
+        Assert.Equal(["ORDER.INVOICE_REVERSED"], Codes(await PostCredit(s, "c3", "CN-3", third.PurchaseInvoiceId, 125m, new PurchaseCreditLineInput("C1", 1, 100, 25m))));
+    }
 }

@@ -19,9 +19,12 @@ public sealed partial class PurchaseInvoiceCommands
 {
     private const string StockSeriesKey = "STOCK_DOC_COST_ADJUSTMENT";
 
+    /// <summary>One COST_ADJUST line to post: the item, where its stock is, the on-hand part (signed) and the line reference of the invoice or credit line.</summary>
+    private sealed record AdjItem(Guid Item, Guid Warehouse, Guid? Location, decimal OnHand, string LineRef);
+
     private sealed record StockDraft(
         Guid StockId, Guid JournalId, long ChainSeq, byte[] Prev, byte[] RowHash, long SequenceNo, string Number, int FiscalYear, int PeriodNo, bool SoftOverride, Guid SeriesId, DateTime At,
-        byte[] LinkDigest, byte[] MovementDigest, List<Dictionary<string, object?>> Movements, string DocType = "STOCK_COST_ADJUSTMENT", string? ReasonCode = null, Guid? ReversalOf = null);
+        byte[] LinkDigest, byte[] MovementDigest, List<Dictionary<string, object?>> Movements, string DocType = "STOCK_COST_ADJUSTMENT", string? ReasonCode = null, Guid? ReversalOf = null, string Command = "purchase-invoices:post");
 
     private static async Task<(decimal Qty, decimal Value)> CostBalanceAsync(TenantTransaction tx, Guid tenantId, Guid companyId, Guid itemId, CancellationToken ct)
     {
@@ -57,8 +60,8 @@ public sealed partial class PurchaseInvoiceCommands
     /// row hash of the stock document. Nothing is written but the number counter.
     /// </summary>
     private static async Task<StockDraft> PrepareStockAsync(
-        TenantTransaction tx, Guid tenantId, Guid companyId, CommandContext ctx, Guid stockId, Guid journalId, DateOnly invoiceDate, DateOnly postingDate, string currency, List<Work> work,
-        Dictionary<Guid, (decimal Qty, decimal Value)> costRead, byte[] linkDigest, CancellationToken ct)
+        TenantTransaction tx, Guid tenantId, Guid companyId, CommandContext ctx, Guid stockId, Guid journalId, DateOnly invoiceDate, DateOnly postingDate, string currency, List<AdjItem> adjustments,
+        Dictionary<Guid, (decimal Qty, decimal Value)> costRead, byte[] linkDigest, CancellationToken ct, string commandName = CommandName)
     {
         var recheck = await JournalDocumentPoster.CheckPeriodAsync(tx, tenantId, companyId, postingDate, ctx, true, ct);
         if (recheck.Errors.Count > 0) throw new MatchRejection(recheck.Errors[0]);
@@ -73,6 +76,8 @@ public sealed partial class PurchaseInvoiceCommands
             sequenceNo = Convert.ToInt64(await cmd.ExecuteScalarAsync(ct), CultureInfo.InvariantCulture);
         }
         string number = Core.Posting.PostingRules.FormatNumber(series.Prefix, series.IncludeFiscalYear, series.Separator, series.NumberLength, fiscalYear, sequenceNo);
+        // the lock order of 11, 9: the CLEARING head before the STOCK head, as the reversal takes them
+        await CommandSupport.LockOrCreateHeadAsync(tx, tenantId, companyId, ClearingHash2.ChainType, "", LedgerHash2.Genesis(tenantId, companyId, ClearingHash2.ChainType, ""), ct);
         (long headSeq, byte[] prev, _) = await CommandSupport.LockOrCreateHeadAsync(tx, tenantId, companyId, StockHash2.ChainType, "", LedgerHash2.Genesis(tenantId, companyId, StockHash2.ChainType, ""), ct);
 
         // the cost state under the lock must be the one the split was made from
@@ -88,27 +93,26 @@ public sealed partial class PurchaseInvoiceCommands
         at = new DateTime(at.Ticks - at.Ticks % 10, DateTimeKind.Utc);
         long chainSeq = headSeq + 1;
         var movements = new List<Dictionary<string, object?>>();
-        foreach (Work w in work.Where(x => x.Stock))
-            foreach (Link k in w.Links.Where(x => x.OnHand != 0m))
+        foreach (AdjItem k in adjustments)
             {
-                var (costQty, costValue) = cost[w.Line.ItemId];
+                var (costQty, costValue) = cost[k.Item];
                 costValue += k.OnHand;
-                cost[w.Line.ItemId] = (costQty, costValue);
-                decimal stockQty = await StockBalanceAsync(tx, tenantId, companyId, w.Line.ItemId, k.Warehouse!.Value, k.Location, ct);
+                cost[k.Item] = (costQty, costValue);
+                decimal stockQty = await StockBalanceAsync(tx, tenantId, companyId, k.Item, k.Warehouse, k.Location, ct);
                 string baseUnit;
                 await using (var cmd = tx.Command("select base_unit from core.item where tenant_id = @t and item_id = @i"))
                 {
-                    cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("i", w.Line.ItemId);
+                    cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("i", k.Item);
                     baseUnit = ((string)(await cmd.ExecuteScalarAsync(ct))!).Trim();
                 }
                 movements.Add(new Dictionary<string, object?>
                 {
                     ["tenant_id"] = tenantId, ["company_id"] = companyId, ["stock_document_id"] = stockId, ["line_no"] = movements.Count + 1, ["chain_seq"] = chainSeq, ["movement_type"] = "COST_ADJUST",
-                    ["cost_source"] = "INVOICE", ["valuation_ref_document_id"] = null, ["valuation_ref_line_no"] = null, ["posting_date"] = postingDate, ["item_id"] = w.Line.ItemId,
+                    ["cost_source"] = "INVOICE", ["valuation_ref_document_id"] = null, ["valuation_ref_line_no"] = null, ["posting_date"] = postingDate, ["item_id"] = k.Item,
                     ["warehouse_id"] = k.Warehouse, ["location_id"] = k.Location, ["tracking_id"] = null, ["stock_status"] = "AVAILABLE", ["quantity"] = 0m, ["unit_code"] = baseUnit, ["base_quantity"] = 0m,
                     ["value_lc"] = k.OnHand, ["unit_cost_lc"] = null, ["value_tc"] = k.OnHand, ["currency_tc"] = currency, ["cost_warehouse_id"] = null, ["cost_qty_after"] = costQty,
                     ["cost_value_after_lc"] = costValue, ["stock_qty_after"] = stockQty, ["lot_expired"] = false, ["count_ref"] = null, ["expected_book_quantity"] = null,
-                    ["source_line_ref"] = w.Input.LineRef, ["reversal_of_line_no"] = null
+                    ["source_line_ref"] = k.LineRef, ["reversal_of_line_no"] = null
                 });
             }
         byte[] movementDigest = StockHash2.MovementDigest(movements.Select(m => (IReadOnlyDictionary<string, object?>)m).ToList());
@@ -117,11 +121,11 @@ public sealed partial class PurchaseInvoiceCommands
             ["stock_document_id"] = stockId, ["document_type"] = "STOCK_COST_ADJUSTMENT", ["number_series_id"] = series.SeriesId, ["fiscal_year"] = fiscalYear, ["sequence_no"] = sequenceNo,
             ["document_number"] = number, ["fiscal_period"] = periodNo, ["document_date"] = invoiceDate, ["posting_date"] = postingDate, ["posted_at"] = at, ["reason_code"] = null,
             ["reversal_of_stock_document_id"] = null, ["journal_document_id"] = journalId, ["soft_close_override"] = recheck.SoftCloseOverride, ["currency_tc"] = currency,
-            ["source_system"] = ctx.SourceSystem, ["source_document_ref"] = null, ["idempotency_key"] = ctx.IdempotencyKey, ["command_name"] = CommandName, ["posted_by"] = ctx.Actor,
+            ["source_system"] = ctx.SourceSystem, ["source_document_ref"] = null, ["idempotency_key"] = ctx.IdempotencyKey, ["command_name"] = commandName, ["posted_by"] = ctx.Actor,
             ["correlation_id"] = ctx.CorrelationId, ["movement_count"] = movements.Count, ["detail_digest"] = linkDigest, ["movement_digest"] = movementDigest, ["hash_version"] = StockHash2.Version
         };
         byte[] rowHash = StockHash2.RowHash(tenantId, companyId, chainSeq, prev, body);
-        return new StockDraft(stockId, journalId, chainSeq, prev, rowHash, sequenceNo, number, fiscalYear, periodNo, recheck.SoftCloseOverride, series.SeriesId, at, linkDigest, movementDigest, movements);
+        return new StockDraft(stockId, journalId, chainSeq, prev, rowHash, sequenceNo, number, fiscalYear, periodNo, recheck.SoftCloseOverride, series.SeriesId, at, linkDigest, movementDigest, movements, Command: commandName);
     }
 
     /// <summary>The journal document binds the digest of the link records and the row hash of the stock document (a digest of digests).</summary>
@@ -141,7 +145,7 @@ public sealed partial class PurchaseInvoiceCommands
             cmd.Parameters.AddWithValue("fy", d.FiscalYear); cmd.Parameters.AddWithValue("seq", d.SequenceNo); cmd.Parameters.AddWithValue("num", d.Number); cmd.Parameters.AddWithValue("fp", d.PeriodNo);
             cmd.Parameters.AddWithValue("dd", invoiceDate); cmd.Parameters.AddWithValue("pd", postingDate); cmd.Parameters.Add(new NpgsqlParameter("at", NpgsqlDbType.TimestampTz) { Value = d.At });
             cmd.Parameters.AddWithValue("j", d.JournalId); cmd.Parameters.AddWithValue("soft", d.SoftOverride); cmd.Parameters.AddWithValue("tc", currency); cmd.Parameters.AddWithValue("src", ctx.SourceSystem);
-            cmd.Parameters.AddWithValue("key", ctx.IdempotencyKey); cmd.Parameters.AddWithValue("cmdname", d.DocType == "STOCK_REVERSAL" ? ReverseCommandName : CommandName); cmd.Parameters.AddWithValue("by", ctx.Actor); cmd.Parameters.AddWithValue("corr", ctx.CorrelationId);
+            cmd.Parameters.AddWithValue("key", ctx.IdempotencyKey); cmd.Parameters.AddWithValue("cmdname", d.Command); cmd.Parameters.AddWithValue("by", ctx.Actor); cmd.Parameters.AddWithValue("corr", ctx.CorrelationId);
             cmd.Parameters.AddWithValue("n", d.Movements.Count); cmd.Parameters.AddWithValue("det", d.LinkDigest); cmd.Parameters.AddWithValue("md", d.MovementDigest); cmd.Parameters.AddWithValue("cs", d.ChainSeq);
             cmd.Parameters.AddWithValue("prev", d.Prev); cmd.Parameters.AddWithValue("row", d.RowHash);
             await cmd.ExecuteNonQueryAsync(ct);

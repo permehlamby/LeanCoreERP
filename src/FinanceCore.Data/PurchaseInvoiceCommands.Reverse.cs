@@ -256,7 +256,7 @@ public sealed partial class PurchaseInvoiceCommands
         };
         byte[] rowHash = StockHash2.RowHash(tenantId, companyId, chainSeq, prev, body);
         return new StockDraft(stockId, journalId, chainSeq, prev, rowHash, sequenceNo, number, fiscalYear, periodNo, recheck.SoftCloseOverride, series.SeriesId, at, linkDigest, movementDigest, movements,
-            "STOCK_REVERSAL", reasonCode, originalStockId);
+            "STOCK_REVERSAL", reasonCode, originalStockId, ReverseCommandName);
     }
 
     /// <summary>

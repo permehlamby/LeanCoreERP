@@ -369,7 +369,8 @@ public sealed partial class PurchaseInvoiceCommands(NpgsqlDataSource source)
         {
             byte[] link = DigestOf(facts);
             if (stockId is null) return link;
-            stockDraft = await PrepareStockAsync(tx, tenantId, companyId, ctx, stockId.Value, journalId, req.InvoiceDate, postingDate, currency, work, costRead, link, ct);
+            var adjustments = work.Where(x => x.Stock).SelectMany(w => w.Links.Where(k => k.OnHand != 0m).Select(k => new AdjItem(w.Line.ItemId, k.Warehouse!.Value, k.Location, k.OnHand, w.Input.LineRef))).ToList();
+            stockDraft = await PrepareStockAsync(tx, tenantId, companyId, ctx, stockId.Value, journalId, req.InvoiceDate, postingDate, currency, adjustments, costRead, link, ct);
             return CombinedDigest(link, stockDraft.RowHash);
         }
 

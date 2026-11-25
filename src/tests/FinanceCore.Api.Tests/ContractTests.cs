@@ -95,7 +95,8 @@ public class ContractTests
         Assert.Equal("sales.invoice", catalog.Find("sales-credit-notes:reverse")?.Permission);
         Assert.Equal("purchase.invoice", catalog.Find("purchase-invoices:post")?.Permission);
         Assert.Equal("purchase.invoice", catalog.Find("purchase-invoices:reverse")?.Permission);
-        Assert.Equal(6, catalog.All.Count);
+        Assert.Equal("purchase.invoice", catalog.Find("purchase-credit-notes:post")?.Permission);
+        Assert.Equal(7, catalog.All.Count);
     }
 
     [Fact]

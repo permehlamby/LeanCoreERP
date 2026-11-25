@@ -74,3 +74,38 @@ public static class PurchaseInvoiceRules
 public sealed record ReversePurchaseInvoiceRequest(Guid CompanyId, Guid PurchaseInvoiceId, string ReasonCode, DateOnly? PostingDate = null);
 
 public sealed record ReversedPurchaseInvoice(Guid PurchaseInvoiceId, Guid ReversalInvoiceId, Guid JournalDocumentId, string DocumentNumber, string RowHash, Guid? StockReversalId);
+
+// ---- purchase-credit-notes:post (11, 7.3, permission purchase.invoice), first slice: the amount credit (a price correction or goodwill, no quantity) against the lines of one invoice.
+/// <summary>One credit line: the invoice line it credits (a link row of the invoice), the net amount and the supplier's tax for it; the tax code defaults to that of the invoice line.</summary>
+public sealed record PurchaseCreditLineInput(string LineRef, int InvoiceLineNo, decimal CreditAmountNet, decimal? TaxAmount, Guid? TaxCodeId = null);
+
+public sealed record PostPurchaseCreditNoteRequest(
+    Guid CompanyId, Guid PurchaseInvoiceId, string CreditKind, string SupplierCreditNoteNumber, DateOnly CreditDate, decimal GrossAmount, string ReasonCode, IReadOnlyList<PurchaseCreditLineInput> Lines,
+    DateOnly? PostingDate = null, DateOnly? DueDate = null, string? SourceDocumentRef = null);
+
+public sealed record PurchaseCreditLineResult(int LineNo, string LineRef, int CreditsInvoiceLineNo, decimal NetAmount, decimal TaxAmount, int JournalLineNo, decimal OnHandPart, decimal ConsumedPart);
+
+public sealed record PurchaseCreditNoteResult(
+    Guid CreditNoteId, Guid JournalDocumentId, string DocumentNumber, string CreditKind, decimal NetAmount, decimal TaxAmount, decimal GrossAmount, string RowHash,
+    IReadOnlyList<PurchaseCreditLineResult> Lines, Guid? StockDocumentId);
+
+public static class PurchaseCreditRules
+{
+    public static readonly string[] Kinds = ["RETURN", "AMOUNT"];
+
+    /// <summary>The L1 columns of a credit line: those of an invoice line and the credited invoice line and the return line (6.9).</summary>
+    public static readonly IReadOnlyList<FieldSpec> Line = [.. PurchaseInvoiceRules.Line, new("credits_invoice_line_no", FieldType.Int, true), new("return_id", FieldType.Id, true), new("return_line_no", FieldType.Int, true)];
+
+    public static byte[] Digest(IReadOnlyDictionary<string, object?> header, IReadOnlyList<IReadOnlyDictionary<string, object?>> linesInOrder)
+    {
+        using var buffer = new MemoryStream();
+        buffer.Write(Canonical.Block(Canonical.EncodeFields(PurchaseInvoiceRules.Header, header)));
+        foreach (var line in linesInOrder) buffer.Write(Canonical.Block(Canonical.EncodeFields(Line, line)));
+        return SHA256.HashData(buffer.ToArray());
+    }
+
+    public static byte[] Fingerprint(PostPurchaseCreditNoteRequest r) =>
+        MasterRules.Fingerprint("purchase-credit-notes:post", $"{r.CompanyId:D}|{r.PurchaseInvoiceId:D}|{r.CreditKind}|{r.SupplierCreditNoteNumber}|{r.CreditDate:yyyy-MM-dd}|{r.PostingDate:yyyy-MM-dd}|{r.DueDate:yyyy-MM-dd}|" +
+            $"{r.GrossAmount.ToString(CultureInfo.InvariantCulture)}|{r.ReasonCode}|{r.SourceDocumentRef}|" + string.Join("#", r.Lines.Select(l =>
+                string.Join("|", l.LineRef, l.InvoiceLineNo, l.CreditAmountNet.ToString(CultureInfo.InvariantCulture), l.TaxAmount?.ToString(CultureInfo.InvariantCulture) ?? "-", l.TaxCodeId?.ToString("D") ?? "-"))));
+}

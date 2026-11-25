@@ -805,6 +805,17 @@ For the resources `gl-accounts`, `business-partners` (with PII, company relation
 
 These deltas are applied in 02 and 06 with this spec.
 
+### 13.2ah Purchase credit notes, the amount credit (F-IMPL-62, 2026-11-23)
+
+PROPOSED, written down so that spec and code agree. It builds on 13.2ad to 13.2af and on 11, 7.3.
+
+1. **Built.** `purchase-credit-notes:post` (`purchase.invoice`), fields `purchase_invoice_id`, `credit_kind` (AMOUNT built, RETURN is LIMIT.CREDIT_RETURN_NOT_BUILT), the supplier's credit note number, the credit date, the control total, a reason code and lines `{line_ref, invoice_line_no, credit_amount_net, tax_amount, tax_code_id}`. The invoice must exist, be an invoice and not be reversed (ORDER.INVOICE_REVERSED).
+2. **Caps.** The net amount of a line is at most the net amount of the credited invoice line less what is credited (ORDER.CREDIT_EXCEEDS_INVOICED, cap_source INVOICE_LINE). The control total and the supplier's tax follow 7.2 (MATCH.GROSS_MISMATCH, TAX.AMOUNT_OUT_OF_TOLERANCE).
+3. **Document.** An AP_CREDIT with origin ORDER. A service or non-stock line credits PURCHASE_EXPENSE. A stock line credits GR/IR (the line with the tax facts), gives it back on a second GR/IR line and credits INVENTORY for the part on hand and COGS for the part consumed; the two GR/IR lines are cleared against each other. The part on hand is a COST_ADJUST movement of a STOCK_COST_ADJUSTMENT document whose derived journal is the credit's journal (13.2ae). The payable is debited as the balance, an open item that the caller clears against the invoice.
+4. **Link rows.** Negative net, tax and parts, quantity 0, `credits_invoice_line_no` the credited link row; the digest of the rows is bound by the journal document.
+5. **Order of reversal.** `purchase-invoices:reverse` is refused with ORDER.INVOICE_HAS_CREDIT_NOTES while a credit note stands.
+6. **Not built.** The return credit, `purchase-credit-notes:reverse`, a credit against several invoices, partial deduction, foreign currency.
+
 ### 13.2ag Verification of the STOCK chain (F-IMPL-61, 2026-11-23)
 
 PROPOSED, written down so that spec and code agree. `chains:verify` accepts `chain_type` STOCK (06, 7.4; 10, 4.1).
