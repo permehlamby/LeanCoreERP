@@ -805,6 +805,16 @@ For the resources `gl-accounts`, `business-partners` (with PII, company relation
 
 These deltas are applied in 02 and 06 with this spec.
 
+### 13.2an Charges of a supplier invoice (F-IMPL-69, 2026-11-25)
+
+PROPOSED, written down so that spec and code agree. It builds on 11, 7.2 and 13.2ad.
+
+1. **Built.** `purchase-invoices:post` takes `charges[]`: `{line_ref, description, net_amount, tax_code_id, tax_amount, treatment}`. EXPENSE goes to the account of the role PURCHASE_EXPENSE, LANDED_COST to the account of the role LANDED_COST_CLEARING (ORDER.ACCOUNT_DETERMINATION_MISSING without a rule). An invoice may have charges only.
+2. **Control total.** The net amounts and the tax of the lines and of the charges equal `gross_amount` within the tax tolerance (MATCH.GROSS_MISMATCH).
+3. **Link rows.** A charge has a row with `line_kind` CHARGE, `description`, `charge_treatment`, no order, no receipt, quantity 0 and the journal line. It changes no quantity of the match.
+4. **Reversal.** The mirror row has the opposite net and tax and keeps the kind and the treatment.
+5. **Not built.** The allocation of landed cost (`landed-costs:allocate`), the partial deduction check of a LANDED_COST charge.
+
 ### 13.2am Invoice before receipt, TWO_WAY stock lines (F-IMPL-68, 2026-11-25)
 
 PROPOSED, written down so that spec and code agree. It builds on 11, 7.1 and 7.2 and on 13.2ad to 13.2al.

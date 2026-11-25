@@ -75,7 +75,19 @@ public sealed partial class PurchaseInvoiceCommands(NpgsqlDataSource source)
         if (req.SupplierPartnerId == Guid.Empty) Invalid("/supplier_partner_id", "required");
         if (string.IsNullOrWhiteSpace(req.SupplierInvoiceNumber) || req.SupplierInvoiceNumber.Length > 100) Invalid("/supplier_invoice_number", "required, at most 100 characters");
         if (string.IsNullOrWhiteSpace(req.Currency) || req.Currency.Length != 3) Invalid("/currency", "a currency code");
-        if (req.Lines is null or { Count: 0 }) errors.Add(Error("SCHEMA.REQUIRED_FIELD_MISSING", "P1", "/lines"));
+        if (req.Lines is null) req = req with { Lines = [] };
+        if (req.Lines.Count == 0 && req.Charges is null or { Count: 0 }) errors.Add(Error("SCHEMA.REQUIRED_FIELD_MISSING", "P1", "/lines"));
+        for (int i = 0; i < (req.Charges?.Count ?? 0); i++)
+        {
+            PurchaseChargeInput c = req.Charges![i];
+            string p = $"/charges/{i}";
+            if (string.IsNullOrWhiteSpace(c.LineRef) || c.LineRef.Length > 90) Invalid(p + "/line_ref", "required, at most 90 characters");
+            else if (req.Lines.Any(x => x.LineRef == c.LineRef) || req.Charges.Take(i).Any(x => x.LineRef == c.LineRef)) errors.Add(Error("SCHEMA.DUPLICATE_LINE_REF", "P1", p + "/line_ref", ("line_ref", c.LineRef)));
+            if (string.IsNullOrWhiteSpace(c.Description) || c.Description.Length > 200) Invalid(p + "/description", "required, at most 200 characters");
+            if (c.NetAmount == 0m || Math.Round(c.NetAmount, 4) != c.NetAmount) Invalid(p + "/net_amount", "not 0, at most 4 fraction digits");
+            if (c.TaxAmount is null) errors.Add(Error("SCHEMA.REQUIRED_FIELD_MISSING", "P1", p + "/tax_amount"));
+            if (!PurchaseInvoiceRules.ChargeTreatments.Contains(c.Treatment)) Invalid(p + "/treatment", "EXPENSE or LANDED_COST");
+        }
         for (int i = 0; i < (req.Lines?.Count ?? 0); i++)
         {
             PurchaseInvoiceLineInput l = req.Lines![i];
@@ -182,7 +194,7 @@ public sealed partial class PurchaseInvoiceCommands(NpgsqlDataSource source)
             cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("c", companyId);
             if (await cmd.ExecuteScalarAsync(ct) is decimal tol) taxTolerance = tol;
         }
-        decimal declared = req.Lines.Sum(l => l.NetAmount + l.TaxAmount!.Value);
+        decimal declared = req.Lines.Sum(l => l.NetAmount + l.TaxAmount!.Value) + (req.Charges ?? []).Sum(c => c.NetAmount + c.TaxAmount!.Value);
         if (Math.Abs(declared - req.GrossAmount) > taxTolerance) return Reject(Error("MATCH.GROSS_MISMATCH", "P4", "/gross_amount", ("gross_amount", req.GrossAmount), ("lines_total", declared), ("tolerance", taxTolerance)));
         bool allowBeforeReceipt = false;
         await using (var cmd = tx.Command("select allow_invoice_before_receipt from core.company_order_setting_version where tenant_id = @t and company_id = @c and effective_from <= @d order by effective_from desc limit 1"))
@@ -360,6 +372,24 @@ public sealed partial class PurchaseInvoiceCommands(NpgsqlDataSource source)
                 lines.Add(new RequestLine(w.Input.LineRef + "#CG", cogs.AccountId, consumed));
             }
         }
+        // the charges of the invoice (7.2): freight, duty and fees without an order, to the expense account or to the landed cost clearing account, with the tax code and tax the supplier states
+        var chargeLines = new List<(PurchaseChargeInput Charge, int JournalLine)>();
+        string? supplierCountry = null;
+        if (req.Charges is { Count: > 0 })
+            await using (var cmd = tx.Command("select country_code from core.business_partner_pii where tenant_id = @t and partner_id = @p"))
+            {
+                cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("p", supplier);
+                supplierCountry = (await cmd.ExecuteScalarAsync(ct) as string)?.Trim();
+            }
+        foreach (PurchaseChargeInput c in req.Charges ?? [])
+        {
+            string chargeRole = c.Treatment == "LANDED_COST" ? "LANDED_COST_CLEARING" : "PURCHASE_EXPENSE";
+            var chargeAccount = await AccountDeterminationResolver.ResolveAsync(tx, tenantId, companyId, chargeRole, null, null, c.Treatment == "LANDED_COST" ? null : supplier, null, postingDate, ct);
+            if (chargeAccount is null) return Reject(Error("ORDER.ACCOUNT_DETERMINATION_MISSING", "P5", "/charges", ("role_code", chargeRole)));
+            lines.Add(new RequestLine(c.LineRef, chargeAccount.AccountId, c.NetAmount, LineText: c.Description, TaxDate: req.InvoiceDate, OriginCountry: supplierCountry ?? company.Country, DestinationCountry: company.Country,
+                TaxCodeId: c.TaxCodeId, TaxAmountTc: c.TaxAmount));
+            chargeLines.Add((c, lines.Count));
+        }
         const string ApRef = "AP";
         DateOnly? due = req.DueDate ?? (terms is null ? req.InvoiceDate : null);
         lines.Add(new RequestLine(ApRef, apAccount.AccountId, 0m, OpenItem: new OpenItemRequest(supplier, req.InvoiceDate, terms, due)));
@@ -373,7 +403,7 @@ public sealed partial class PurchaseInvoiceCommands(NpgsqlDataSource source)
         {
             ["purchase_invoice_id"] = invoiceId, ["invoice_kind"] = "INVOICE", ["supplier_partner_id"] = supplier, ["supplier_invoice_number"] = req.SupplierInvoiceNumber, ["invoice_date"] = req.InvoiceDate,
             ["due_date"] = req.DueDate, ["currency"] = currency, ["gross_amount"] = req.GrossAmount, ["stock_document_id"] = stockId, ["credits_invoice_id"] = null, ["credit_kind"] = null,
-            ["reversal_of_purchase_invoice_id"] = null, ["reason_code"] = null, ["line_count"] = work.Sum(w => w.Links.Count)
+            ["reversal_of_purchase_invoice_id"] = null, ["reason_code"] = null, ["line_count"] = work.Sum(w => w.Links.Count) + chargeLines.Count
         };
         byte[] DigestOf(JournalDocumentPoster.EmbeddedFacts facts)
         {
@@ -393,7 +423,19 @@ public sealed partial class PurchaseInvoiceCommands(NpgsqlDataSource source)
                         ["tax_code_version_id"] = tax?.VersionId, ["tax_date"] = tax?.TaxDate, ["journal_line_no"] = lineNos[w.Index].Main, ["line_ref"] = w.Input.LineRef
                     });
             }
-            return PurchaseInvoiceRules.Digest(headerDigest, linkRows.Select(r => (IReadOnlyDictionary<string, object?>)r.Where(kv => kv.Key != "line_ref").ToDictionary(kv => kv.Key, kv => kv.Value)).ToList());
+            foreach (var (c, jl) in chargeLines)
+            {
+                TaxLineSeed? tax = facts.Tax.Lines.FirstOrDefault(t => t.Bases.Any(b => b.Index == jl - 1));
+                Guid? code = tax?.CodeId ?? (facts.Tax.BaseCodes.TryGetValue(jl - 1, out Guid cc) ? cc : null);
+                linkRows.Add(new Dictionary<string, object?>
+                {
+                    ["line_no"] = linkRows.Count + 1, ["line_kind"] = "CHARGE", ["purchase_order_id"] = null, ["purchase_order_line_no"] = null, ["receipt_id"] = null, ["receipt_line_no"] = null, ["stock_document_id"] = null,
+                    ["stock_document_line_no"] = null, ["base_quantity"] = 0m, ["unit_price"] = 0m, ["net_amount"] = c.NetAmount, ["tax_amount"] = c.TaxAmount!.Value, ["order_unit_price"] = null, ["match_mode_used"] = null,
+                    ["tolerance_used"] = null, ["price_difference_lc"] = 0m, ["on_hand_part_lc"] = 0m, ["consumed_part_lc"] = 0m, ["dropship_part_lc"] = 0m, ["unreceived_gr_ir_lc"] = 0m, ["gr_ir_clearing_id"] = null,
+                    ["tax_code_id"] = code, ["tax_code_version_id"] = tax?.VersionId, ["tax_date"] = tax?.TaxDate, ["journal_line_no"] = jl, ["line_ref"] = c.LineRef, ["description"] = c.Description, ["charge_treatment"] = c.Treatment
+                });
+            }
+            return PurchaseInvoiceRules.Digest(headerDigest, linkRows.Select(r => (IReadOnlyDictionary<string, object?>)r.Where(kv => kv.Key is not ("line_ref" or "description" or "charge_treatment")).ToDictionary(kv => kv.Key, kv => kv.Value)).ToList());
         }
 
         // the digest the journal document binds: the link digest alone, or with the stock document of a cost adjustment, which is prepared here under the LEDGER lock of the poster
@@ -416,7 +458,7 @@ public sealed partial class PurchaseInvoiceCommands(NpgsqlDataSource source)
             await InsertHeaderAsync(t, tenantId, companyId, ctx, req, supplier, currency, invoiceId, posted.DocumentId, stockId, ct);
             // the clearing first: what the invoices took of a receipt line before this one is read from the link rows, which this invoice has not inserted yet
             if (clearingIds.Count > 0) await ClearGrIrAsync(t, tenantId, companyId, ctx, work, posted, clearingIds, invoiceId, postingDate, lineNos, ct);
-            foreach (var row in linkRows) await InsertLineAsync(t, tenantId, companyId, invoiceId, row, ct);
+            foreach (var row in linkRows) await (row["line_kind"] as string == "CHARGE" ? InsertChargeLineAsync(t, tenantId, companyId, invoiceId, row, ct) : InsertLineAsync(t, tenantId, companyId, invoiceId, row, ct));
             if (stockDraft is not null) await InsertStockAsync(t, tenantId, companyId, ctx, stockDraft, req.InvoiceDate, postingDate, currency, ct);
             logId = await CommandSupport.WriteLogAsync(t, tenantId, companyId, ctx, CommandName, fingerprint, "PURCHASE_INVOICE", invoiceId, ct);
             await CommandSupport.WriteOutboxAsync(t, tenantId, companyId, ctx, "invoice.posted", "PURCHASE_INVOICE", $"{companyId:D}/{invoiceId:D}", "POSTED", DateTime.UtcNow, isAudit: true,
@@ -428,9 +470,9 @@ public sealed partial class PurchaseInvoiceCommands(NpgsqlDataSource source)
         var postedResult = await _poster.PostCoreAsync(tx, tenantId, ctx, journal, fingerprint, embedding, ct);
         if (postedResult.Status != CommandStatus.Ok) return CommandResult<PurchaseInvoiceResult>.Rejected(postedResult.Errors.ToList());
         PostedDocument doc = postedResult.Value!;
-        var result = new PurchaseInvoiceResult(invoiceId, doc.DocumentId, doc.DocumentNumber, work.Sum(w => w.Input.NetAmount), taxTotal, gross, doc.RowHash,
+        var result = new PurchaseInvoiceResult(invoiceId, doc.DocumentId, doc.DocumentNumber, work.Sum(w => w.Input.NetAmount) + chargeLines.Sum(c => c.Charge.NetAmount), taxTotal, gross, doc.RowHash,
             linkRows.Select(r => new PurchaseInvoiceLineResult((int)r["line_no"]!, (string)r["line_ref"]!, (Guid?)r["purchase_order_id"] ?? Guid.Empty, (int?)r["purchase_order_line_no"] ?? 0, (Guid?)r["receipt_id"], (int?)r["receipt_line_no"],
-                (decimal)r["base_quantity"]!, (decimal)r["net_amount"]!, (decimal)r["tax_amount"]!, (string)r["match_mode_used"]!, (int)r["journal_line_no"]!, (Guid?)r["gr_ir_clearing_id"])).ToList(),
+                (decimal)r["base_quantity"]!, (decimal)r["net_amount"]!, (decimal)r["tax_amount"]!, (string?)r["match_mode_used"] ?? "", (int)r["journal_line_no"]!, (Guid?)r["gr_ir_clearing_id"])).ToList(),
             clearingIds.Values.Cast<Guid?>().FirstOrDefault(), stockId);
         await tx.CommitAsync(ct);   // the deferred checks of the journal document and of the clearing, the chain of the stock document, the outbox position
         return CommandResult<PurchaseInvoiceResult>.Ok(result, logId, postedResult.Warnings);
@@ -783,6 +825,20 @@ public sealed partial class PurchaseInvoiceCommands(NpgsqlDataSource source)
         await cmd.ExecuteNonQueryAsync(ct);
     }
 
+    private static async Task InsertChargeLineAsync(TenantTransaction t, Guid tenantId, Guid companyId, Guid invoiceId, Dictionary<string, object?> row, CancellationToken ct)
+    {
+        await using var cmd = t.Command(
+            "insert into core.purchase_invoice_line (tenant_id, company_id, purchase_invoice_id, line_no, line_kind, description, charge_treatment, base_quantity, unit_price, net_amount, tax_amount, tax_code_id, tax_code_version_id, tax_date, journal_line_no) " +
+            "values (@t, @c, @id, @n, 'CHARGE', @ds, @ct, 0, 0, @net, @tax, @tc, @tv, @td, @jl)");
+        cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("c", companyId); cmd.Parameters.AddWithValue("id", invoiceId); cmd.Parameters.AddWithValue("n", row["line_no"]!);
+        cmd.Parameters.AddWithValue("ds", row["description"]!); cmd.Parameters.AddWithValue("ct", row["charge_treatment"]!); cmd.Parameters.AddWithValue("net", row["net_amount"]!);
+        cmd.Parameters.AddWithValue("tax", row["tax_amount"]!); cmd.Parameters.AddWithValue("jl", row["journal_line_no"]!);
+        cmd.Parameters.Add(new NpgsqlParameter("tc", NpgsqlDbType.Uuid) { Value = row["tax_code_id"] ?? DBNull.Value });
+        cmd.Parameters.Add(new NpgsqlParameter("tv", NpgsqlDbType.Uuid) { Value = row["tax_code_version_id"] ?? DBNull.Value });
+        cmd.Parameters.Add(new NpgsqlParameter("td", NpgsqlDbType.Date) { Value = row["tax_date"] ?? DBNull.Value });
+        await cmd.ExecuteNonQueryAsync(ct);
+    }
+
     private static async Task<PurchaseInvoiceResult> LoadAsync(TenantTransaction tx, Guid tenantId, Guid companyId, Guid id, CancellationToken ct)
     {
         Guid journal; decimal grossAmount; Guid? stock;
@@ -814,7 +870,7 @@ public sealed partial class PurchaseInvoiceCommands(NpgsqlDataSource source)
                 Guid? gc = r.IsDBNull(10) ? null : r.GetGuid(10);
                 clearing ??= gc;
                 lines.Add(new PurchaseInvoiceLineResult(r.GetInt32(0), "", r.IsDBNull(1) ? Guid.Empty : r.GetGuid(1), r.IsDBNull(2) ? 0 : r.GetInt32(2), r.IsDBNull(3) ? null : r.GetGuid(3), r.IsDBNull(4) ? null : r.GetInt32(4), r.GetDecimal(5), r.GetDecimal(6), r.GetDecimal(7),
-                    r.GetString(8).Trim(), r.GetInt32(9), gc));
+                    r.IsDBNull(8) ? "" : r.GetString(8).Trim(), r.GetInt32(9), gc));
             }
         }
         decimal net = lines.Sum(l => l.NetAmount), tax = lines.Sum(l => l.TaxAmount);

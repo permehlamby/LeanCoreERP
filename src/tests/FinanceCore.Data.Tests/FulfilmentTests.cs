@@ -1489,4 +1489,58 @@ public class FulfilmentTests
             Assert.True(verify.Status == CommandStatus.Ok && verify.Value!.Ok, chain + " " + Describe(verify));
         }
     }
+
+    [Fact]
+    public async Task AChargeOfTheInvoiceIsBookedToExpenseOrToLandedCostClearingAndIsReversedWithTheInvoice()
+    {
+        var s = await SetupAsync();
+        var t = s.T;
+        var pur = await PurchaseSetupAsync(s);
+        Guid lcc = await AccountAsync(t, "PUR-LCC", "EXPENSE", "NONE");
+        await t.ExecuteAsync($"update core.gl_account set tax_code_rule = 'OPTIONAL' where tenant_id = @t and account_id = '{lcc}'");
+        Assert.Equal(CommandStatus.Ok, (await new AccountDeterminationCommands(t.App).CreateAsync(t.TenantId, t.Context("det-lcc", "write.config"),
+            new(t.CompanyId, D(("role_code", "LANDED_COST_CLEARING"), ("valid_from", "2026-01-01"), ("priority", 1), ("account_id", lcc))))).Status);
+        var po = await DomesticPurchaseOrderAsync(s, "po", 100, 10);
+        await ReceiveAsync(s, "r1", po, 100);
+        var commands = new PurchaseInvoiceCommands(t.App);
+        Task<CommandResult<PurchaseInvoiceResult>> Post(string key, string number, decimal gross, PurchaseInvoiceLineInput[] lines, params PurchaseChargeInput[] charges) =>
+            commands.PostAsync(t.TenantId, Ctx(s, key, "purchase.invoice"), new PostPurchaseInvoiceRequest(t.CompanyId, s.Supplier, number, new DateOnly(2026, 3, 20), "DKK", gross, lines, Charges: charges));
+
+        // an order line and a freight charge on one invoice: 600 and 100 net, tax 150 and 25
+        var r = await Post("i1", "SI-1", 875, [new PurchaseInvoiceLineInput("L1", po.OrderId, 1, 60, 10, 600, pur.Code, 150)], new PurchaseChargeInput("F1", "Freight", 100, pur.Code, 25, "EXPENSE"));
+        Assert.True(r.Status == CommandStatus.Ok, Describe(r));
+        var m = r.Value!;
+        Assert.Equal((700m, 175m, 875m, 2), (m.NetAmount, m.TaxAmount, m.GrossAmount, m.Lines.Count));
+        Assert.Equal((600m, 100m, 175m, -875m), (await SumOfAsync(s, m.JournalDocumentId, s.GrIr), await SumOfAsync(s, m.JournalDocumentId, pur.Expense), await SumOfAsync(s, m.JournalDocumentId, pur.InputVat), await SumOfAsync(s, m.JournalDocumentId, pur.Payable)));
+        Assert.Equal(("CHARGE", "EXPENSE", "Freight", 2), (
+            await t.ScalarAsync<string>($"select line_kind from core.purchase_invoice_line where tenant_id = @t and purchase_invoice_id = '{m.PurchaseInvoiceId}' and line_no = 2"),
+            await t.ScalarAsync<string>($"select charge_treatment from core.purchase_invoice_line where tenant_id = @t and purchase_invoice_id = '{m.PurchaseInvoiceId}' and line_no = 2"),
+            await t.ScalarAsync<string>($"select description from core.purchase_invoice_line where tenant_id = @t and purchase_invoice_id = '{m.PurchaseInvoiceId}' and line_no = 2"),
+            (int)await t.ScalarAsync<long>($"select journal_line_no from core.purchase_invoice_line where tenant_id = @t and purchase_invoice_id = '{m.PurchaseInvoiceId}' and line_no = 2")));
+        Assert.Equal(-400m, await BalanceAsync(s, s.GrIr));   // the charge does not change what is matched
+
+        // a charge on its own for landed cost: debit on the clearing account, to be allocated later
+        var lc = await Post("i2", "SI-2", 250, [], new PurchaseChargeInput("F1", "Duty", 200, pur.Code, 50, "LANDED_COST"));
+        Assert.True(lc.Status == CommandStatus.Ok, Describe(lc));
+        Assert.Equal((200m, -250m), (await SumOfAsync(s, lc.Value!.JournalDocumentId, lcc), await SumOfAsync(s, lc.Value.JournalDocumentId, pur.Payable)));
+
+        // the shape of a charge, the control total with charges and the duplicate number
+        Assert.Equal(["SCHEMA.INVALID_VALUE"], Codes(await Post("i3", "SI-3", 125, [], new PurchaseChargeInput("F1", "", 100, pur.Code, 25, "EXPENSE"))));
+        Assert.Equal(["SCHEMA.INVALID_VALUE"], Codes(await Post("i4", "SI-4", 125, [], new PurchaseChargeInput("F1", "Freight", 100, pur.Code, 25, "OTHER"))));
+        Assert.Equal(["MATCH.GROSS_MISMATCH"], Codes(await Post("i5", "SI-5", 124, [], new PurchaseChargeInput("F1", "Freight", 100, pur.Code, 25, "EXPENSE"))));
+        Assert.Equal(["SCHEMA.REQUIRED_FIELD_MISSING"], Codes(await Post("i6", "SI-6", 0, [])));
+        Assert.Equal(["ORDER.DUPLICATE_SUPPLIER_INVOICE"], Codes(await Post("i7", "SI-2", 125, [], new PurchaseChargeInput("F1", "Freight", 100, pur.Code, 25, "EXPENSE"))));
+
+        // the reversal mirrors the charge row with the opposite sign
+        var rev = await ReversePurchaseInvoice(s, "rev1", m.PurchaseInvoiceId);
+        Assert.True(rev.Status == CommandStatus.Ok, Describe(rev));
+        Assert.Equal((0m, -1000m, -100m + 100m, "CHARGE", -100m), (await BalanceAsync(s, pur.Expense), await BalanceAsync(s, s.GrIr), await BalanceAsync(s, pur.Payable) + 250m,
+            await t.ScalarAsync<string>($"select line_kind from core.purchase_invoice_line where tenant_id = @t and purchase_invoice_id = '{rev.Value!.ReversalInvoiceId}' and line_no = 2"),
+            await t.ScalarAsync<decimal>($"select net_amount from core.purchase_invoice_line where tenant_id = @t and purchase_invoice_id = '{rev.Value.ReversalInvoiceId}' and line_no = 2")));
+        foreach (string chain in new[] { "LEDGER", "CLEARING", "STOCK" })
+        {
+            var verify = await new ChainVerification(t.App).VerifyAsync(t.TenantId, t.Context("v" + chain, "chain.verify"), new(t.CompanyId, chain));
+            Assert.True(verify.Status == CommandStatus.Ok && verify.Value!.Ok, chain + " " + Describe(verify));
+        }
+    }
 }

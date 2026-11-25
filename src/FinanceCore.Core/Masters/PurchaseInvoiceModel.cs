@@ -12,9 +12,12 @@ public sealed record PurchaseInvoiceLineInput(
 
 public sealed record ReceiptLineRef(Guid ReceiptId, int ReceiptLineNo);
 
+/// <summary>An additional charge of the invoice without an order (7.2): freight, duty, a fee. EXPENSE goes to PURCHASE_EXPENSE, LANDED_COST to LANDED_COST_CLEARING (to be allocated later).</summary>
+public sealed record PurchaseChargeInput(string LineRef, string Description, decimal NetAmount, Guid? TaxCodeId, decimal? TaxAmount, string Treatment);
+
 public sealed record PostPurchaseInvoiceRequest(
     Guid CompanyId, Guid SupplierPartnerId, string SupplierInvoiceNumber, DateOnly InvoiceDate, string Currency, decimal GrossAmount, IReadOnlyList<PurchaseInvoiceLineInput> Lines,
-    DateOnly? PostingDate = null, DateOnly? DueDate = null, string? SourceDocumentRef = null);
+    DateOnly? PostingDate = null, DateOnly? DueDate = null, string? SourceDocumentRef = null, IReadOnlyList<PurchaseChargeInput>? Charges = null);
 
 public sealed record PurchaseInvoiceLineResult(
     int LineNo, string LineRef, Guid OrderId, int OrderLineNo, Guid? ReceiptId, int? ReceiptLineNo, decimal BaseQuantity, decimal NetAmount, decimal TaxAmount, string MatchModeUsed,
@@ -27,6 +30,7 @@ public sealed record PurchaseInvoiceResult(
 public static class PurchaseInvoiceRules
 {
     public const string Permission = "purchase.invoice";
+    public static readonly string[] ChargeTreatments = ["EXPENSE", "LANDED_COST"];
 
     private static FieldSpec Id(string n, bool nullable = false) => new(n, FieldType.Id, nullable);
     private static FieldSpec Code(string n, bool nullable = false) => new(n, FieldType.Text, nullable);
@@ -67,7 +71,8 @@ public static class PurchaseInvoiceRules
             $"{r.GrossAmount.ToString(CultureInfo.InvariantCulture)}|{r.SourceDocumentRef}|" + string.Join("#", r.Lines.Select(l =>
                 string.Join("|", l.LineRef, l.PurchaseOrderId.ToString("D"), l.PurchaseOrderLineNo, l.Quantity.ToString(CultureInfo.InvariantCulture), l.UnitPrice.ToString(CultureInfo.InvariantCulture),
                     l.NetAmount.ToString(CultureInfo.InvariantCulture), l.TaxCodeId?.ToString("D") ?? "-", l.TaxAmount?.ToString(CultureInfo.InvariantCulture) ?? "-",
-                    string.Join(",", (l.ReceiptLineRefs ?? []).Select(x => $"{x.ReceiptId:D}/{x.ReceiptLineNo}")), l.ReceiptRef is null ? "-" : $"{l.ReceiptRef.StockDocumentId:D}/{l.ReceiptRef.LineNo}"))));
+                    string.Join(",", (l.ReceiptLineRefs ?? []).Select(x => $"{x.ReceiptId:D}/{x.ReceiptLineNo}")), l.ReceiptRef is null ? "-" : $"{l.ReceiptRef.StockDocumentId:D}/{l.ReceiptRef.LineNo}"))) +
+            "|" + string.Join("#", (r.Charges ?? []).Select(c => string.Join("|", c.LineRef, c.Description, c.NetAmount.ToString(CultureInfo.InvariantCulture), c.TaxCodeId?.ToString("D") ?? "-", c.TaxAmount?.ToString(CultureInfo.InvariantCulture) ?? "-", c.Treatment))));
 }
 
 // ---- purchase-invoices:reverse (11, 7.4, permission purchase.invoice): the owning command of an order-built AP_INVOICE, its cost adjustment and the clearing of its GR/IR items. posting_date defaults to the posting date of the invoice.
