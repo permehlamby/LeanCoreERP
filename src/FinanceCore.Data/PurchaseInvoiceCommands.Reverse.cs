@@ -23,7 +23,7 @@ public sealed partial class PurchaseInvoiceCommands
 
     private sealed record PurchaseLink(
         int LineNo, Guid? OrderId, int? OrderLineNo, Guid? ReceiptId, int? ReceiptLineNo, decimal BaseQuantity, decimal UnitPrice, decimal Net, decimal Tax, decimal? OrderUnitPrice, string? MatchMode,
-        decimal? Tolerance, decimal Diff, decimal OnHand, decimal Consumed, Guid? TaxCodeId, Guid? TaxCodeVersionId, DateOnly? TaxDate, int JournalLineNo, int? CreditsLineNo);
+        decimal? Tolerance, decimal Diff, decimal OnHand, decimal Consumed, Guid? TaxCodeId, Guid? TaxCodeVersionId, DateOnly? TaxDate, int JournalLineNo, int? CreditsLineNo, Guid? StockDocId, int? StockLine);
 
     /// <summary>What differs between the reversal of an invoice and that of a credit note: the kind of the original, the command, the type of the mirror journal document.</summary>
     private sealed record ReverseKind(string Expected, string Command, string MirrorType, bool Credit);
@@ -79,7 +79,7 @@ public sealed partial class PurchaseInvoiceCommands
                 var lines = new List<PurchaseLink>();
                 await using (var cmd = tx.Command(
                     "select line_no, purchase_order_id, purchase_order_line_no, receipt_id, receipt_line_no, base_quantity, unit_price, net_amount, tax_amount, order_unit_price, match_mode_used, tolerance_used, " +
-                    "price_difference_lc, on_hand_part_lc, consumed_part_lc, tax_code_id, tax_code_version_id, tax_date, journal_line_no, gr_ir_clearing_id, credits_invoice_line_no from core.purchase_invoice_line " +
+                    "price_difference_lc, on_hand_part_lc, consumed_part_lc, tax_code_id, tax_code_version_id, tax_date, journal_line_no, gr_ir_clearing_id, credits_invoice_line_no, stock_document_id, stock_document_line_no from core.purchase_invoice_line " +
                     "where tenant_id = @t and company_id = @c and purchase_invoice_id = @i order by line_no"))
                 {
                     cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("c", req.CompanyId); cmd.Parameters.AddWithValue("i", req.PurchaseInvoiceId);
@@ -89,7 +89,7 @@ public sealed partial class PurchaseInvoiceCommands
                         lines.Add(new PurchaseLink(r.GetInt32(0), r.IsDBNull(1) ? null : r.GetGuid(1), r.IsDBNull(2) ? null : r.GetInt32(2), r.IsDBNull(3) ? null : r.GetGuid(3), r.IsDBNull(4) ? null : r.GetInt32(4),
                             r.GetDecimal(5), r.GetDecimal(6), r.GetDecimal(7), r.GetDecimal(8), r.IsDBNull(9) ? null : r.GetDecimal(9), r.IsDBNull(10) ? null : r.GetString(10).Trim(), r.IsDBNull(11) ? null : r.GetDecimal(11),
                             r.GetDecimal(12), r.GetDecimal(13), r.GetDecimal(14), r.IsDBNull(15) ? null : r.GetGuid(15), r.IsDBNull(16) ? null : r.GetGuid(16),
-                            r.IsDBNull(17) ? null : DateOnly.FromDateTime(r.GetDateTime(17)), r.GetInt32(18), r.IsDBNull(20) ? null : r.GetInt32(20)));
+                            r.IsDBNull(17) ? null : DateOnly.FromDateTime(r.GetDateTime(17)), r.GetInt32(18), r.IsDBNull(20) ? null : r.GetInt32(20), r.IsDBNull(21) ? null : r.GetGuid(21), r.IsDBNull(22) ? null : r.GetInt32(22)));
                         if (!r.IsDBNull(19) && !clearings.Contains(r.GetGuid(19))) clearings.Add(r.GetGuid(19));
                     }
                 }
@@ -131,10 +131,12 @@ public sealed partial class PurchaseInvoiceCommands
                 foreach (PurchaseLink l in mirrorLines)
                 {
                     await using var cmd = tx.Command(
-                        "insert into core.purchase_invoice_line (tenant_id, company_id, purchase_invoice_id, line_no, line_kind, purchase_order_id, purchase_order_line_no, receipt_id, receipt_line_no, base_quantity, " +
+                        "insert into core.purchase_invoice_line (tenant_id, company_id, purchase_invoice_id, line_no, line_kind, purchase_order_id, purchase_order_line_no, receipt_id, receipt_line_no, stock_document_id, stock_document_line_no, base_quantity, " +
                         "unit_price, net_amount, tax_amount, order_unit_price, match_mode_used, tolerance_used, price_difference_lc, on_hand_part_lc, consumed_part_lc, tax_code_id, tax_code_version_id, tax_date, journal_line_no, credits_invoice_line_no) " +
-                        "values (@t, @c, @id, @n, 'MATCHED', @o, @ol, @r, @rl, @bq, @up, @net, @tax, @oup, @mm, @tol, @pd, @oh, @co, @tc, @tv, @td, @jl, @cl)");
+                        "values (@t, @c, @id, @n, 'MATCHED', @o, @ol, @r, @rl, @sd, @sl, @bq, @up, @net, @tax, @oup, @mm, @tol, @pd, @oh, @co, @tc, @tv, @td, @jl, @cl)");
                     cmd.Parameters.Add(new NpgsqlParameter("cl", NpgsqlDbType.Integer) { Value = (object?)l.CreditsLineNo ?? DBNull.Value });
+                    cmd.Parameters.Add(new NpgsqlParameter("sd", NpgsqlDbType.Uuid) { Value = (object?)l.StockDocId ?? DBNull.Value });
+                    cmd.Parameters.Add(new NpgsqlParameter("sl", NpgsqlDbType.Integer) { Value = (object?)l.StockLine ?? DBNull.Value });
                     cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("c", req.CompanyId); cmd.Parameters.AddWithValue("id", mirrorInvoiceId); cmd.Parameters.AddWithValue("n", l.LineNo);
                     cmd.Parameters.AddWithValue("bq", l.BaseQuantity); cmd.Parameters.AddWithValue("up", l.UnitPrice); cmd.Parameters.AddWithValue("net", l.Net); cmd.Parameters.AddWithValue("tax", l.Tax);
                     cmd.Parameters.AddWithValue("pd", l.Diff); cmd.Parameters.AddWithValue("oh", l.OnHand); cmd.Parameters.AddWithValue("co", l.Consumed); cmd.Parameters.AddWithValue("jl", l.JournalLineNo);
@@ -183,7 +185,7 @@ public sealed partial class PurchaseInvoiceCommands
                     var d = new Dictionary<string, object?>
                 {
                     ["line_no"] = l.LineNo, ["line_kind"] = "MATCHED", ["purchase_order_id"] = l.OrderId, ["purchase_order_line_no"] = l.OrderLineNo, ["receipt_id"] = l.ReceiptId, ["receipt_line_no"] = l.ReceiptLineNo,
-                    ["stock_document_id"] = null, ["stock_document_line_no"] = null, ["base_quantity"] = l.BaseQuantity, ["unit_price"] = l.UnitPrice, ["net_amount"] = l.Net, ["tax_amount"] = l.Tax,
+                    ["stock_document_id"] = l.StockDocId, ["stock_document_line_no"] = l.StockLine, ["base_quantity"] = l.BaseQuantity, ["unit_price"] = l.UnitPrice, ["net_amount"] = l.Net, ["tax_amount"] = l.Tax,
                     ["order_unit_price"] = l.OrderUnitPrice, ["match_mode_used"] = l.MatchMode, ["tolerance_used"] = l.Tolerance, ["price_difference_lc"] = l.Diff, ["on_hand_part_lc"] = l.OnHand,
                     ["consumed_part_lc"] = l.Consumed, ["dropship_part_lc"] = 0m, ["unreceived_gr_ir_lc"] = 0m, ["gr_ir_clearing_id"] = null, ["tax_code_id"] = l.TaxCodeId,
                     ["tax_code_version_id"] = l.TaxCodeVersionId, ["tax_date"] = l.TaxDate, ["journal_line_no"] = l.JournalLineNo

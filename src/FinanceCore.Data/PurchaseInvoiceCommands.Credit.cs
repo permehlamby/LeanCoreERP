@@ -142,7 +142,7 @@ public sealed partial class PurchaseInvoiceCommands
             cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("c", companyId); cmd.Parameters.AddWithValue("i", req.PurchaseInvoiceId);
             await using var r = await cmd.ExecuteReaderAsync(ct);
             while (await r.ReadAsync(ct))
-                rows[r.GetInt32(0)] = new InvoiceRow(r.GetInt32(0), r.GetGuid(1), r.GetInt32(2), r.IsDBNull(3) ? null : r.GetGuid(3), r.IsDBNull(4) ? null : r.GetInt32(4), r.GetDecimal(5), r.GetDecimal(6), r.GetDecimal(7),
+                rows[r.GetInt32(0)] = new InvoiceRow(r.GetInt32(0), r.IsDBNull(1) ? Guid.Empty : r.GetGuid(1), r.IsDBNull(2) ? 0 : r.GetInt32(2), r.IsDBNull(3) ? null : r.GetGuid(3), r.IsDBNull(4) ? null : r.GetInt32(4), r.GetDecimal(5), r.GetDecimal(6), r.GetDecimal(7),
                     r.IsDBNull(8) ? null : r.GetDecimal(8), r.IsDBNull(9) ? null : r.GetString(9).Trim(), r.IsDBNull(10) ? null : r.GetDecimal(10), r.IsDBNull(11) ? null : r.GetGuid(11));
         }
         await using (var cmd = tx.Command("select purchase_order_id from core.purchase_order where tenant_id = @t and company_id = @c and purchase_order_id = any(@ids) order by purchase_order_id for update"))
@@ -182,6 +182,7 @@ public sealed partial class PurchaseInvoiceCommands
             PurchaseCreditLineInput l = req.Lines[i];
             string p = $"/lines/{i}";
             if (!rows.TryGetValue(l.InvoiceLineNo, out InvoiceRow? row)) { errors.Add(Error("CONFIG.INVALID_REFERENCE", "P2", p + "/invoice_line_no", ("line_no", l.InvoiceLineNo))); continue; }
+            if (row.OrderId == Guid.Empty) { errors.Add(Error("LIMIT.CREDIT_DIRECT_RECEIPT_NOT_BUILT", "P2", p + "/invoice_line_no", ("line_no", l.InvoiceLineNo))); continue; }
             decimal credited = 0m;
             await using (var cmd = tx.Command(
                 "select coalesce(sum(l.net_amount), 0) from core.purchase_invoice_line l join core.purchase_invoice h on h.tenant_id = l.tenant_id and h.company_id = l.company_id and h.purchase_invoice_id = l.purchase_invoice_id " +

@@ -1322,7 +1322,7 @@ public class FulfilmentTests
         Assert.Equal(["ORDER.GRIR_RESIDUAL_CHANGED"], Codes(await WriteOff(s, "w1", -300, po.OrderId)));
         Assert.Equal(["ORDER.GRIR_ITEM_INVALID"], Codes(await new PurchaseInvoiceCommands(t.App).WriteOffAsync(t.TenantId, Ctx(s, "w2", "purchase.invoice"),
             new(t.CompanyId, new DateOnly(2026, 4, 1), "X", "x", [new GrIrWriteOffItem(0m, OpenItems: [new GrIrItemRef(inv.JournalDocumentId, 1)])]))));   // the invoice item is cleared
-        Assert.Equal(["LIMIT.GRIR_DIRECT_RECEIPT_NOT_BUILT"], Codes(await new PurchaseInvoiceCommands(t.App).WriteOffAsync(t.TenantId, Ctx(s, "w3", "purchase.invoice"),
+        Assert.Equal(["ORDER.GRIR_ITEM_INVALID"], Codes(await new PurchaseInvoiceCommands(t.App).WriteOffAsync(t.TenantId, Ctx(s, "w3", "purchase.invoice"),
             new(t.CompanyId, new DateOnly(2026, 4, 1), "X", "x", [new GrIrWriteOffItem(-400m, ReceiptRef: new GrIrDirectReceiptRef(Guid.NewGuid(), 1))]))));
         Assert.Equal(["SCHEMA.INVALID_VALUE"], Codes(await new PurchaseInvoiceCommands(t.App).WriteOffAsync(t.TenantId, Ctx(s, "w4", "purchase.invoice"),
             new(t.CompanyId, new DateOnly(2026, 4, 1), "X", "x", [new GrIrWriteOffItem(-400m)]))));
@@ -1355,6 +1355,66 @@ public class FulfilmentTests
         var again = await WriteOff(s, "w8", -400, po.OrderId);
         Assert.True(again.Status == CommandStatus.Ok, Describe(again));
         Assert.Equal(0m, await BalanceAsync(s, s.GrIr));
+        foreach (string chain in new[] { "LEDGER", "CLEARING", "STOCK" })
+        {
+            var verify = await new ChainVerification(t.App).VerifyAsync(t.TenantId, t.Context("v" + chain, "chain.verify"), new(t.CompanyId, chain));
+            Assert.True(verify.Status == CommandStatus.Ok && verify.Value!.Ok, chain + " " + Describe(verify));
+        }
+    }
+
+    private static async Task<StockDocumentResult> DirectReceiptAsync(S s, string key, decimal qty, decimal price)
+    {
+        var r = await new StockCommands(s.T.App).PostAsync(s.T.TenantId, Ctx(s, key, "stock.post"),
+            new PostStockDocumentRequest(s.T.CompanyId, "RECEIPT", new DateOnly(2026, 3, 10), new DateOnly(2026, 3, 10), [new StockLineInput("D1", s.Item, s.Warehouse, qty, "C62", UnitPrice: price)]));
+        Assert.True(r.Status == CommandStatus.Ok, Describe(r));
+        return r.Value!;
+    }
+
+    private static PurchaseInvoiceLineInput DirectLine(Guid stockDocument, decimal qty, decimal price, decimal net, Guid code, decimal tax) =>
+        new("L1", Guid.Empty, 0, qty, price, net, code, tax, ReceiptRef: new GrIrDirectReceiptRef(stockDocument, 1));
+
+    [Fact]
+    public async Task AReceiptWithoutAnOrderIsMatchedByItsReceiptReferenceAndItsResidualCanBeWrittenOff()
+    {
+        var s = await SetupAsync();
+        var t = s.T;
+        var pur = await PurchaseSetupAsync(s);
+        Guid wo = await WriteOffSetupAsync(s);
+        var receipt = await DirectReceiptAsync(s, "sr1", 100, 10);   // 1000 in stock and in GR/IR, no order
+        Assert.Equal(-1000m, await BalanceAsync(s, s.GrIr));
+
+        // 60 at 11: the match is as for an order line, the difference of 60 is on hand, and no order exists
+        var r = await PostPurchaseInvoice(s, "i1", "SI-1", 825, DirectLine(receipt.StockDocumentId, 60, 11, 660, pur.Code, 165));
+        Assert.True(r.Status == CommandStatus.Ok, Describe(r));
+        var m = r.Value!;
+        Assert.Equal((1060m, -400m, "PARTIAL"), (await BalanceAsync(s, s.Inventory), await BalanceAsync(s, s.GrIr), await ItemStatusAsync(s, receipt.JournalDocumentId!.Value)));
+        Assert.Equal((true, true, receipt.StockDocumentId, 1L), (
+            await t.ScalarAsync<bool>($"select purchase_order_id is null and receipt_id is null from core.purchase_invoice_line where tenant_id = @t and purchase_invoice_id = '{m.PurchaseInvoiceId}'"),
+            await t.ScalarAsync<bool>($"select price_difference_lc = 60 and on_hand_part_lc = 60 from core.purchase_invoice_line where tenant_id = @t and purchase_invoice_id = '{m.PurchaseInvoiceId}'"),
+            await t.ScalarAsync<Guid>($"select stock_document_id from core.purchase_invoice_line where tenant_id = @t and purchase_invoice_id = '{m.PurchaseInvoiceId}'"),
+            await t.ScalarAsync<long>($"select stock_document_line_no from core.purchase_invoice_line where tenant_id = @t and purchase_invoice_id = '{m.PurchaseInvoiceId}'")));
+
+        // the limits of the receipt line, the two reference forms and the credit and the reversal of the receipt
+        Assert.Equal(["MATCH.QUANTITY_EXCEEDS_RECEIVED"], Codes(await PostPurchaseInvoice(s, "i2", "SI-2", 512.5m, DirectLine(receipt.StockDocumentId, 41, 10, 410, pur.Code, 102.5m))));
+        Assert.Equal(["MATCH.NO_RECEIPT"], Codes(await PostPurchaseInvoice(s, "i3", "SI-3", 125, DirectLine(Guid.NewGuid(), 10, 10, 100, pur.Code, 25))));
+        var po = await DomesticPurchaseOrderAsync(s, "po", 10, 10);
+        Assert.Equal(["ORDER.INVOICE_LINE_REFERENCE_MISSING"], Codes(await PostPurchaseInvoice(s, "i4", "SI-4", 125, new PurchaseInvoiceLineInput("L1", po.OrderId, 1, 10, 10, 100, pur.Code, 25, ReceiptRef: new GrIrDirectReceiptRef(receipt.StockDocumentId, 1)))));
+        Assert.Equal(["ORDER.INVOICE_LINE_REFERENCE_MISSING"], Codes(await PostPurchaseInvoice(s, "i5", "SI-5", 125, new PurchaseInvoiceLineInput("L1", Guid.Empty, 0, 10, 10, 100, pur.Code, 25))));
+        Assert.Equal(["LIMIT.CREDIT_DIRECT_RECEIPT_NOT_BUILT"], Codes(await PostCredit(s, "c1", "CN-1", m.PurchaseInvoiceId, 12.5m, new PurchaseCreditLineInput("C1", 1, 10, 2.5m))));
+        Assert.Equal(["ORDER.RECEIPT_INVOICED"], Codes(await new StockCommands(t.App).ReverseAsync(t.TenantId, Ctx(s, "sr", "stock.reverse"), new(t.CompanyId, receipt.StockDocumentId, "CORRECTION"))));
+
+        // the invoice is reversed with its adjustment and the GR/IR clearing, then matched again
+        var rev = await ReversePurchaseInvoice(s, "rev1", m.PurchaseInvoiceId);
+        Assert.True(rev.Status == CommandStatus.Ok, Describe(rev));
+        Assert.Equal((1000m, -1000m, "OPEN"), (await BalanceAsync(s, s.Inventory), await BalanceAsync(s, s.GrIr), await ItemStatusAsync(s, receipt.JournalDocumentId!.Value)));
+        var again = await PostPurchaseInvoice(s, "i6", "SI-6", 825, DirectLine(receipt.StockDocumentId, 60, 11, 660, pur.Code, 165));
+        Assert.True(again.Status == CommandStatus.Ok, Describe(again));
+
+        // what is never invoiced is written off through the receipt reference
+        var wr = await new PurchaseInvoiceCommands(t.App).WriteOffAsync(t.TenantId, Ctx(s, "w1", "purchase.invoice"),
+            new(t.CompanyId, new DateOnly(2026, 4, 1), "NO_INVOICE", "never invoiced", [new GrIrWriteOffItem(-400m, ReceiptRef: new GrIrDirectReceiptRef(receipt.StockDocumentId, 1))]));
+        Assert.True(wr.Status == CommandStatus.Ok, Describe(wr));
+        Assert.Equal((0m, -400m), (await BalanceAsync(s, s.GrIr), await BalanceAsync(s, wo)));
         foreach (string chain in new[] { "LEDGER", "CLEARING", "STOCK" })
         {
             var verify = await new ChainVerification(t.App).VerifyAsync(t.TenantId, t.Context("v" + chain, "chain.verify"), new(t.CompanyId, chain));

@@ -84,6 +84,16 @@ public sealed partial class StockCommands
             return Reject(Error("REVERSAL.TYPE_NOT_REVERSIBLE", "P2", "/stock_document_id", ("document_type", original.DocumentType),
                 ("owning_command", original.Derived ? "the order command that created it (11, 6.8)" : null)));
         if (original.Status != "posted") return Reject(Error("REVERSAL.ALREADY_REVERSED", "P2", "/stock_document_id"));
+        // a receipt without an order is not reversed while a supplier invoice that is not reversed is matched to one of its lines (11, 7.2, D3)
+        if (original.DocumentType == "STOCK_RECEIPT")
+        {
+            await using var inv = tx.Command(
+                "select coalesce(max(s), 0) from (select sum(l.base_quantity) s from core.purchase_invoice_line l join core.purchase_invoice h on h.tenant_id = l.tenant_id and h.company_id = l.company_id and h.purchase_invoice_id = l.purchase_invoice_id " +
+                "left join core.purchase_invoice o on o.tenant_id = h.tenant_id and o.company_id = h.company_id and o.purchase_invoice_id = h.reversal_of_purchase_invoice_id where l.tenant_id = @t and l.company_id = @c and l.stock_document_id = @d " +
+                "and (h.invoice_kind = 'INVOICE' or (h.invoice_kind = 'REVERSAL' and o.invoice_kind = 'INVOICE')) group by l.stock_document_line_no) x");
+            inv.Parameters.AddWithValue("t", tenantId); inv.Parameters.AddWithValue("c", companyId); inv.Parameters.AddWithValue("d", originalId);
+            if ((decimal)(await inv.ExecuteScalarAsync(ct))! > 0m) return Reject(Error("ORDER.RECEIPT_INVOICED", "P6", "/stock_document_id", ("reason", "the supplier invoice is reversed first")));
+        }
         var company = await JournalDocumentPoster.ReadCompanyAsync(tx, tenantId, companyId, ct);
         if (company is null || company.Status != "ACTIVE") return Reject(Error("COMPANY.NOT_ACTIVE", "P2", "/company_id", ("status", company?.Status)));
         DateOnly date = reversalDateRequest ?? original.PostingDate;

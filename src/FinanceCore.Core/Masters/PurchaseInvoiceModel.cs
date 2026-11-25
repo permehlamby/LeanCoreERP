@@ -8,7 +8,7 @@ namespace FinanceCore.Core.Masters;
 /// <summary>One invoice line of the supplier: the purchase order line, the quantity, the price and the net amount as the supplier states them, and the tax code and the supplier's tax for the line.</summary>
 public sealed record PurchaseInvoiceLineInput(
     string LineRef, Guid PurchaseOrderId, int PurchaseOrderLineNo, decimal Quantity, decimal UnitPrice, decimal NetAmount, Guid? TaxCodeId = null, decimal? TaxAmount = null,
-    IReadOnlyList<ReceiptLineRef>? ReceiptLineRefs = null);
+    IReadOnlyList<ReceiptLineRef>? ReceiptLineRefs = null, GrIrDirectReceiptRef? ReceiptRef = null);
 
 public sealed record ReceiptLineRef(Guid ReceiptId, int ReceiptLineNo);
 
@@ -67,7 +67,7 @@ public static class PurchaseInvoiceRules
             $"{r.GrossAmount.ToString(CultureInfo.InvariantCulture)}|{r.SourceDocumentRef}|" + string.Join("#", r.Lines.Select(l =>
                 string.Join("|", l.LineRef, l.PurchaseOrderId.ToString("D"), l.PurchaseOrderLineNo, l.Quantity.ToString(CultureInfo.InvariantCulture), l.UnitPrice.ToString(CultureInfo.InvariantCulture),
                     l.NetAmount.ToString(CultureInfo.InvariantCulture), l.TaxCodeId?.ToString("D") ?? "-", l.TaxAmount?.ToString(CultureInfo.InvariantCulture) ?? "-",
-                    string.Join(",", (l.ReceiptLineRefs ?? []).Select(x => $"{x.ReceiptId:D}/{x.ReceiptLineNo}"))))));
+                    string.Join(",", (l.ReceiptLineRefs ?? []).Select(x => $"{x.ReceiptId:D}/{x.ReceiptLineNo}")), l.ReceiptRef is null ? "-" : $"{l.ReceiptRef.StockDocumentId:D}/{l.ReceiptRef.LineNo}"))));
 }
 
 // ---- purchase-invoices:reverse (11, 7.4, permission purchase.invoice): the owning command of an order-built AP_INVOICE, its cost adjustment and the clearing of its GR/IR items. posting_date defaults to the posting date of the invoice.

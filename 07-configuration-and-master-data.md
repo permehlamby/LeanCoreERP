@@ -805,6 +805,18 @@ For the resources `gl-accounts`, `business-partners` (with PII, company relation
 
 These deltas are applied in 02 and 06 with this spec.
 
+### 13.2ak Receipts without an order (F-IMPL-66, 2026-11-25)
+
+PROPOSED, written down so that spec and code agree. It builds on 11, 7.2 (D3), 10, section 7 and 13.2ad to 13.2aj.
+
+1. **Reference.** A line of `purchase-invoices:post` names an order line or, as `receipt_ref` = `{stock_document_id, line_no}`, the receipt movement of a stock document posted by `stock-documents:post` without an order. Exactly one form (ORDER.INVOICE_LINE_REFERENCE_MISSING).
+2. **Match.** The movement must be a RECEIPT with a value of a posted, not reversed STOCK_RECEIPT (MATCH.NO_RECEIPT). The line is THREE_WAY: the invoiced quantity of the movement plus this quantity is at most the received quantity (MATCH.QUANTITY_EXCEEDS_RECEIVED). The price difference, the on-hand and consumed parts and the clearing with the GR/IR credit of the movement are as for an order line.
+3. **Facts of the line.** The tax class is that of the item, the origin the country of the supplier, the destination the country of the warehouse. The link row has no order and no receipt id, but `stock_document_id` and `stock_document_line_no`. No order progress changes.
+4. **Not checked.** That the receipt belongs to the supplier of the invoice: `stock-documents:post` does not record a supplier.
+5. **Reversal.** `purchase-invoices:reverse` mirrors the link rows with the stock document columns. `stock-documents:reverse` of the receipt is refused with ORDER.RECEIPT_INVOICED while an invoice that is not reversed is matched to it.
+6. **Write-off.** `gr-ir:write-off` takes `receipt_ref` as a selector for the residual of that movement.
+7. **Not built.** A credit note against a line of a direct receipt, the supplier check, returns of a direct receipt.
+
 ### 13.2aj Write-off of GR/IR residuals (F-IMPL-64, 2026-11-25)
 
 PROPOSED, written down so that spec and code agree. It builds on 11, 7.5 and 7.5a and on the clearing domain (03).

@@ -41,7 +41,7 @@ public sealed partial class PurchaseInvoiceCommands
             int selectors = (it.OpenItems is { Count: > 0 } ? 1 : 0) + (it.PurchaseOrderId is not null || it.PurchaseOrderLineNo is not null ? 1 : 0) + (it.ReceiptRef is not null ? 1 : 0);
             if (selectors != 1) Invalid($"/items/{i}", "exactly one of open_items, purchase_order_id with purchase_order_line_no, receipt_ref");
             else if ((it.PurchaseOrderId is null) != (it.PurchaseOrderLineNo is null)) Invalid($"/items/{i}/purchase_order_line_no", "an order and a line number");
-            else if (it.ReceiptRef is not null) errors.Add(Error("LIMIT.GRIR_DIRECT_RECEIPT_NOT_BUILT", "P1", $"/items/{i}/receipt_ref"));
+            else if (it.ReceiptRef is { } rf && (rf.StockDocumentId == Guid.Empty || rf.LineNo < 1)) Invalid($"/items/{i}/receipt_ref", "a stock document and a line number");
             if (Math.Round(it.ExpectedResidualLc, 4) != it.ExpectedResidualLc) Invalid($"/items/{i}/expected_residual_lc", "at most 4 fraction digits");
         }
         if (errors.Count > 0) return CommandResult<GrIrWriteOffResult>.Rejected(errors);
@@ -115,7 +115,7 @@ public sealed partial class PurchaseInvoiceCommands
                     found.Add(x);
                 }
             }
-            else
+            else if (it.PurchaseOrderId is not null)
             {
                 OrderLine? ol = await ReadOrderLineAsync(tx, tenantId, companyId, it.PurchaseOrderId!.Value, it.PurchaseOrderLineNo!.Value, ct);
                 if (ol is null) return Fail(Error("CONFIG.INVALID_REFERENCE", "P2", $"/items/{i}/purchase_order_id", ("order_id", it.PurchaseOrderId)));
@@ -141,6 +141,25 @@ public sealed partial class PurchaseInvoiceCommands
                     Residual? x = await ReadResidualAsync(tx, tenantId, companyId, journal, line.Value, ol.ItemGroup, ol.Warehouse, ol.ItemId, false, ct);
                     if (x is not null) found.Add(x);   // a fully cleared item is not part of the residual
                 }
+            }
+            else if (it.ReceiptRef is { } rr)
+            {
+                // a direct receipt line: the receipt movement of a stock document posted without an order
+                Guid? mItem = null, mWarehouse = null, mGroup = null;
+                await using (var cmd = tx.Command(
+                    "select m.item_id, m.warehouse_id, i.item_group_id from core.stock_movement m join core.stock_document d on d.tenant_id = m.tenant_id and d.company_id = m.company_id and d.stock_document_id = m.stock_document_id " +
+                    "join core.item i on i.tenant_id = m.tenant_id and i.item_id = m.item_id where m.tenant_id = @t and m.company_id = @c and m.stock_document_id = @s and m.line_no = @n and m.movement_type = 'RECEIPT' " +
+                    "and d.command_name = 'stock-documents:post'"))
+                {
+                    cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("c", companyId); cmd.Parameters.AddWithValue("s", rr.StockDocumentId); cmd.Parameters.AddWithValue("n", rr.LineNo);
+                    await using var r = await cmd.ExecuteReaderAsync(ct);
+                    if (await r.ReadAsync(ct)) { mItem = r.GetGuid(0); mWarehouse = r.GetGuid(1); mGroup = r.GetGuid(2); }
+                }
+                if (mItem is null) return Fail(Error("ORDER.GRIR_ITEM_INVALID", "P2", $"/items/{i}/receipt_ref", ("stock_document_id", rr.StockDocumentId), ("line_no", rr.LineNo)));
+                Guid journalOfReceipt = await StockJournalAsync(tx, tenantId, companyId, rr.StockDocumentId, ct);
+                int? itemLine = await FindGrIrItemAsync(tx, tenantId, companyId, new ReceiptLine(Guid.Empty, 0, 0m, null, rr.StockDocumentId, rr.LineNo, default), journalOfReceipt, ct);
+                Residual? x = itemLine is null ? null : await ReadResidualAsync(tx, tenantId, companyId, journalOfReceipt, itemLine.Value, mGroup, mWarehouse, mItem, false, ct);
+                if (x is not null) found.Add(x);
             }
             if (found.Count == 0) return Fail(Error("ORDER.GRIR_ITEM_INVALID", "P2", $"/items/{i}", ("reason", "no open GR/IR item is selected")));
             decimal residual = found.Sum(x => x.Lc);
