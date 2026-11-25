@@ -24,7 +24,8 @@ internal sealed record ReturnRef(Guid DocumentId, int LineNo, decimal Quantity, 
 
 internal sealed record StockPostOptions(
     string CommandName, bool WriteLog, bool Commit, Func<StockDerivation, Task<byte[]?>>? DetailDigest, IReadOnlyDictionary<int, decimal>? LineValues,
-    string? ReturnDirection = null, IReadOnlyDictionary<int, ReturnRef>? ReturnRefs = null);
+    string? ReturnDirection = null, IReadOnlyDictionary<int, ReturnRef>? ReturnRefs = null,
+    IReadOnlyDictionary<int, string>? LineSources = null, Func<TenantTransaction, PostedDocument, IReadOnlyDictionary<int, int>, Task>? AfterJournal = null);
 
 /// <summary>
 /// stock-documents:post (10, 6.2), first slice: RECEIPT, ISSUE and ADJUSTMENT (a delta or a count) of items without tracking, valued by moving average (5.2) in the company currency, in
@@ -278,6 +279,7 @@ public sealed partial class StockCommands(NpgsqlDataSource source)
         var stock = new Dictionary<(Guid, Guid, Guid?), decimal>();
         var planned = new List<Planned>();
         var pairs = new List<JournalPair>();
+        var creditLineOf = new Dictionary<int, int>();   // request index to the line of the journal that holds its credit (a receipt: the GR/IR line)
         for (int i = 0; i < req.Lines.Count; i++)
         {
             StockLineInput l = req.Lines[i];
@@ -302,6 +304,7 @@ public sealed partial class StockCommands(NpgsqlDataSource source)
                     value = l.UnitPrice is { } price ? StockValuation.ReceiptValue(quantity, price, lcScale) : 0m;
                     valueTc = l.UnitPrice is null ? null : value;
                 }
+                if (options?.LineSources is { } lineSources && lineSources.TryGetValue(i, out string? named)) source = named;   // a line covered by an invoice (11, 7.1)
             }
             else if (req.DocumentType == "ISSUE") { type = "ISSUE"; inbound = false; value = 0m; }
             else if (req.DocumentType == "RETURN")
@@ -359,6 +362,7 @@ public sealed partial class StockCommands(NpgsqlDataSource source)
                     "ADJUST_IN" => ("INVENTORY", "ADJUSTMENT_GAIN"), "RETURN_IN" => ("INVENTORY", "COGS"), "RETURN_OUT" => ("GR_IR", "INVENTORY"), _ => ("ADJUSTMENT_LOSS", "INVENTORY")
                 };
                 pairs.Add(new JournalPair(debit, credit, Math.Abs(value), item.GroupId, l.WarehouseId, item.ItemId, planned.Count));
+                creditLineOf[i] = pairs.Count * 2;
             }
         }
         if (planned.Count == 0) return Reject(Error("SCHEMA.NO_EFFECTIVE_CHANGE", "P6", "/lines", ("reason", "no line has a difference")));
@@ -440,6 +444,7 @@ public sealed partial class StockCommands(NpgsqlDataSource source)
                     DetailDigest: rowHash, Origin: "STOCK", TransactionCurrency: company.LocalCurrency, DocumentId: jid), journalLines, null, ct);
             if (posted.Error is not null) return Reject(posted.Error);
             journal = posted.Document;
+            if (journal is not null && options?.AfterJournal is { } afterJournal) await afterJournal(tx, journal, creditLineOf);
         }
         await using (var cmd = tx.Command(
             "insert into core.stock_document (tenant_id, company_id, stock_document_id, document_type, number_series_id, fiscal_year, sequence_no, document_number, fiscal_period, document_date, " +

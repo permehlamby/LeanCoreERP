@@ -14,7 +14,8 @@ namespace FinanceCore.Data;
 /// reversal does neither), that a derived stock document (detail_digest set) may be reversed, and the callback that gives the detail_digest of the mirror stock document once it is
 /// derived (the row hash of the mirror fulfilment document).
 /// </summary>
-internal sealed record StockReverseOptions(string CommandName, bool WriteLog, bool Commit, bool AllowDerived, Func<StockDerivation, Task<byte[]?>>? DetailDigest);
+internal sealed record StockReverseOptions(string CommandName, bool WriteLog, bool Commit, bool AllowDerived, Func<StockDerivation, Task<byte[]?>>? DetailDigest,
+    Func<TenantTransaction, DateOnly, int, int, long, byte[], CancellationToken, Task<(long Seq, byte[] Hash)>>? ResetClearings = null);
 
 /// <summary>
 /// stock-documents:reverse (10, 5.5, 6.2): the mirror of a stock document posted directly, movement by movement with the opposite sign and the original value, and the mirror of its
@@ -147,6 +148,8 @@ public sealed partial class StockCommands
         if ((await ReadOriginalAsync(true))!.Status != "posted") return Reject(Error("REVERSAL.ALREADY_REVERSED", "P7", "/stock_document_id"));
         var recheck = await JournalDocumentPoster.CheckPeriodAsync(tx, tenantId, companyId, date, ctx, true, ct);
         if (recheck.Errors.Count > 0) return CommandResult<StockDocumentResult>.Rejected(recheck.Errors.Select(e => e with { Path = "/reversal_date" }).ToList());
+        // an owning command that cleared items of the original itself (a receipt that covered an invoice) resets those clearings first, under the CLEARING head
+        if (options?.ResetClearings is { } resetClearings && hasOpenItems) (clearingSeq, clearingHash) = await resetClearings(tx, date, fiscalYear, periodNo, clearingSeq, clearingHash, ct);
 
         // P4 to P6 under the locks: the mirror of each movement and the running balances. What a receipt brought must still be there.
         var cost = new Dictionary<Guid, (decimal Qty, decimal Value)>();

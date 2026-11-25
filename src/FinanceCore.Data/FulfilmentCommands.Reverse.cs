@@ -19,6 +19,38 @@ namespace FinanceCore.Data;
 /// </summary>
 public sealed partial class FulfilmentCommands
 {
+    /// <summary>The coverage that a receipt gave to invoices before receipt: the clearings are reset, so the GR/IR debit of the invoices is open again, and the coverage is given back by rows of the opposite sign (11, 7.1).</summary>
+    private static async Task<(long Seq, byte[] Hash)> ResetCoverageAsync(
+        TenantTransaction tx, Guid tenantId, Guid companyId, CommandContext ctx, Guid receiptId, string command, DateOnly date, int fiscalYear, int periodNo, long seq, byte[] hash, CancellationToken ct)
+    {
+        var rows = new List<(Guid Invoice, int InvoiceLine, int ReceiptLine, decimal Qty, decimal Value, Guid? Clearing)>();
+        await using (var cmd = tx.Command(
+            "select c.purchase_invoice_id, c.invoice_line_no, c.receipt_line_no, c.covered_quantity, c.covered_value_lc, c.clearing_id from core.purchase_invoice_coverage c where c.tenant_id = @t and c.company_id = @c and c.receipt_id = @r " +
+            "and c.covered_quantity > 0 and not exists (select 1 from core.purchase_invoice_coverage n where n.tenant_id = c.tenant_id and n.company_id = c.company_id and n.receipt_id = c.receipt_id and n.receipt_line_no = c.receipt_line_no " +
+            "and n.purchase_invoice_id = c.purchase_invoice_id and n.invoice_line_no = c.invoice_line_no and n.covered_quantity < 0) order by c.coverage_id"))
+        {
+            cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("c", companyId); cmd.Parameters.AddWithValue("r", receiptId);
+            await using var r = await cmd.ExecuteReaderAsync(ct);
+            while (await r.ReadAsync(ct)) rows.Add((r.GetGuid(0), r.GetInt32(1), r.GetInt32(2), r.GetDecimal(3), r.GetDecimal(4), r.IsDBNull(5) ? null : r.GetGuid(5)));
+        }
+        if (rows.Count == 0) return (seq, hash);
+        DateTime at = Now();
+        int n = 0;
+        foreach (Guid clearing in rows.Where(x => x.Clearing is not null).Select(x => x.Clearing!.Value).Distinct())
+            (seq, hash) = await PurchaseInvoiceCommands.ResetClearingAsync(tx, tenantId, companyId, ctx, clearing, receiptId, command, ++n, date, fiscalYear, periodNo, at, seq, hash, ct);
+        foreach (var row in rows)
+        {
+            await using var cmd = tx.Command(
+                "insert into core.purchase_invoice_coverage (tenant_id, company_id, purchase_invoice_id, invoice_line_no, receipt_id, receipt_line_no, covered_quantity, covered_value_lc, created_by, correlation_id) " +
+                "values (@t, @c, @i, @il, @r, @rl, @q, @v, @by, @corr)");
+            cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("c", companyId); cmd.Parameters.AddWithValue("i", row.Invoice); cmd.Parameters.AddWithValue("il", row.InvoiceLine);
+            cmd.Parameters.AddWithValue("r", receiptId); cmd.Parameters.AddWithValue("rl", row.ReceiptLine); cmd.Parameters.AddWithValue("q", -row.Qty); cmd.Parameters.AddWithValue("v", -row.Value);
+            cmd.Parameters.AddWithValue("by", ctx.Actor); cmd.Parameters.AddWithValue("corr", ctx.CorrelationId);
+            await cmd.ExecuteNonQueryAsync(ct);
+        }
+        return (seq, hash);
+    }
+
     private sealed record OriginalLine(
         int LineNo, Guid OrderId, int OrderLineNo, Guid ItemId, decimal Quantity, string UnitCode, decimal BaseQuantity, Guid? WarehouseId, Guid? LocationId, int? StockLine, int StockLineCount,
         decimal? UnitPrice, string? Currency, decimal? Value);
@@ -206,8 +238,9 @@ public sealed partial class FulfilmentCommands
                 {
                     ["tenant_id"] = tenantId, ["company_id"] = companyId, ["document_id"] = documentId, ["line_no"] = l.LineNo, ["order_id"] = l.OrderId, ["order_line_no"] = l.OrderLineNo,
                     ["item_id"] = l.ItemId, ["quantity"] = -l.Quantity, ["unit_code"] = l.UnitCode, ["base_quantity"] = -l.BaseQuantity, ["warehouse_id"] = l.WarehouseId,
-                    ["location_id"] = l.LocationId, ["tracking_id"] = null, ["stock_status"] = "AVAILABLE", ["stock_document_line_no"] = m?.LineNo, ["stock_document_line_count"] = m is null ? 0 : 1,
-                    ["unit_price"] = l.UnitPrice, ["currency"] = l.Currency, ["value_lc"] = m is null ? null : sales ? -m.ValueLc : m.ValueLc
+                    ["location_id"] = l.LocationId, ["tracking_id"] = null, ["stock_status"] = "AVAILABLE", ["stock_document_line_no"] = m?.LineNo, ["stock_document_line_count"] = m is null ? 0 : l.StockLineCount,
+                    ["unit_price"] = l.UnitPrice, ["currency"] = l.Currency,
+                    ["value_lc"] = m is null ? null : Enumerable.Range(l.StockLine!.Value - 1, Math.Max(1, l.StockLineCount)).Sum(x => sales ? -byStockLine[x].ValueLc : byStockLine[x].ValueLc)
                 });
             }
             lineDigest = FulfilmentHash2.LineDigest(lineRows);
@@ -225,7 +258,8 @@ public sealed partial class FulfilmentCommands
 
         if (stockId is { } sid)
         {
-            var options = new StockReverseOptions(commandName, WriteLog: false, Commit: false, AllowDerived: true, BuildNodeAsync);
+            var options = new StockReverseOptions(commandName, WriteLog: false, Commit: false, AllowDerived: true, BuildNodeAsync,
+                ResetClearings: sales ? null : (t, resetDate, resetYear, resetPeriod, seq, hash, token) => ResetCoverageAsync(t, tenantId, companyId, ctx, originalId, commandName, resetDate, resetYear, resetPeriod, seq, hash, token));
             var reversed = await _stock.ReverseCoreAsync(tx, tenantId, ctx, companyId, sid, req.ReasonCode, date, fingerprint, ct, options);
             if (reversed.Status != CommandStatus.Ok)
                 return CommandResult<FulfilmentResult>.Rejected(reversed.Errors.Select(e => e with { Path = Regex.Replace(e.Path ?? "", @"^/stock_document_id", "/document_id") }).ToList());

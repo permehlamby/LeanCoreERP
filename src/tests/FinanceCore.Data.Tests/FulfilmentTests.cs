@@ -1427,4 +1427,66 @@ public class FulfilmentTests
             Assert.True(verify.Status == CommandStatus.Ok && verify.Value!.Ok, chain + " " + Describe(verify));
         }
     }
+
+    [Fact]
+    public async Task AnInvoiceBeforeReceiptWaitsInGrIrAndTheReceiptsCoverItAtTheInvoiceValue()
+    {
+        var s = await SetupAsync();
+        var t = s.T;
+        var pur = await PurchaseSetupAsync(s);
+        await t.ExecuteAsync("insert into core.company_order_setting_version (tenant_id, company_id, effective_from, allow_invoice_before_receipt, created_by) values (@t, @c, date '2026-01-01', true, 'test')");
+        var created = await s.Orders.CreateAsync(OrderKind.Purchase, t.TenantId, Ctx(s, "po", "purchase.order"), new(
+            D(("company_id", t.CompanyId), ("order_date", "2026-03-01"), ("order_currency", "DKK"), ("supplier_partner_id", s.Supplier), ("ship_from_country", "DK")),
+            [D(("item_id", s.Item), ("quantity", 100), ("unit_code", "C62"), ("unit_price", 10), ("warehouse_id", s.Warehouse), ("match_mode", "TWO_WAY"))]));
+        Assert.True(created.Status == CommandStatus.Ok, Describe(created));
+        var po = created.Value!;
+
+        // 60 of the 100 are invoiced at 11 before anything is received: Dr GR/IR 660 waits, no stock moves, no difference is posted
+        var r = await PostPurchaseInvoice(s, "i1", "SI-1", 825, new PurchaseInvoiceLineInput("L1", po.OrderId, 1, 60, 11, 660, pur.Code, 165));
+        Assert.True(r.Status == CommandStatus.Ok, Describe(r));
+        var inv = r.Value!;
+        Assert.Null(inv.StockDocumentId);
+        Assert.Equal((660m, 660m, 0m, 660m), (await SumOfAsync(s, inv.JournalDocumentId, s.GrIr), await BalanceAsync(s, s.GrIr), await BalanceAsync(s, s.Inventory),
+            await t.ScalarAsync<decimal>($"select unreceived_gr_ir_lc from core.purchase_invoice_line where tenant_id = @t and purchase_invoice_id = '{inv.PurchaseInvoiceId}'")));
+        Assert.Equal("OPEN", await ItemStatusAsync(s, inv.JournalDocumentId));
+        Assert.Equal(["MATCH.QUANTITY_EXCEEDS_ORDERED"], Codes(await PostPurchaseInvoice(s, "i2", "SI-2", 512.5m, new PurchaseInvoiceLineInput("L1", po.OrderId, 1, 41, 10, 410, pur.Code, 102.5m))));
+
+        // 40 are received: they cover 40 of the 60 at the invoice value 440, and the receipt clears that part of the invoice's GR/IR debit
+        var first = await ReceiveAsync(s, "r1", po, 40);
+        Assert.Equal((440m, 440m, 220m, "PARTIAL"), (first.Lines[0].ValueLc ?? 0m, await BalanceAsync(s, s.Inventory), await BalanceAsync(s, s.GrIr), await ItemStatusAsync(s, inv.JournalDocumentId)));
+        Assert.Equal(("INVOICE", 40m), (
+            await t.ScalarAsync<string>($"select cost_source from core.stock_movement where tenant_id = @t and stock_document_id = '{first.StockDocumentId}' and line_no = 1"),
+            await t.ScalarAsync<decimal>("select coalesce(sum(covered_quantity), 0) from core.purchase_invoice_coverage where tenant_id = @t")));
+
+        // 60 more: 20 cover the rest of the invoice at its value (220), 40 are at the order price (400); the line is split in two movements
+        var second = await ReceiveAsync(s, "r2", po, 60, "2026-03-11");
+        Assert.Equal((620m, 1060m, -400m, "CLEARED"), (second.Lines[0].ValueLc ?? 0m, await BalanceAsync(s, s.Inventory), await BalanceAsync(s, s.GrIr), await ItemStatusAsync(s, inv.JournalDocumentId)));
+        Assert.Equal((2L, "INVOICE", 220m, "COMPUTED", 400m), (
+            await t.ScalarAsync<long>($"select stock_document_line_count from core.purchase_receipt_line where tenant_id = @t and receipt_id = '{second.DocumentId}'"),
+            await t.ScalarAsync<string>($"select cost_source from core.stock_movement where tenant_id = @t and stock_document_id = '{second.StockDocumentId}' and line_no = 1"),
+            await t.ScalarAsync<decimal>($"select value_lc from core.stock_movement where tenant_id = @t and stock_document_id = '{second.StockDocumentId}' and line_no = 1"),
+            await t.ScalarAsync<string>($"select cost_source from core.stock_movement where tenant_id = @t and stock_document_id = '{second.StockDocumentId}' and line_no = 2"),
+            await t.ScalarAsync<decimal>($"select value_lc from core.stock_movement where tenant_id = @t and stock_document_id = '{second.StockDocumentId}' and line_no = 2")));
+
+        // the last 40 are matched to the units that no invoice covered, at the order price: no difference and GR/IR is empty
+        var rest = await PostPurchaseInvoice(s, "i3", "SI-3", 500, new PurchaseInvoiceLineInput("L1", po.OrderId, 1, 40, 10, 400, pur.Code, 100));
+        Assert.True(rest.Status == CommandStatus.Ok, Describe(rest));
+        Assert.Equal((0m, 1060m), (await BalanceAsync(s, s.GrIr), await BalanceAsync(s, s.Inventory)));
+        Assert.Equal(["MATCH.QUANTITY_EXCEEDS_ORDERED"], Codes(await PostPurchaseInvoice(s, "i4", "SI-4", 12.5m, new PurchaseInvoiceLineInput("L1", po.OrderId, 1, 1, 10, 10, pur.Code, 2.5m))));
+
+        // the receipt that covered is reversed (after the invoice that matched it): the coverage is given back and the invoice waits again for those 20
+        Assert.Equal(["ORDER.RECEIPT_INVOICED"], Codes(await s.Cmds.ReverseReceiptAsync(t.TenantId, Ctx(s, "rr0", "purchase.receive"), new(t.CompanyId, second.DocumentId, "CORRECTION"))));
+        Assert.Equal(CommandStatus.Ok, (await ReversePurchaseInvoice(s, "rev3", rest.Value!.PurchaseInvoiceId)).Status);
+        var rv = await s.Cmds.ReverseReceiptAsync(t.TenantId, Ctx(s, "rr1", "purchase.receive"), new(t.CompanyId, second.DocumentId, "CORRECTION"));
+        Assert.True(rv.Status == CommandStatus.Ok, Describe(rv));
+        Assert.Equal((440m, 220m, "PARTIAL", 40m), (await BalanceAsync(s, s.Inventory), await BalanceAsync(s, s.GrIr), await ItemStatusAsync(s, inv.JournalDocumentId),
+            await t.ScalarAsync<decimal>("select coalesce(sum(covered_quantity), 0) from core.purchase_invoice_coverage where tenant_id = @t")));
+        var again = await ReceiveAsync(s, "r3", po, 60, "2026-03-12");
+        Assert.Equal((620m, "CLEARED"), (again.Lines[0].ValueLc ?? 0m, await ItemStatusAsync(s, inv.JournalDocumentId)));
+        foreach (string chain in new[] { "LEDGER", "CLEARING", "STOCK" })
+        {
+            var verify = await new ChainVerification(t.App).VerifyAsync(t.TenantId, t.Context("v" + chain, "chain.verify"), new(t.CompanyId, chain));
+            Assert.True(verify.Status == CommandStatus.Ok && verify.Value!.Ok, chain + " " + Describe(verify));
+        }
+    }
 }

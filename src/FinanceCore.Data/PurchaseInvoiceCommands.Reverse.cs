@@ -290,7 +290,7 @@ public sealed partial class PurchaseInvoiceCommands
     /// <summary>
     /// The reset of one clearing that the invoice made (03, 5.4): a new clearing of type RESET with the mirrored items, opposite in sign. The open items get their cleared amounts and status back.
     /// </summary>
-    private static async Task<(long Seq, byte[] Hash)> ResetClearingAsync(
+    internal static async Task<(long Seq, byte[] Hash)> ResetClearingAsync(
         TenantTransaction tx, Guid tenantId, Guid companyId, CommandContext ctx, Guid clearingId, Guid invoiceId, string command, int number, DateOnly date, int fiscalYear, int periodNo, DateTime at, long seq0, byte[] hash0, CancellationToken ct)
     {
         Guid account;

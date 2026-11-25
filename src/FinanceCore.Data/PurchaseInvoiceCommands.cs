@@ -40,7 +40,7 @@ public sealed partial class PurchaseInvoiceCommands(NpgsqlDataSource source)
         string Origin, string Destination, string MatchMode, decimal OverTolerancePct, string LineStatus, Guid ItemGroup, string UnitCode, decimal Quantity);
 
     /// <summary>A receipt line: of a purchase receipt, or (Direct) a receipt movement of a stock document posted without an order (D3), whose id and line then take the place of the receipt id and line number.</summary>
-    private sealed record ReceiptLine(Guid ReceiptId, int LineNo, decimal BaseQuantity, decimal? ValueLc, Guid? StockDocumentId, int? StockDocumentLineNo, DateOnly ReceiptDate, bool Direct = false);
+    private sealed record ReceiptLine(Guid ReceiptId, int LineNo, decimal BaseQuantity, decimal? ValueLc, Guid? StockDocumentId, int? StockDocumentLineNo, DateOnly ReceiptDate, bool Direct = false, bool CoverageInBase = false);
 
     private sealed class Link(Guid? receiptId, int? receiptLineNo, decimal baseQuantity, decimal net, ReceiptLine? receipt)
     {
@@ -62,6 +62,8 @@ public sealed partial class PurchaseInvoiceCommands(NpgsqlDataSource source)
     private sealed record Work(int Index, PurchaseInvoiceLineInput Input, OrderLine Line, string MatchMode, List<Link> Links, Guid Account, bool Stock)
     {
         public bool Direct => Input.ReceiptRef is not null;
+        /// <summary>A stock line that is matched to receipt lines (and not one that waits for its receipt, 11, 7.2).</summary>
+        public bool Matched => Stock && Links.Any(k => k.Receipt is not null);
     }
 
     public async Task<CommandResult<PurchaseInvoiceResult>> PostAsync(Guid tenantId, CommandContext ctx, PostPurchaseInvoiceRequest req, CancellationToken ct = default)
@@ -188,7 +190,6 @@ public sealed partial class PurchaseInvoiceCommands(NpgsqlDataSource source)
             cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("c", companyId); cmd.Parameters.AddWithValue("d", postingDate);
             if (await cmd.ExecuteScalarAsync(ct) is bool b) allowBeforeReceipt = b;
         }
-        _ = allowBeforeReceipt;   // TWO_WAY stock lines are not built in this slice
 
         var apAccount = await AccountDeterminationResolver.ResolveAsync(tx, tenantId, companyId, "AP_CONTROL", null, null, supplier, null, postingDate, ct);
         if (apAccount is null) return Reject(Error("ORDER.ACCOUNT_DETERMINATION_MISSING", "P5", "/lines", ("role_code", "AP_CONTROL"), ("partner_id", supplier)));
@@ -215,7 +216,7 @@ public sealed partial class PurchaseInvoiceCommands(NpgsqlDataSource source)
             if (ol.LineStatus == "CANCELLED") { errors.Add(Error("ORDER.LINE_NOT_OPEN", "P2", p + "/purchase_order_line_no", ("line_no", l.PurchaseOrderLineNo), ("status", ol.LineStatus))); continue; }
             bool stock = ol.ItemType == "GOODS";
             string mode = stock ? ol.MatchMode : "TWO_WAY";
-            if (stock && mode == "TWO_WAY") { errors.Add(Error("LIMIT.INVOICE_TWO_WAY_NOT_BUILT", "P2", p + "/purchase_order_line_no", ("line_no", l.PurchaseOrderLineNo))); continue; }
+            if (stock && mode == "TWO_WAY" && directReceipt is null && !allowBeforeReceipt) { errors.Add(Error("MATCH.TWO_WAY_NOT_ALLOWED", "P2", p + "/purchase_order_line_no", ("line_no", l.PurchaseOrderLineNo))); continue; }
             if (!stock && l.ReceiptLineRefs is { Count: > 0 }) { errors.Add(Error("MATCH.NO_RECEIPT", "P2", p + "/receipt_line_refs", ("reason", "a service or non-stock line is not matched to a receipt line"))); continue; }
 
             var key = directReceipt is null ? (l.PurchaseOrderId, l.PurchaseOrderLineNo) : (directReceipt.ReceiptId, directReceipt.LineNo);
@@ -235,13 +236,27 @@ public sealed partial class PurchaseInvoiceCommands(NpgsqlDataSource source)
             if (Math.Round(baseQty, 6) != baseQty) { errors.Add(Error("INVENTORY.QUANTITY_SCALE_EXCEEDED", "P1", p + "/quantity", ("base_quantity", baseQty))); continue; }
             if (baseQty > open)
             {
-                errors.Add(Error(stock ? "MATCH.QUANTITY_EXCEEDS_RECEIVED" : "MATCH.QUANTITY_EXCEEDS_ORDERED", "P4", p + "/quantity", ("base_quantity", baseQty), ("open_to_invoice", open), ("invoiced", invoiced), ("received", received)));
+                errors.Add(Error(stock && mode == "THREE_WAY" ? "MATCH.QUANTITY_EXCEEDS_RECEIVED" : "MATCH.QUANTITY_EXCEEDS_ORDERED", "P4", p + "/quantity", ("base_quantity", baseQty), ("open_to_invoice", open), ("invoiced", invoiced), ("received", received)));
                 continue;
             }
 
             // the allocation to receipt lines (stock lines): the named ones, otherwise the oldest with uninvoiced quantity
+            // a TWO_WAY stock line is matched to the receipt lines that are received and not invoiced; the quantity that is not received yet is posted to GR/IR and waits for its receipt (7.2)
+            bool waiting = false;
+            if (stock && mode == "TWO_WAY" && directReceipt is null)
+            {
+                decimal avail = 0m;
+                foreach (ReceiptLine c in await ReadReceiptLinesAsync(tx, tenantId, companyId, l.PurchaseOrderId, l.PurchaseOrderLineNo, ct))
+                    avail += Math.Max(0m, c.BaseQuantity - (await InvoicedByReceiptLineAsync(tx, tenantId, companyId, c.ReceiptId, c.LineNo, false, ct)
+                        + (c.CoverageInBase ? 0m : await CoveredByReceiptLineAsync(tx, tenantId, companyId, c.ReceiptId, c.LineNo, ct)) + receiptRunning.GetValueOrDefault((c.ReceiptId, c.LineNo))));
+                if (baseQty > avail)
+                {
+                    if (avail > 0m) { errors.Add(Error("LIMIT.INVOICE_TWO_WAY_MIXED_NOT_BUILT", "P2", p + "/quantity", ("base_quantity", baseQty), ("received_not_invoiced", avail))); continue; }
+                    waiting = true;
+                }
+            }
             var links = new List<Link>();
-            if (stock)
+            if (stock && !waiting)
             {
                 var candidates = directReceipt is not null ? [directReceipt] : await ReadReceiptLinesAsync(tx, tenantId, companyId, l.PurchaseOrderId, l.PurchaseOrderLineNo, ct);
                 if (l.ReceiptLineRefs is { Count: > 0 } named)
@@ -260,7 +275,7 @@ public sealed partial class PurchaseInvoiceCommands(NpgsqlDataSource source)
                 decimal left = baseQty;
                 foreach (ReceiptLine c in candidates)
                 {
-                    decimal already = await InvoicedByReceiptLineAsync(tx, tenantId, companyId, c.ReceiptId, c.LineNo, c.Direct, ct) + receiptRunning.GetValueOrDefault((c.ReceiptId, c.LineNo));
+                    decimal already = await InvoicedByReceiptLineAsync(tx, tenantId, companyId, c.ReceiptId, c.LineNo, c.Direct, ct) + (c.Direct || c.CoverageInBase ? 0m : await CoveredByReceiptLineAsync(tx, tenantId, companyId, c.ReceiptId, c.LineNo, ct)) + receiptRunning.GetValueOrDefault((c.ReceiptId, c.LineNo));
                     decimal take = Math.Min(left, Math.Max(0m, c.BaseQuantity - already));
                     if (take <= 0m) continue;
                     receiptRunning[(c.ReceiptId, c.LineNo)] = receiptRunning.GetValueOrDefault((c.ReceiptId, c.LineNo)) + take;
@@ -294,12 +309,12 @@ public sealed partial class PurchaseInvoiceCommands(NpgsqlDataSource source)
         var plan = new MatchPlan();
         var costRead = new Dictionary<Guid, (decimal Qty, decimal Value)>();
         int lcScale = await ScaleOfAsync(tx, currency, ct);
-        if (work.Any(w => w.Stock))
+        if (work.Any(w => w.Matched))
         {
             var located = await LocateItemsAsync(tx, tenantId, companyId, work, ct);
             var items = await ReadItemsAsync(tx, tenantId, companyId, located, false, ct);
             await ComputeSharesAsync(tx, tenantId, companyId, work, located, items, plan, ct);
-            foreach (Work w in work.Where(x => x.Stock))
+            foreach (Work w in work.Where(x => x.Matched))
                 foreach (Link k in w.Links)
                 {
                     k.ReceiptLc = -plan.Shares[k].Lc;
@@ -352,7 +367,7 @@ public sealed partial class PurchaseInvoiceCommands(NpgsqlDataSource source)
 
         Guid invoiceId = Guid.NewGuid(), journalId = Guid.NewGuid();
         Guid? stockId = adjusts ? Guid.NewGuid() : null;
-        var clearingIds = work.Where(w => w.Stock).Select(w => w.Account).Distinct().ToDictionary(a => a, _ => Guid.NewGuid());
+        var clearingIds = work.Where(w => w.Matched).Select(w => w.Account).Distinct().ToDictionary(a => a, _ => Guid.NewGuid());
         List<Dictionary<string, object?>> linkRows = [];
         var headerDigest = new Dictionary<string, object?>
         {
@@ -374,7 +389,7 @@ public sealed partial class PurchaseInvoiceCommands(NpgsqlDataSource source)
                         ["receipt_id"] = k.Direct ? null : k.ReceiptId, ["receipt_line_no"] = k.Direct ? null : k.ReceiptLineNo, ["stock_document_id"] = k.Direct ? k.ReceiptId : null, ["stock_document_line_no"] = k.Direct ? k.ReceiptLineNo : null, ["base_quantity"] = k.BaseQuantity,
                         ["unit_price"] = w.Input.UnitPrice, ["net_amount"] = k.Net, ["tax_amount"] = w.Links[0] == k ? w.Input.TaxAmount!.Value : 0m, ["order_unit_price"] = w.Direct ? null : w.Line.UnitPrice, ["match_mode_used"] = w.MatchMode,
                         ["tolerance_used"] = w.MatchMode == "TWO_WAY" ? w.Line.OverTolerancePct : null, ["price_difference_lc"] = k.Diff, ["on_hand_part_lc"] = k.OnHand, ["consumed_part_lc"] = k.Consumed,
-                        ["dropship_part_lc"] = 0m, ["unreceived_gr_ir_lc"] = 0m, ["gr_ir_clearing_id"] = k.ReceiptId is null ? null : clearingIds[w.Account], ["tax_code_id"] = code,
+                        ["dropship_part_lc"] = 0m, ["unreceived_gr_ir_lc"] = w.Stock && k.Receipt is null ? k.Net : 0m, ["gr_ir_clearing_id"] = k.ReceiptId is null ? null : clearingIds[w.Account], ["tax_code_id"] = code,
                         ["tax_code_version_id"] = tax?.VersionId, ["tax_date"] = tax?.TaxDate, ["journal_line_no"] = lineNos[w.Index].Main, ["line_ref"] = w.Input.LineRef
                     });
             }
@@ -387,7 +402,7 @@ public sealed partial class PurchaseInvoiceCommands(NpgsqlDataSource source)
         {
             byte[] link = DigestOf(facts);
             if (stockId is null) return link;
-            var adjustments = work.Where(x => x.Stock).SelectMany(w => w.Links.Where(k => k.OnHand != 0m).Select(k => new AdjItem(w.Line.ItemId, k.Warehouse!.Value, k.Location, k.OnHand, w.Input.LineRef))).ToList();
+            var adjustments = work.Where(x => x.Matched).SelectMany(w => w.Links.Where(k => k.OnHand != 0m).Select(k => new AdjItem(w.Line.ItemId, k.Warehouse!.Value, k.Location, k.OnHand, w.Input.LineRef))).ToList();
             stockDraft = await PrepareStockAsync(tx, tenantId, companyId, ctx, stockId.Value, journalId, req.InvoiceDate, postingDate, currency, adjustments, costRead, link, ct);
             return CombinedDigest(link, stockDraft.RowHash);
         }
@@ -444,7 +459,7 @@ public sealed partial class PurchaseInvoiceCommands(NpgsqlDataSource source)
     private static async Task<Dictionary<(Guid, int), (Guid Doc, int Line)>> LocateItemsAsync(TenantTransaction tx, Guid tenantId, Guid companyId, List<Work> work, CancellationToken ct)
     {
         var wanted = new Dictionary<(Guid, int), (Guid Doc, int Line)>();
-        foreach (Work w in work.Where(x => x.Stock))
+        foreach (Work w in work.Where(x => x.Matched))
             foreach (Link k in w.Links)
             {
                 Guid journalId = await StockJournalAsync(tx, tenantId, companyId, k.Receipt!.StockDocumentId!.Value, ct);
@@ -486,7 +501,7 @@ public sealed partial class PurchaseInvoiceCommands(NpgsqlDataSource source)
         int gcScale = await ScaleOfAsync(tx, items.Values.First().GcCurrency, ct);
         int? rcScale = items.Values.First().RcCurrency is { } rcCurrency ? await ScaleOfAsync(tx, rcCurrency, ct) : null;
         var running = new Dictionary<(Guid, int), decimal>();
-        foreach (Work w in work.Where(x => x.Stock))
+        foreach (Work w in work.Where(x => x.Matched))
             foreach (Link k in w.Links)
             {
                 var key = (k.ReceiptId!.Value, k.ReceiptLineNo!.Value);
@@ -519,7 +534,7 @@ public sealed partial class PurchaseInvoiceCommands(NpgsqlDataSource source)
         var items = await ReadItemsAsync(tx, tenantId, companyId, wanted, true, ct);
         var plan = new MatchPlan();
         await ComputeSharesAsync(tx, tenantId, companyId, work, wanted, items, plan, ct);
-        foreach (Work w in work.Where(x => x.Stock))
+        foreach (Work w in work.Where(x => x.Matched))
             foreach (Link k in w.Links)
                 if (-plan.Shares[k].Lc != k.ReceiptLc) throw new MatchRejection(new CommandError("SYSTEM.CONFLICT", "P7", "", null, true));
 
@@ -527,7 +542,7 @@ public sealed partial class PurchaseInvoiceCommands(NpgsqlDataSource source)
         DateTime at = DateTime.UtcNow;
         at = new DateTime(at.Ticks - at.Ticks % 10, DateTimeKind.Utc);
 
-        foreach (var group in work.Where(x => x.Stock).GroupBy(x => x.Account).OrderBy(g => g.Key))
+        foreach (var group in work.Where(x => x.Matched).GroupBy(x => x.Account).OrderBy(g => g.Key))
         {
             var shares = new Dictionary<(Guid, int), (GrIrItem Item, decimal Tc, decimal Lc, decimal Gc, decimal? Rc)>();
             var invoiceItems = new List<(int LineNo, string Currency, decimal Tc, decimal Lc, decimal Gc, decimal? Rc)>();
@@ -645,13 +660,18 @@ public sealed partial class PurchaseInvoiceCommands(NpgsqlDataSource source)
     {
         var list = new List<ReceiptLine>();
         await using var cmd = tx.Command(
-            "select x.receipt_id, x.line_no, x.base_quantity, x.value_lc, h.stock_document_id, x.stock_document_line_no, h.receipt_date from core.purchase_receipt_line x join core.purchase_receipt h " +
-            "on h.tenant_id = x.tenant_id and h.company_id = x.company_id and h.receipt_id = x.receipt_id where x.tenant_id = @t and x.company_id = @c and x.purchase_order_id = @o and x.purchase_order_line_no = @n " +
+            "select x.receipt_id, x.line_no, x.base_quantity, x.value_lc, h.stock_document_id, x.stock_document_line_no, h.receipt_date, x.stock_document_line_count, m2.base_quantity, m2.value_lc from core.purchase_receipt_line x join core.purchase_receipt h " +
+            "on h.tenant_id = x.tenant_id and h.company_id = x.company_id and h.receipt_id = x.receipt_id left join core.stock_movement m2 on m2.tenant_id = x.tenant_id and m2.company_id = x.company_id and m2.stock_document_id = h.stock_document_id " +
+            "and x.stock_document_line_count = 2 and m2.line_no = x.stock_document_line_no + 1 where x.tenant_id = @t and x.company_id = @c and x.purchase_order_id = @o and x.purchase_order_line_no = @n " +
             "and h.status = 'posted' and h.reversal_of_receipt_id is null order by h.chain_seq, x.line_no");
         cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("c", companyId); cmd.Parameters.AddWithValue("o", orderId); cmd.Parameters.AddWithValue("n", lineNo);
         await using var r = await cmd.ExecuteReaderAsync(ct);
         while (await r.ReadAsync(ct))
-            list.Add(new ReceiptLine(r.GetGuid(0), r.GetInt32(1), r.GetDecimal(2), r.IsDBNull(3) ? null : r.GetDecimal(3), r.IsDBNull(4) ? null : r.GetGuid(4), r.IsDBNull(5) ? null : r.GetInt32(5), DateOnly.FromDateTime(r.GetDateTime(6))));
+            {
+            // a line of two movements (the covered units and the rest) is matched through the second one, where the units that no invoice covered are
+            if (!r.IsDBNull(8)) list.Add(new ReceiptLine(r.GetGuid(0), r.GetInt32(1), r.GetDecimal(8), r.IsDBNull(9) ? null : r.GetDecimal(9), r.IsDBNull(4) ? null : r.GetGuid(4), r.GetInt32(5) + 1, DateOnly.FromDateTime(r.GetDateTime(6)), false, true));
+            else list.Add(new ReceiptLine(r.GetGuid(0), r.GetInt32(1), r.GetDecimal(2), r.IsDBNull(3) ? null : r.GetDecimal(3), r.IsDBNull(4) ? null : r.GetGuid(4), r.IsDBNull(5) ? null : r.GetInt32(5), DateOnly.FromDateTime(r.GetDateTime(6))));
+        }
         return list;
     }
 
@@ -680,6 +700,14 @@ public sealed partial class PurchaseInvoiceCommands(NpgsqlDataSource source)
         if (!await r.ReadAsync(ct) || r.GetString(3).Trim() != "GOODS") return null;
         string destination = r.GetString(6).Trim(), origin = r.IsDBNull(7) ? destination : r.GetString(7).Trim();
         return new OrderLine(Guid.Empty, 0, r.GetGuid(0), "GOODS", receipt.BaseQuantity, 0m, 1m, 0m, r.IsDBNull(4) ? null : r.GetGuid(4), r.GetGuid(1), origin, destination, "THREE_WAY", 0m, "OPEN", r.GetGuid(2), r.GetString(5).Trim(), receipt.BaseQuantity);
+    }
+
+    /// <summary>What receipts cover of a receipt line before it is matched: the units that an invoice before receipt took (11, 7.1), net of the reversals of the receipt.</summary>
+    private static async Task<decimal> CoveredByReceiptLineAsync(TenantTransaction tx, Guid tenantId, Guid companyId, Guid receiptId, int lineNo, CancellationToken ct)
+    {
+        await using var cmd = tx.Command("select coalesce(sum(covered_quantity), 0) from core.purchase_invoice_coverage where tenant_id = @t and company_id = @c and receipt_id = @r and receipt_line_no = @n");
+        cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("c", companyId); cmd.Parameters.AddWithValue("r", receiptId); cmd.Parameters.AddWithValue("n", lineNo);
+        return (decimal)(await cmd.ExecuteScalarAsync(ct))!;
     }
 
     private static async Task<int> ScaleOfAsync(TenantTransaction tx, string currency, CancellationToken ct)
@@ -736,7 +764,8 @@ public sealed partial class PurchaseInvoiceCommands(NpgsqlDataSource source)
         await using var cmd = t.Command(
             "insert into core.purchase_invoice_line (tenant_id, company_id, purchase_invoice_id, line_no, line_kind, purchase_order_id, purchase_order_line_no, receipt_id, receipt_line_no, stock_document_id, stock_document_line_no, base_quantity, unit_price, net_amount, " +
             "tax_amount, order_unit_price, match_mode_used, tolerance_used, price_difference_lc, on_hand_part_lc, consumed_part_lc, dropship_part_lc, unreceived_gr_ir_lc, gr_ir_clearing_id, tax_code_id, tax_code_version_id, " +
-            "tax_date, journal_line_no) values (@t, @c, @id, @n, 'MATCHED', @o, @ol, @r, @rl, @sd, @sl, @bq, @up, @net, @tax, @oup, @mm, @tol, @pd, @oh, @co, 0, 0, @gc, @tc, @tv, @td, @jl)");
+            "tax_date, journal_line_no) values (@t, @c, @id, @n, 'MATCHED', @o, @ol, @r, @rl, @sd, @sl, @bq, @up, @net, @tax, @oup, @mm, @tol, @pd, @oh, @co, 0, @ur, @gc, @tc, @tv, @td, @jl)");
+        cmd.Parameters.AddWithValue("ur", row["unreceived_gr_ir_lc"]!);
         cmd.Parameters.Add(new NpgsqlParameter("sd", NpgsqlDbType.Uuid) { Value = row["stock_document_id"] ?? DBNull.Value });
         cmd.Parameters.Add(new NpgsqlParameter("sl", NpgsqlDbType.Integer) { Value = row["stock_document_line_no"] ?? DBNull.Value });
         cmd.Parameters.AddWithValue("pd", row["price_difference_lc"]!); cmd.Parameters.AddWithValue("oh", row["on_hand_part_lc"]!); cmd.Parameters.AddWithValue("co", row["consumed_part_lc"]!);

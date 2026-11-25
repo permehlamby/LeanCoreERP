@@ -200,6 +200,7 @@ public sealed partial class PurchaseInvoiceCommands
                 ? (direct is null ? null : await DirectOrderLineAsync(tx, tenantId, companyId, supplier, direct, ct))
                 : await ReadOrderLineAsync(tx, tenantId, companyId, row.OrderId, row.OrderLineNo, ct);
             if (ol is null) { errors.Add(Error("CONFIG.INVALID_REFERENCE", "P2", p, ("reason", "the order line of the invoice line is not found"))); continue; }
+            if (ol.ItemType == "GOODS" && row.ReceiptId is null && row.StockDocId is null) { errors.Add(Error("LIMIT.CREDIT_UNRECEIVED_NOT_BUILT", "P2", p + "/invoice_line_no", ("line_no", l.InvoiceLineNo), ("reason", "the line waits for its receipt"))); continue; }
             bool stock = ol.ItemType == "GOODS" && (row.ReceiptId is not null || row.StockDocId is not null);
             string role = stock ? "GR_IR" : "PURCHASE_EXPENSE";
             var account = await AccountDeterminationResolver.ResolveAsync(tx, tenantId, companyId, role, ol.ItemGroup, ol.Warehouse, stock ? null : supplier, ol.ItemId, postingDate, ct);

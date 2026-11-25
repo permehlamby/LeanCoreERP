@@ -85,6 +85,10 @@ public sealed partial class FulfilmentCommands(NpgsqlDataSource source)
                 }
                 return await PostCoreAsync(tx, kind, tenantId, ctx, companyId, date, headerWarehouse, reference1, reference2, sourceRef, lines, fingerprint, ct);
             }
+            catch (CoverRejection ex)
+            {
+                return Reject(ex.Error);
+            }
             catch (PostgresException ex) when (ex.SqlState == PostgresErrorCodes.UniqueViolation && ex.TableName == "command_log" && attempt == 0)
             {
             }
@@ -99,6 +103,50 @@ public sealed partial class FulfilmentCommands(NpgsqlDataSource source)
         }
     }
 
+    /// <summary>
+    /// The invoiced goods that are not received yet and that this receipt covers (11, 7.1): per receipt line the invoice lines of its order line that are waiting (TWO_WAY, a GR/IR debit with no receipt),
+    /// oldest first, each with what is left of its quantity and of its value. The covered value of a piece is its share of the invoice value; the piece that takes the rest of a line takes the rest of its value.
+    /// </summary>
+    private static async Task<Dictionary<int, List<CoverPiece>>> PlanCoverageAsync(TenantTransaction tx, Guid tenantId, Guid companyId, List<Work> work, int lcScale, CancellationToken ct)
+    {
+        var result = new Dictionary<int, List<CoverPiece>>();
+        var rowsOf = new Dictionary<(Guid, int), List<PendingInvoiceRow>>();
+        foreach (Work w in work.Where(x => x.Stocked))
+        {
+            var key = (w.Input.OrderId, w.Input.OrderLineNo);
+            if (!rowsOf.TryGetValue(key, out var rows))
+            {
+                rows = [];
+                await using var cmd = tx.Command(
+                    "select l.purchase_invoice_id, l.line_no, h.journal_document_id, l.journal_line_no, l.base_quantity, l.unreceived_gr_ir_lc, " +
+                    "coalesce((select sum(c.covered_quantity) from core.purchase_invoice_coverage c where c.tenant_id = l.tenant_id and c.company_id = l.company_id and c.purchase_invoice_id = l.purchase_invoice_id and c.invoice_line_no = l.line_no), 0), " +
+                    "coalesce((select sum(c.covered_value_lc) from core.purchase_invoice_coverage c where c.tenant_id = l.tenant_id and c.company_id = l.company_id and c.purchase_invoice_id = l.purchase_invoice_id and c.invoice_line_no = l.line_no), 0) " +
+                    "from core.purchase_invoice_line l join core.purchase_invoice h on h.tenant_id = l.tenant_id and h.company_id = l.company_id and h.purchase_invoice_id = l.purchase_invoice_id " +
+                    "where l.tenant_id = @t and l.company_id = @c and l.purchase_order_id = @o and l.purchase_order_line_no = @n and h.invoice_kind = 'INVOICE' and l.unreceived_gr_ir_lc > 0 " +
+                    "and not exists (select 1 from core.purchase_invoice m where m.tenant_id = h.tenant_id and m.company_id = h.company_id and m.reversal_of_purchase_invoice_id = h.purchase_invoice_id) " +
+                    "order by h.created_at, l.purchase_invoice_id, l.line_no");
+                cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("c", companyId); cmd.Parameters.AddWithValue("o", key.Item1); cmd.Parameters.AddWithValue("n", key.Item2);
+                await using var r = await cmd.ExecuteReaderAsync(ct);
+                while (await r.ReadAsync(ct))
+                    rows.Add(new PendingInvoiceRow(r.GetGuid(0), r.GetInt32(1), r.GetGuid(2), r.GetInt32(3), r.GetDecimal(4), r.GetDecimal(5), r.GetDecimal(4) - r.GetDecimal(6), r.GetDecimal(5) - r.GetDecimal(7)));
+                rowsOf[key] = rows;
+            }
+            decimal need = w.BaseQuantity;
+            var pieces = new List<CoverPiece>();
+            foreach (PendingInvoiceRow row in rows)
+            {
+                if (need <= 0m) break;
+                if (row.QtyLeft <= 0m) continue;
+                decimal take = Math.Min(need, row.QtyLeft);
+                decimal value = take == row.QtyLeft ? row.ValueLeft : Math.Min(row.ValueLeft, Math.Round(row.Value * take / row.Qty, lcScale, MidpointRounding.AwayFromZero));
+                row.QtyLeft -= take; row.ValueLeft -= value; need -= take;
+                pieces.Add(new CoverPiece(row.InvoiceId, row.LineNo, row.Journal, row.JournalLine, take, value));
+            }
+            if (pieces.Count > 0) result[w.Index] = pieces;
+        }
+        return result;
+    }
+
     private static decimal Num(JsonElement row, string name) => row.GetProperty(name).GetDecimal();
 
     private static string? Str(JsonElement row, string name) => row.TryGetProperty(name, out var v) && v.ValueKind != JsonValueKind.Null ? v.ToString() : null;
@@ -109,6 +157,22 @@ public sealed partial class FulfilmentCommands(NpgsqlDataSource source)
             $"select coalesce(sum(base_quantity), 0) from core.{kind.Line} where tenant_id = @t and company_id = @c and {kind.OrderIdColumn.Replace("sales_order_id", "sales_order_id")} = @o and {kind.OrderLineColumn} = @n");
         cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("c", companyId); cmd.Parameters.AddWithValue("o", orderId); cmd.Parameters.AddWithValue("n", orderLineNo);
         return (decimal)(await cmd.ExecuteScalarAsync(ct))!;
+    }
+
+    /// <summary>The part of an invoice line that a receipt line covers (11, 7.1): the invoice line, its GR/IR item, the quantity and the value of the invoice.</summary>
+    private sealed record CoverPiece(Guid InvoiceId, int InvoiceLineNo, Guid InvoiceJournal, int JournalLineNo, decimal Qty, decimal Value);
+
+    private sealed record CoverageRow(Guid InvoiceId, int InvoiceLineNo, int WorkIndex, decimal Qty, decimal Value, Guid ClearingId);
+
+    private sealed class PendingInvoiceRow(Guid invoiceId, int lineNo, Guid journal, int journalLine, decimal qty, decimal value, decimal qtyLeft, decimal valueLeft)
+    {
+        public Guid InvoiceId { get; } = invoiceId; public int LineNo { get; } = lineNo; public Guid Journal { get; } = journal; public int JournalLine { get; } = journalLine;
+        public decimal Qty { get; } = qty; public decimal Value { get; } = value; public decimal QtyLeft { get; set; } = qtyLeft; public decimal ValueLeft { get; set; } = valueLeft;
+    }
+
+    private sealed class CoverRejection(CommandError error) : Exception("cover rejected")
+    {
+        public CommandError Error { get; } = error;
     }
 
     private sealed record Work(
@@ -229,6 +293,9 @@ public sealed partial class FulfilmentCommands(NpgsqlDataSource source)
         byte[] lineDigest = [];
         Guid? stockId = null, journalId = null;
         Dictionary<int, DerivedMovement> byRequest = [];
+        var stockMap = new Dictionary<int, (int First, int Count)>();   // work index to its first request line and the number of request lines (2 when a receipt line is split)
+        var covers = new Dictionary<int, List<CoverPiece>>();
+        var pendingCoverage = new List<CoverageRow>();
 
         async Task<byte[]?> BuildNodeAsync(StockDerivation? derivation)
         {
@@ -240,8 +307,9 @@ public sealed partial class FulfilmentCommands(NpgsqlDataSource source)
             lineRows = [];
             foreach (Work w in work)
             {
-                DerivedMovement? m = w.StockLine is null ? null : byRequest[w.StockLine.Value - 1];
-                decimal? value = m is null ? null : kind.Order.Kind == "SALES" ? -m.ValueLc : m.ValueLc;
+                (int First, int Count) sm = stockMap.TryGetValue(w.Index, out var mapped) ? mapped : (-1, 0);
+                DerivedMovement? m = sm.Count == 0 ? null : byRequest[sm.First];
+                decimal? value = m is null ? null : Enumerable.Range(sm.First, sm.Count).Sum(x => kind.Order.Kind == "SALES" ? -byRequest[x].ValueLc : byRequest[x].ValueLc);
                 decimal? unitPrice = null; string? currency = null;
                 if (kind.Order.Kind == "PURCHASE")
                 {
@@ -253,7 +321,7 @@ public sealed partial class FulfilmentCommands(NpgsqlDataSource source)
                     ["tenant_id"] = tenantId, ["company_id"] = companyId, ["document_id"] = documentId, ["line_no"] = lineRows.Count + 1, ["order_id"] = w.Input.OrderId,
                     ["order_line_no"] = w.Input.OrderLineNo, ["item_id"] = w.ItemId, ["quantity"] = w.Input.Quantity, ["unit_code"] = w.Input.UnitCode, ["base_quantity"] = w.BaseQuantity,
                     ["warehouse_id"] = w.Warehouse, ["location_id"] = w.Input.LocationId, ["tracking_id"] = null, ["stock_status"] = "AVAILABLE",
-                    ["stock_document_line_no"] = m?.LineNo, ["stock_document_line_count"] = m is null ? 0 : 1, ["unit_price"] = unitPrice, ["currency"] = currency, ["value_lc"] = value
+                    ["stock_document_line_no"] = m?.LineNo, ["stock_document_line_count"] = sm.Count, ["unit_price"] = unitPrice, ["currency"] = currency, ["value_lc"] = value
                 });
             }
             lineDigest = FulfilmentHash2.LineDigest(lineRows);
@@ -273,23 +341,141 @@ public sealed partial class FulfilmentCommands(NpgsqlDataSource source)
         StockDocumentResult? stockResult = null;
         if (stockLines > 0)
         {
-            var stockInputs = work.Where(w => w.Stocked).Select(w => new StockLineInput(
-                w.Input.LineRef, w.ItemId, w.Warehouse!.Value, w.Input.Quantity, w.Input.UnitCode, w.Input.LocationId)).ToList();
-            var stockRequest = new PostStockDocumentRequest(companyId, kind.StockType, date, date, stockInputs, null, null, number);
-            Dictionary<int, decimal>? values = null;
-            if (kind.Order.Kind == "PURCHASE")
+            var stockInputs = new List<StockLineInput>();
+            var values = new Dictionary<int, decimal>();
+            var sources = new Dictionary<int, string>();
+            var requestWork = new List<int>();   // the work of every request line of the stock document
+            bool purchase = kind.Order.Kind == "PURCHASE";
+            covers = purchase ? await PlanCoverageAsync(tx, tenantId, companyId, work, lcScale, ct) : [];
+            foreach (Work w in work.Where(w => w.Stocked))
             {
-                values = [];
-                int k = 0;
-                foreach (Work w in work.Where(w => w.Stocked))
-                    values[k++] = FulfilmentRules.ReceiptValue(Num(w.OrderLine, "net_amount"), Num(w.OrderLine, "base_quantity"), w.BaseQuantity, lcScale);
+                int first = stockInputs.Count;
+                decimal orderedNet = purchase ? Num(w.OrderLine, "net_amount") : 0m, orderedBase = purchase ? Num(w.OrderLine, "base_quantity") : 0m;
+                if (!covers.TryGetValue(w.Index, out var pieces))
+                {
+                    stockInputs.Add(new StockLineInput(w.Input.LineRef, w.ItemId, w.Warehouse!.Value, w.Input.Quantity, w.Input.UnitCode, w.Input.LocationId));
+                    requestWork.Add(w.Index);
+                    if (purchase) values[first] = FulfilmentRules.ReceiptValue(orderedNet, orderedBase, w.BaseQuantity, lcScale);
+                    stockMap[w.Index] = (first, 1);
+                    continue;
+                }
+                // a receipt line that an earlier invoice covers is split: the covered units at the invoice value (source INVOICE), the rest at the order price (11, 7.1, 10, 5.6.1)
+                decimal coveredBase = pieces.Sum(x => x.Qty), coveredValue = pieces.Sum(x => x.Value), factor = w.BaseQuantity / w.Input.Quantity;
+                decimal coveredQty = coveredBase / factor, restQty = w.Input.Quantity - coveredQty;
+                if (Math.Round(coveredQty, 6) != coveredQty || coveredQty * factor != coveredBase || Math.Round(restQty, 6) != restQty)
+                    throw new CoverRejection(Error("LIMIT.RECEIPT_SPLIT_UNIT_NOT_BUILT", "P4", $"/lines/{w.Index}/quantity", ("unit_code", w.Input.UnitCode)));
+                stockInputs.Add(new StockLineInput(w.Input.LineRef, w.ItemId, w.Warehouse!.Value, coveredQty, w.Input.UnitCode, w.Input.LocationId));
+                requestWork.Add(w.Index); values[first] = coveredValue; sources[first] = "INVOICE";
+                int count = 1;
+                if (restQty > 0m)
+                {
+                    stockInputs.Add(new StockLineInput(w.Input.LineRef + "#R", w.ItemId, w.Warehouse!.Value, restQty, w.Input.UnitCode, w.Input.LocationId));
+                    requestWork.Add(w.Index);
+                    values[first + 1] = FulfilmentRules.ReceiptValue(orderedNet, orderedBase, w.BaseQuantity - coveredBase, lcScale);
+                    count = 2;
+                }
+                stockMap[w.Index] = (first, count);
             }
-            var options = new StockPostOptions(kind.Order.Kind == "SALES" ? "sales-deliveries:post" : "purchase-receipts:post", WriteLog: false, Commit: false, BuildNodeAsync, values);
+            var stockRequest = new PostStockDocumentRequest(companyId, kind.StockType, date, date, stockInputs, null, null, number);
+
+            // once the journal is posted: the GR/IR credit of the covered units is cleared against the GR/IR debit of the invoices, in the same transaction (11, 7.1)
+            async Task CoverAsync(TenantTransaction t, PostedDocument journalDocument, IReadOnlyDictionary<int, int> creditLineOf)
+            {
+                var byAccount = new Dictionary<Guid, List<(int WorkIndex, PostedLine Credit, List<CoverPiece> Pieces)>>();
+                foreach (var (workIndex, pieces) in covers)
+                {
+                    PostedLine credit = journalDocument.Lines.Single(l => l.LineNo == creditLineOf[stockMap[workIndex].First]);
+                    if (!byAccount.TryGetValue(credit.AccountId, out var list)) byAccount[credit.AccountId] = list = [];
+                    list.Add((workIndex, credit, pieces));
+                }
+                (long headSeq, byte[] headHash, _) = await CommandSupport.LockOrCreateHeadAsync(t, tenantId, companyId, ClearingHash2.ChainType, "", LedgerHash2.Genesis(tenantId, companyId, ClearingHash2.ChainType, ""), ct);
+                DateTime clearedAt = Now();
+                int number2 = 0;
+                foreach (var (account, entries) in byAccount.OrderBy(x => x.Key))
+                {
+                    number2++;
+                    var keys = entries.SelectMany(e => e.Pieces).Select(p => (Doc: p.InvoiceJournal, Line: p.JournalLineNo)).Distinct().OrderBy(k => k.Doc).ThenBy(k => k.Line).ToList();
+                    var items = new Dictionary<(Guid, int), (Guid Account, decimal Tc, decimal Lc, decimal Gc, decimal? Rc, decimal CTc, decimal CLc, decimal CGc, decimal? CRc)>();
+                    foreach (var (doc, line) in keys)
+                    {
+                        await using var cmd = t.Command(
+                            "select l.account_id, l.amount_tc, l.amount_lc, l.amount_gc, l.amount_rc, oi.cleared_amount_tc, oi.cleared_amount_lc, oi.cleared_amount_gc, oi.cleared_amount_rc from core.journal_line_open_item oi " +
+                            "join core.journal_line l on l.tenant_id = oi.tenant_id and l.company_id = oi.company_id and l.document_id = oi.document_id and l.line_no = oi.line_no " +
+                            "where oi.tenant_id = @t and oi.company_id = @c and oi.document_id = @d and oi.line_no = @n for update of oi");
+                        cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("c", companyId); cmd.Parameters.AddWithValue("d", doc); cmd.Parameters.AddWithValue("n", line);
+                        await using var r = await cmd.ExecuteReaderAsync(ct);
+                        if (!await r.ReadAsync(ct)) throw new CoverRejection(new CommandError("SYSTEM.CONFLICT", "P7", "", null, true));
+                        items[(doc, line)] = (r.GetGuid(0), r.GetDecimal(1), r.GetDecimal(2), r.GetDecimal(3), r.IsDBNull(4) ? null : r.GetDecimal(4), r.GetDecimal(5), r.GetDecimal(6), r.GetDecimal(7), r.IsDBNull(8) ? null : r.GetDecimal(8));
+                    }
+                    Guid clearingId = Guid.NewGuid();
+                    var clearingItems = new List<(Guid Doc, int Line, string Currency, decimal Tc, decimal Lc, decimal Gc, decimal? Rc)>();
+                    var adds = new Dictionary<(Guid, int), (decimal Tc, decimal Lc, decimal Gc, decimal? Rc)>();
+                    foreach (var (workIndex, credit, pieces) in entries.OrderBy(e => e.WorkIndex))
+                    {
+                        decimal coveredValue = pieces.Sum(p => p.Value);
+                        if (credit.AmountTc != -coveredValue || credit.AmountLc != -coveredValue) throw new CoverRejection(new CommandError("SYSTEM.CONFLICT", "P7", "", null, true));
+                        clearingItems.Add((journalDocument.DocumentId, credit.LineNo, credit.CurrencyLc, credit.AmountTc, credit.AmountLc, credit.AmountGc, credit.AmountRc));
+                        decimal gcLeft = -credit.AmountGc; decimal? rcLeft = credit.AmountRc is null ? null : -credit.AmountRc;
+                        for (int k = 0; k < pieces.Count; k++)
+                        {
+                            CoverPiece p = pieces[k];
+                            var item = items[(p.InvoiceJournal, p.JournalLineNo)];
+                            if (item.Account != account) throw new CoverRejection(new CommandError("SYSTEM.CONFLICT", "P7", "", null, true));
+                            bool lastPiece = k == pieces.Count - 1;
+                            decimal gc = lastPiece ? gcLeft : Math.Round(-credit.AmountGc * p.Value / coveredValue, 4, MidpointRounding.AwayFromZero);
+                            gcLeft -= gc;
+                            decimal? rc = rcLeft is null ? null : lastPiece ? rcLeft : Math.Round(-credit.AmountRc!.Value * p.Value / coveredValue, 4, MidpointRounding.AwayFromZero);
+                            rcLeft = rcLeft is null ? null : rcLeft - rc;
+                            clearingItems.Add((p.InvoiceJournal, p.JournalLineNo, credit.CurrencyLc, p.Value, p.Value, gc, rc));
+                            var cur = adds.GetValueOrDefault((p.InvoiceJournal, p.JournalLineNo));
+                            adds[(p.InvoiceJournal, p.JournalLineNo)] = (cur.Tc + p.Value, cur.Lc + p.Value, cur.Gc + gc, rc is null && cur.Rc is null ? null : (cur.Rc ?? 0m) + (rc ?? 0m));
+                            pendingCoverage.Add(new CoverageRow(p.InvoiceId, p.InvoiceLineNo, workIndex, p.Qty, p.Value, clearingId));
+                        }
+                    }
+                    foreach (var (key, add) in adds)
+                        if (items[key].Lc - items[key].CLc < add.Lc) throw new CoverRejection(new CommandError("SYSTEM.CONFLICT", "P7", "", null, true));
+                    long seq = headSeq + 1;
+                    string baseKey = ctx.IdempotencyKey.Length > 90 ? ctx.IdempotencyKey[..90] : ctx.IdempotencyKey;
+                    CommandContext cctx = ctx with { IdempotencyKey = $"{baseKey}#K{number2}" };
+                    string matchingRef = documentId.ToString("D");
+                    var body2 = new Dictionary<string, object?>
+                    {
+                        ["clearing_id"] = clearingId, ["clearing_type"] = "CLEAR", ["clearing_date"] = date, ["fiscal_year"] = journalDocument.FiscalYear, ["fiscal_period"] = journalDocument.FiscalPeriod, ["cleared_at"] = clearedAt,
+                        ["account_id"] = account, ["partner_id"] = null, ["document_id"] = null, ["reset_of_clearing_id"] = null, ["clearing_method"] = "AUTO_MATCH", ["matching_ref"] = matchingRef,
+                        ["source_system"] = ctx.SourceSystem, ["idempotency_key"] = cctx.IdempotencyKey, ["command_name"] = "purchase-receipts:post", ["cleared_by"] = ctx.Actor, ["correlation_id"] = ctx.CorrelationId
+                    };
+                    var itemRows = clearingItems.Select((i, n) => (IReadOnlyDictionary<string, object?>)new Dictionary<string, object?>
+                    {
+                        ["tenant_id"] = tenantId, ["company_id"] = companyId, ["clearing_id"] = clearingId, ["item_no"] = n + 1, ["clearing_date"] = date, ["open_item_document_id"] = i.Doc, ["open_item_line_no"] = i.Line,
+                        ["currency_tc"] = i.Currency, ["cleared_amount_tc"] = i.Tc, ["cleared_amount_lc"] = i.Lc, ["cleared_amount_gc"] = i.Gc, ["cleared_amount_rc"] = i.Rc
+                    }).ToList();
+                    byte[] rowHash2 = ClearingHash2.RowHash(tenantId, companyId, seq, headHash, body2, ClearingHash2.ItemsDigest(itemRows), null);
+                    var synthetic = new PostClearingRequest(companyId, account, null, date, "AUTO_MATCH", matchingRef, null, []);
+                    await ClearingPoster.InsertClearingAsync(t, tenantId, synthetic, cctx, clearingId, null, seq, journalDocument.FiscalYear, journalDocument.FiscalPeriod, clearedAt, headHash, rowHash2, "CLEAR", null, "purchase-receipts:post", ct);
+                    for (int n = 0; n < clearingItems.Count; n++)
+                        await ClearingPoster.InsertItemAsync(t, tenantId, synthetic, clearingId, n + 1, clearingItems[n].Doc, clearingItems[n].Line, clearingItems[n].Currency, clearingItems[n].Tc, clearingItems[n].Lc, clearingItems[n].Gc, clearingItems[n].Rc, ct);
+                    foreach (var (_, credit, _) in entries)
+                        await ClearingPoster.UpdateOpenItemAsync(t, tenantId, companyId, journalDocument.DocumentId, credit.LineNo, clearingId, "CLEARED", credit.AmountTc, credit.AmountLc, credit.AmountGc, credit.AmountRc, ct);
+                    foreach (var (key, add) in adds)
+                    {
+                        var item = items[key];
+                        decimal tc = item.CTc + add.Tc, lc = item.CLc + add.Lc, gc2 = item.CGc + add.Gc; decimal? rc2 = item.CRc is null && add.Rc is null ? null : (item.CRc ?? 0m) + (add.Rc ?? 0m);
+                        await ClearingPoster.UpdateOpenItemAsync(t, tenantId, companyId, key.Item1, key.Item2, clearingId, tc == item.Tc && lc == item.Lc ? "CLEARED" : "PARTIAL", tc, lc, gc2, rc2, ct);
+                    }
+                    await ClearingPoster.MoveHeadAsync(t, tenantId, companyId, ClearingHash2.ChainType, "", seq, rowHash2, ClearingHash2.Version, ct);
+                    await CommandSupport.WriteOutboxAsync(t, tenantId, companyId, ctx, "clearing.posted", "CLEARING", $"{companyId:D}/{clearingId:D}", "POSTED", clearedAt, isAudit: true,
+                        JsonSerializer.Serialize(new Dictionary<string, object?> { ["chain_type"] = "CLEARING", ["scope"] = "", ["chain_seq"] = seq, ["row_hash"] = Canonical.FormatHex32(rowHash2) }),
+                        JsonSerializer.Serialize(new Dictionary<string, object?> { ["clearing_id"] = clearingId, ["partner_id"] = null, ["account_id"] = account, ["items"] = clearingItems.Count }), ct);
+                    headSeq = seq; headHash = rowHash2;
+                }
+            }
+            var options = new StockPostOptions(kind.Order.Kind == "SALES" ? "sales-deliveries:post" : "purchase-receipts:post", WriteLog: false, Commit: false, BuildNodeAsync, purchase ? values : null,
+                LineSources: sources.Count > 0 ? sources : null, AfterJournal: covers.Count > 0 ? CoverAsync : null);
             var posted = await _stock.PostCoreAsync(tx, tenantId, ctx, stockRequest, fingerprint, ct, options);
             if (posted.Status != CommandStatus.Ok)
             {
                 // the stock request has the stock lines only: its paths name those lines, the request of this command names all of them
-                var stockIndex = work.Where(w => w.Stocked).Select(w => w.Index).ToArray();
+                var stockIndex = requestWork.ToArray();
                 return CommandResult<FulfilmentResult>.Rejected(posted.Errors.Select(e => e with
                 {
                     Path = Regex.Replace(e.Path ?? "", @"^/lines/(\d+)", m => $"/lines/{stockIndex[int.Parse(m.Groups[1].Value, CultureInfo.InvariantCulture)]}")
@@ -339,6 +525,16 @@ public sealed partial class FulfilmentCommands(NpgsqlDataSource source)
                 cmd.Parameters.Add(new NpgsqlParameter("cur", NpgsqlDbType.Text) { Value = row["currency"] ?? DBNull.Value });
                 cmd.Parameters.AddWithValue("slc", row["stock_document_line_count"]!);
             }
+            await cmd.ExecuteNonQueryAsync(ct);
+        }
+        foreach (CoverageRow c in pendingCoverage)
+        {
+            await using var cmd = tx.Command(
+                "insert into core.purchase_invoice_coverage (tenant_id, company_id, purchase_invoice_id, invoice_line_no, receipt_id, receipt_line_no, covered_quantity, covered_value_lc, clearing_id, created_by, correlation_id) " +
+                "values (@t, @c, @i, @il, @r, @rl, @q, @v, @cl, @by, @corr)");
+            cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("c", companyId); cmd.Parameters.AddWithValue("i", c.InvoiceId); cmd.Parameters.AddWithValue("il", c.InvoiceLineNo);
+            cmd.Parameters.AddWithValue("r", documentId); cmd.Parameters.AddWithValue("rl", work.FindIndex(x => x.Index == c.WorkIndex) + 1); cmd.Parameters.AddWithValue("q", c.Qty);
+            cmd.Parameters.AddWithValue("v", c.Value); cmd.Parameters.AddWithValue("cl", c.ClearingId); cmd.Parameters.AddWithValue("by", ctx.Actor); cmd.Parameters.AddWithValue("corr", ctx.CorrelationId);
             await cmd.ExecuteNonQueryAsync(ct);
         }
         await ClearingPoster.MoveHeadAsync(tx, tenantId, companyId, FulfilmentHash2.ChainType, "", chainSeq, rowHash, FulfilmentHash2.Version, ct);

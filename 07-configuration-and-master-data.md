@@ -805,6 +805,17 @@ For the resources `gl-accounts`, `business-partners` (with PII, company relation
 
 These deltas are applied in 02 and 06 with this spec.
 
+### 13.2am Invoice before receipt, TWO_WAY stock lines (F-IMPL-68, 2026-11-25)
+
+PROPOSED, written down so that spec and code agree. It builds on 11, 7.1 and 7.2 and on 13.2ad to 13.2al.
+
+1. **Invoice.** A stock line of an order line with `match_mode` TWO_WAY (the company allows invoicing before receipt, MATCH.TWO_WAY_NOT_ALLOWED) is limited by ordered plus the line over tolerance less invoiced (MATCH.QUANTITY_EXCEEDS_ORDERED). The receipt lines that are received, not invoiced and not covered are matched first, as three-way. When none is left the line waits: a link row without receipt with `unreceived_gr_ir_lc`, a debit on GR/IR (an open item without partner) with the tax facts, no difference, no stock document. A line partly received is LIMIT.INVOICE_TWO_WAY_MIXED_NOT_BUILT.
+2. **Receipt.** The first units of a receipt line cover the waiting invoice lines of the order line, oldest first, at the value of the invoice. A receipt line that is covered in part is split in two stock lines, INVOICE for the covered units and COMPUTED at the order price for the rest; the receipt line has `stock_document_line_count` 2.
+3. **Clearing.** In the same transaction the GR/IR credit of the covered units is cleared against the GR/IR debit of the invoice lines, per GR/IR account, with partial amounts; the item of an invoice line is PARTIAL until all its quantity is covered.
+4. **Coverage.** `purchase_invoice_coverage` records what a receipt line covers of an invoice line (insert-only). Matching skips covered units, and a line of two movements is matched through its second one.
+5. **Reversal.** `purchase-receipts:reverse` resets the clearings of the covered units and gives the coverage back; the invoice then waits for those units again. An invoice whose item a receipt cleared is reversed after the receipt (REVERSAL.HAS_CLEARED_LINES).
+6. **Not built.** A partly received TWO_WAY line, a split in a unit that does not divide, returns of covered units.
+
 ### 13.2al Credit note against a receipt without an order (F-IMPL-67, 2026-11-25)
 
 PROPOSED, written down so that spec and code agree. It builds on 13.2ah and 13.2ak.
