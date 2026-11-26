@@ -15,7 +15,7 @@ namespace FinanceCore.Data;
 /// warning wait for their tables (LIMIT.RETURN_TYPE_NOT_BUILT).
 /// Locks (04, 6.3): the VAT_RETURN head first, then the rows of the period are read. Two preparations of one company are serialised by the head.
 /// </summary>
-public sealed class VatReturnCommands(NpgsqlDataSource source)
+public sealed partial class VatReturnCommands(NpgsqlDataSource source)
 {
     public const string PreparePermission = "vat.prepare";
     public const string FilePermission = "vat.file";

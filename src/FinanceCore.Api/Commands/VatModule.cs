@@ -19,6 +19,8 @@ public sealed class VatModule : ICommandModule
             (sp, t, c, r, ct) => sp.GetRequiredService<VatSettlement>().ReverseAsync(t, c, r, ct));
         catalog.Add<PrepareVatReturnRequest, VatReturnResult>("vat-returns:preview", VatReturnCommands.PreparePermission,
             (sp, t, c, r, ct) => sp.GetRequiredService<VatReturnCommands>().PreviewAsync(t, c, r, ct));
+        catalog.Add<GetVatPositionRequest, VatPositionResult>("vat-positions:get", LedgerReads.Permission,
+            (sp, t, c, r, ct) => sp.GetRequiredService<VatReturnCommands>().GetPositionAsync(t, c, r, ct));
         catalog.Add<ListVatReturnsRequest, VatReturnList>("vat-returns:list", VatReturnCommands.ReadPermission,
             (sp, t, c, r, ct) => sp.GetRequiredService<VatReturnCommands>().ListAsync(t, c, r, ct));
         catalog.Add<GetVatReturnRequest, VatReturnResult>("vat-returns:get", VatReturnCommands.ReadPermission,

@@ -7,12 +7,12 @@ Oprettet 2026-11-12, efter at momsområdet (V1–V5) og DK-pakkens momsindhold e
 | Område | Status |
 |---|---|
 | Hovedbog, clearing, perioder, partner, retention, API-skal | Bygget (første slice) |
-| Moms/VAT (08, 19), skatte- og fradragstabeller | Bygget (V1–V5). Mangler `vat-positions:get` og `legacy_tax_summary` |
+| Moms/VAT (08, 19), skatte- og fradragstabeller | Bygget (V1–V5) og `vat-positions:get` (F-IMPL-87). Mangler `legacy_tax_summary` |
 | Dimensioner (typede og frie) | Bygget (migration 0022) |
 | Landepakkeformat (18) | Signering bygget (F-IMPL-43: signeret arkiv, tillidssæt, verifikation, PRODUCTION kun signeret). Delvist: DK-pakkens momsindhold installeres med `package apply-vat`, og kørslerne registreres. VALIDATE-tilstand og `config-packages:diff` mangler |
 | Revaluering og årsafslutning (05) | Bygget (0029, F-IMPL-40): revaluering med rerun, årsafslutning og genåbning, forældelsestjek ved hard-close. Mangler: SQL-checks, kørsel mod Supabase, historik-variant (migration), tidsstempeljob for anchors |
 | Anchors (`chain_anchor`) og RFC 3161-tidsstempel | Ikke bygget |
-| Læse-API'er og søgning (09) | To slices bygget (F-IMPL-41, F-IMPL-45): dokumenter, saldi, kontoudtog, åbne poster, aging, dokumentkontekst, kædestatus, revisionshændelser, partnerlæsning med PII-log (migration 0033). Mangler søgning (`contains`), flere selskaber, extensions, `vat-positions:get`, læselogtømning og `access.summary` |
+| Læse-API'er og søgning (09) | To slices bygget (F-IMPL-41, F-IMPL-45): dokumenter, saldi, kontoudtog, åbne poster, aging, dokumentkontekst, kædestatus, revisionshændelser, partnerlæsning med PII-log (migration 0033). Mangler søgning (`contains`), flere selskaber, extensions, læselogtømning og `access.summary` |
 | Outbox-jobs, eksport, anonymisering, tenant-sletning | Ikke bygget (hændelser skrives, men ingen jobs) |
 | Migration (13) | To slices bygget (F-IMPL-44, F-IMPL-46): åbningsbalancer og åbne poster fra åbning til seal, rollback, four-eyes (commit, seal, approve) og læsninger. Mangler historik (HISTORY-chunk, historieår, CLOSING), lager, ordrer, legacy_tax_summary, legacy_id_map, VALIDATE-tilstand |
 | Lager (10) | Tre slices bygget (F-IMPL-47, 48, 50): stamdata, kontobestemmelse og lagerbogen med modtagelse, udlevering og regulering til glidende gennemsnit, bogføring og STOCK-kæde. Mangler FIFO, sporing, overførsler, returvarer, landed cost, reversering, reservationer og negativ beholdning |

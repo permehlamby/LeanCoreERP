@@ -188,7 +188,7 @@ Til EC-listen skal hver momslinje høre til et dokument med præcis én partner 
 
 ## 12. Ikke bygget
 
-- `vat-positions:get` (løbende momsposition) og momsoversigten fra en migration (`legacy_tax_summary`).
+- Momsoversigten fra en migration (`legacy_tax_summary`). Den løbende momsposition (`vat-positions:get`) er bygget (F-IMPL-87).
 - Året-afslutningens regulering af en foreløbig fradragssats, investeringsgoder og afregningsmetoder med betalingstidspunkt (kontantmoms).
 - Signeret pakkearkiv, VALIDATE-tilstand og `config-packages:diff`. Resten af DK-pakkens indhold (hele standardkontoplanen, betalingsbetingelser, indstillinger) installeres ikke af `apply-vat`.
 - DK-pakken er DRAFT. Intet i den er verificeret, og kategorien AE på reverse charge-kodernes EN 16931-data (F-DK-25) er et valg, som den juridiske reviewer skal bekræfte.

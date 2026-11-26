@@ -805,6 +805,17 @@ For the resources `gl-accounts`, `business-partners` (with PII, company relation
 
 These deltas are applied in 02 and 06 with this spec.
 
+### 13.2at The read vat-positions:get (F-IMPL-87, 2026-11-26)
+
+PROPOSED, written down so that spec and code agree. It builds on 09, 4.10 and 08, 7.4.
+
+1. **Built.** `vat-positions:get` (`read.ledger`): `registration_id`, `return_type`, optional `as_of_date` (default today). Result: the VAT period that holds the date, the number of tax lines and late lines, and the rows (BOX, EC_LIST or OSS) in the shape of a return row.
+2. **Lines.** The tax lines of the registration with a tax date up to the date that no current snapshot holds. The checks of `vat-returns:prepare` (closed periods, earlier return, existing returns) do not apply.
+3. **Late.** A line with a tax date before the start of the VAT period of the date; counted per row (`late_line_count`) and in total.
+4. **Non-deductible tax.** A BOX row returns `nondeductible_amount` (19, 7): the allocated non-deductible tax of its lines times the VAT rate, with the sign of the tax part of the mapping. Informational, never part of `tax_amount`.
+5. **Errors.** VAT.NO_REGISTRATION, VAT.REGISTRATION_INACTIVE, VAT.PERIOD_NOT_FOUND, SCHEMA.INVALID_VALUE (return type, scheme).
+6. **Not built.** The missing-evidence warning, a position at a past date by reconstruction.
+
 ### 13.2as The FULFILMENT chain in chains:verify (F-IMPL-86, 2026-11-26)
 
 PROPOSED, written down so that spec and code agree. It builds on 11, 5.5 and 06, 7.4.

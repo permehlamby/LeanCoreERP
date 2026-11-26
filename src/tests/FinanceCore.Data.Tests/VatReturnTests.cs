@@ -376,6 +376,47 @@ public class VatReturnTests
     }
 
     [Fact]
+    public async Task ThePositionIsTheUnreportedTaxLinesUpToTheDateWithTheLateLinesFlagged()
+    {
+        var t = await TestTenant.CreateReadyAsync();
+        var w = await Setup(t);
+        var vat = new VatReturnCommands(t.App);
+        Task<CommandResult<VatPositionResult>> Position(string key, DateOnly? asOf, string permission = "read.ledger", string type = "STANDARD", Guid? registration = null) =>
+            vat.GetPositionAsync(t.TenantId, t.Context(key, permission), new(registration ?? w.Registration, type, asOf));
+        await Post(t, "s1", Sale(t, 1000m, "2026-01-10"));
+        await Post(t, "s2", Sale(t, 2000m, "2026-02-10"));
+        await Post(t, "p1", Purchase(t, 400m, "2026-03-15"));
+
+        // the position of the quarter is what a return of it would hold; the date cuts it
+        var q1 = await Position("p-q1", new DateOnly(2026, 3, 31));
+        Assert.True(q1.Status == CommandStatus.Ok, Describe(q1));
+        Assert.Equal((1, 3, 0, new DateOnly(2026, 1, 1), new DateOnly(2026, 3, 31), "DKK"), (q1.Value!.VatPeriodNo, q1.Value.TaxLineCount, q1.Value.LateLineCount, q1.Value.PeriodStartDate, q1.Value.PeriodEndDate, q1.Value.CurrencyCode));
+        Assert.Equal(["B1", "B2", "B3"], q1.Value.Lines.Select(l => l.BoxCode!).ToArray());
+        Assert.Equal((3000m, 750m, 100m), (q1.Value.Lines[0].BaseAmount, q1.Value.Lines[1].TaxAmount, q1.Value.Lines[2].TaxAmount));
+        Assert.All(q1.Value.Lines, l => Assert.Equal((0m, "BOX"), (l.NondeductibleAmount, l.RowType)));
+        var january = await Position("p-jan", new DateOnly(2026, 1, 31));
+        Assert.Equal((1, 1000m), (january.Value!.TaxLineCount, january.Value.Lines.Single(l => l.BoxCode == "B1").BaseAmount));
+
+        // a prepared return takes its lines out of the position; a late line shows in the position of the next period, flagged
+        await CloseQuarter(t, 1);
+        Assert.Equal(CommandStatus.Ok, (await Prepare(t, w, "q1")).Status);
+        Assert.Empty((await Position("p-after", new DateOnly(2026, 3, 31))).Value!.Lines);
+        await Post(t, "late", Sale(t, 400m, "2026-04-05", taxDate: "2026-02-20"));
+        await Post(t, "q2doc", Sale(t, 100m, "2026-04-06"));
+        var q2 = (await Position("p-q2", new DateOnly(2026, 4, 30))).Value!;
+        Assert.Equal((2, 2, 1), (q2.VatPeriodNo, q2.TaxLineCount, q2.LateLineCount));
+        Assert.Equal((500m, 1), (q2.Lines.Single(l => l.BoxCode == "B1").BaseAmount, q2.Lines.Single(l => l.BoxCode == "B1").LateLineCount));
+
+        // the errors
+        Assert.Equal(["AUTH.PERMISSION_MISSING"], Codes(await Position("e1", null, "vat.read")));
+        Assert.Equal(["SCHEMA.INVALID_VALUE"], Codes(await Position("e2", null, type: "OTHER")));
+        Assert.Equal(["SCHEMA.INVALID_VALUE"], Codes(await Position("e3", null, registration: Guid.Empty)));
+        Assert.Equal(["VAT.NO_REGISTRATION"], Codes(await Position("e4", null, registration: Guid.NewGuid())));
+        Assert.Equal(["VAT.PERIOD_NOT_FOUND"], Codes(await Position("e5", new DateOnly(2031, 6, 1))));
+        Assert.Equal(["SCHEMA.INVALID_VALUE"], Codes(await Position("e6", null, type: "OSS")));   // the scheme files STANDARD
+    }
+
+    [Fact]
     public async Task ASettlementNeedsItsRoleAndItsSeries()
     {
         foreach (var (series, role, expected) in new[] { (false, true, "SERIES.NO_ASSIGNMENT"), (true, false, "CONFIG.ROLE_NOT_ASSIGNED") })

@@ -117,6 +117,26 @@ public class TaxDeductionTests
     }
 
     [Fact]
+    public async Task ThePositionShowsTheNondeductibleTaxOfABoxRowInTheReturnCurrency()
+    {
+        var t = await TestTenant.CreateReadyAsync();
+        var w = await Setup(t);
+        var tax = new TaxCommands(t.App);
+        Assert.Equal(CommandStatus.Ok, (await tax.CreateBoxAsync(t.TenantId, Cfg(t, "box"), new("DK", "STANDARD", "B3", D(("name", "Box B3"))))).Status);
+        var c = await tax.CreateCodeAsync(t.TenantId, Cfg(t, "c-n"), new(D(("company_id", t.CompanyId), ("code", "K050"), ("description", "K050"), ("tax_type", "INPUT"), ("vat_registration_id", w.Registration))));
+        var v = await tax.CreateVersionAsync(t.TenantId, Cfg(t, "v-n"), new(c.Value!.EntityId, D(("valid_from", "2026-01-01"), ("rate", 25m), ("vat_account_id", w.Receivable), ("deductible_pct", 40m), ("deduction_cap", "NONE")),
+            [new TaxBoxMapping("PRIMARY", "STANDARD", "B3", "TAX", 1)]));
+        Assert.True(v.Status == CommandStatus.Ok, Describe(v));
+        Assert.Equal(CommandStatus.Ok, (await new TaxDeterminationCommands(t.App).CreateRuleAsync(t.TenantId, Cfg(t, "ru-n"), new(t.CompanyId, D(("valid_from", "2026-01-01"), ("priority", 10), ("tax_code_id", c.Value.EntityId)), []))).Status);
+        Assert.Equal(CommandStatus.Ok, (await Post(t, "p1", Purchase(t, 1250m, new RequestLine("1", t.Expense, 1000m)))).Status);
+
+        var p = await new VatReturnCommands(t.App).GetPositionAsync(t.TenantId, t.Context("pos", "read.ledger"), new(w.Registration, "STANDARD", new DateOnly(2026, 3, 31)));
+        Assert.True(p.Status == CommandStatus.Ok, Describe(p));
+        var row = Assert.Single(p.Value!.Lines);
+        Assert.Equal(("B3", 100m, 150m, 1), (row.BoxCode, row.TaxAmount, row.NondeductibleAmount, row.LineCount));   // 250 of tax, 100 deducted, 150 is cost
+    }
+
+    [Fact]
     public async Task ReverseChargeSplitsTheDeductibleSideOnlyAndTheOutputSideStaysFull()
     {
         var t = await TestTenant.CreateReadyAsync();
