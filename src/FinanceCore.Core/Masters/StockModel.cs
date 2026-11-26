@@ -3,12 +3,16 @@ using FinanceCore.Core.Reads;
 
 namespace FinanceCore.Core.Masters;
 
-// ---- stock-documents:post (10, 6.2). First slice: RECEIPT, ISSUE and ADJUSTMENT, moving average, items without tracking, the company currency.
+// ---- stock-documents:post (10, 6.2): RECEIPT, ISSUE, TRANSFER, ADJUSTMENT and STATUS_CHANGE, moving average and FIFO, lot and serial tracking, negative stock, the company currency.
+/// <summary>The lot or serial of a line (10, 3.8): a new one is created by the receipt that first brings it, and the other fields are then for that creation only.</summary>
+public sealed record StockTracking(string TrackingNo, DateOnly? ExpiryDate = null, DateOnly? ProductionDate = null, string? SupplierRef = null);
+
 public sealed record StockAdjustment(string Mode, string? Direction = null, decimal? CountedQuantity = null, decimal? ExpectedBookQuantity = null, string? CountRef = null);
 
 public sealed record StockLineInput(
     string LineRef, Guid ItemId, Guid WarehouseId, decimal Quantity, string UnitCode, Guid? LocationId = null, decimal? UnitPrice = null, string? Currency = null,
-    StockAdjustment? Adjustment = null, string? LineText = null);
+    StockAdjustment? Adjustment = null, string? LineText = null, StockTracking? Tracking = null, string? StockStatus = null, string? FromStatus = null, string? ToStatus = null,
+    Guid? ToWarehouseId = null, Guid? ToLocationId = null, Guid? ReservationId = null);
 
 public sealed record PostStockDocumentRequest(
     Guid CompanyId, string DocumentType, DateOnly DocumentDate, DateOnly PostingDate, IReadOnlyList<StockLineInput> Lines, string? ReasonCode = null, string? HeaderText = null,
@@ -16,7 +20,7 @@ public sealed record PostStockDocumentRequest(
 
 public sealed record StockMovementResult(
     int LineNo, string? LineRef, string MovementType, string CostSource, Guid ItemId, Guid WarehouseId, decimal BaseQuantity, decimal ValueLc, decimal CostQtyAfter,
-    decimal CostValueAfterLc, decimal StockQtyAfter);
+    decimal CostValueAfterLc, decimal StockQtyAfter, Guid? TrackingId = null, string StockStatus = "AVAILABLE", Guid? LocationId = null);
 
 public sealed record StockDocumentResult(
     Guid StockDocumentId, string DocumentNumber, string DocumentType, long ChainSeq, string RowHash, Guid? JournalDocumentId, IReadOnlyList<StockMovementResult> Movements);
@@ -42,7 +46,8 @@ public sealed record StockBalancesResult(DateOnly AsOfDate, IReadOnlyList<StockB
 public static class StockValuation
 {
     public const string PostPermission = "stock.post", ReadPermission = "read.inventory";
-    public static readonly string[] DocumentTypes = ["RECEIPT", "ISSUE", "ADJUSTMENT"];
+    public static readonly string[] DocumentTypes = ["RECEIPT", "ISSUE", "TRANSFER", "ADJUSTMENT", "STATUS_CHANGE"];
+    public static readonly string[] StockStatuses = ["AVAILABLE", "QUARANTINE", "BLOCKED"];
 
     /// <summary>The value of an issue (5.2): the value of the cost key times the issued share, rounded at the currency scale; an issue of the whole remaining quantity takes the whole remaining value.</summary>
     public static decimal IssueValue(decimal costQtyBefore, decimal costValueBefore, decimal issuedQuantity, int currencyScale) =>
@@ -67,7 +72,9 @@ public static class StockValuation
         string lines = string.Join("#", r.Lines.Select(l => string.Join("|",
             l.LineRef, l.ItemId.ToString("D"), l.WarehouseId.ToString("D"), l.LocationId?.ToString("D") ?? "-", l.Quantity.ToString(CultureInfo.InvariantCulture), l.UnitCode,
             l.UnitPrice?.ToString(CultureInfo.InvariantCulture) ?? "-", l.Currency ?? "-", l.Adjustment is { } a
-                ? $"{a.Mode}/{a.Direction}/{a.CountedQuantity}/{a.ExpectedBookQuantity}/{a.CountRef}" : "-", l.LineText ?? "-")));
+                ? $"{a.Mode}/{a.Direction}/{a.CountedQuantity}/{a.ExpectedBookQuantity}/{a.CountRef}" : "-", l.LineText ?? "-",
+            l.Tracking is { } k ? $"{k.TrackingNo}/{k.ExpiryDate:yyyy-MM-dd}/{k.ProductionDate:yyyy-MM-dd}/{k.SupplierRef}" : "-", l.StockStatus ?? "-", l.FromStatus ?? "-", l.ToStatus ?? "-",
+            l.ToWarehouseId?.ToString("D") ?? "-", l.ToLocationId?.ToString("D") ?? "-", l.ReservationId?.ToString("D") ?? "-")));
         return MasterRules.Fingerprint("stock-documents:post",
             $"{r.CompanyId:D}|{r.DocumentType}|{r.DocumentDate:yyyy-MM-dd}|{r.PostingDate:yyyy-MM-dd}|{r.ReasonCode}|{r.HeaderText}|{r.SourceDocumentRef}|{lines}");
     }

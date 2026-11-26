@@ -311,7 +311,7 @@ public class FulfilmentTests
         foreach (string chain in new[] { "LEDGER", "CLEARING", "STOCK" })
         {
             var verify = await new ChainVerification(t.App).VerifyAsync(t.TenantId, t.Context("v" + chain, "chain.verify"), new(t.CompanyId, chain));
-            Assert.True(verify.Status == CommandStatus.Ok && verify.Value!.Ok, chain + " " + Describe(verify));
+            Assert.True(verify.Status == CommandStatus.Ok && verify.Value!.Ok, chain + " " + Describe(verify) + " " + string.Join("; ", verify.Value?.Breaks.Select(p => p.Code + " seq " + p.ChainSeq + " " + p.Detail) ?? []));
         }
     }
 
@@ -1559,6 +1559,18 @@ public class FulfilmentTests
         var lc = await Post("i2", "SI-2", 250, [], new PurchaseChargeInput("F1", "Duty", 200, pur.Code, 50, "LANDED_COST"));
         Assert.True(lc.Status == CommandStatus.Ok, Describe(lc));
         Assert.Equal((200m, -250m), (await SumOfAsync(s, lc.Value!.JournalDocumentId, lcc), await SumOfAsync(s, lc.Value.JournalDocumentId, pur.Payable)));
+
+        // the landed cost is allocated to the receipt, and the invoice cannot be reversed while the allocation stands (10, 6.8, INVENTORY.ALLOCATION_EXISTS)
+        await t.ExecuteAsync("insert into core.number_series_assignment (tenant_id, company_id, document_type, series_id, effective_from, created_by) select @t, @c, 'STOCK_COST_ADJUSTMENT', series_id, date '2026-01-01', 'test' from core.number_series where tenant_id = @t and series_code = 'STJ' and not exists (select 1 from core.number_series_assignment a where a.tenant_id = @t and a.company_id = @c and a.document_type = 'STOCK_COST_ADJUSTMENT')");
+        Guid receiptStock = await t.ScalarAsync<Guid>($"select stock_document_id from core.purchase_receipt where tenant_id = @t and company_id = '{t.CompanyId}' limit 1");
+        int chargeLine = (int)await t.ScalarAsync<long>($"select line_no from core.journal_line where tenant_id = @t and document_id = '{lc.Value.JournalDocumentId}' and account_id = '{lcc}'");
+        var stockCommands = new StockCommands(t.App);
+        var allocated = await stockCommands.AllocateLandedCostAsync(t.TenantId, Ctx(s, "lc1", "landed_cost.allocate"), new(t.CompanyId, new(lc.Value.JournalDocumentId, chargeLine), "QUANTITY", [new(receiptStock, 1)], new DateOnly(2026, 3, 21)));
+        Assert.True(allocated.Status == CommandStatus.Ok, Describe(allocated));
+        Assert.Equal((200m, 200m, 0m), (allocated.Value!.TotalCostLc, allocated.Value.Lines[0].OnHandPartLc, allocated.Value.Lines[0].ConsumedPartLc));
+        Assert.Equal(["INVENTORY.ALLOCATION_EXISTS"], Codes(await ReversePurchaseInvoice(s, "revlc0", lc.Value.PurchaseInvoiceId)));
+        var undone = await stockCommands.ReverseLandedCostAsync(t.TenantId, Ctx(s, "lc2", "landed_cost.allocate"), new(t.CompanyId, allocated.Value.AllocationId, "CORRECTION", new DateOnly(2026, 3, 22)));
+        Assert.True(undone.Status == CommandStatus.Ok, Describe(undone));
 
         // the shape of a charge, the control total with charges and the duplicate number
         Assert.Equal(["SCHEMA.INVALID_VALUE"], Codes(await Post("i3", "SI-3", 125, [], new PurchaseChargeInput("F1", "", 100, pur.Code, 25, "EXPENSE"))));

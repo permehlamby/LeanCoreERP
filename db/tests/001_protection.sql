@@ -1129,6 +1129,27 @@ select pg_temp.expect_error('extensions: a value row holds exactly one value col
 select pg_temp.expect_error('extensions: the namespace core is reserved',
     $t$insert into core.app_namespace (tenant_id, namespace, app_id, created_by) values ('11111111-1111-4111-8111-111111111111', 'core', gen_random_uuid(), 't')$t$, '%check constraint%');
 
+-- tracking, FIFO layers, reservations and landed costs (0059, 0060): the eight tables are protected and only the stock role writes them
+select pg_temp.expect_count('stock tables: RLS is forced on the eight tables',
+    $t$select count(*) from pg_class where oid in ('core.item_tracking'::regclass, 'core.stock_cost_layer'::regclass, 'core.stock_layer_consumption'::regclass, 'core.stock_layer_adjustment'::regclass,
+       'core.stock_reservation'::regclass, 'core.stock_reservation_event'::regclass, 'core.landed_cost_allocation'::regclass, 'core.landed_cost_allocation_line'::regclass) and relrowsecurity and relforcerowsecurity$t$, 8);
+select pg_temp.expect_count('stock tables: no row of the eight tables can be deleted',
+    $t$select count(*) from pg_trigger where not tgisinternal and tgname in ('item_tracking_no_delete', 'stock_cost_layer_no_delete', 'stock_layer_consumption_no_delete', 'stock_layer_adjustment_no_delete',
+       'stock_reservation_no_delete', 'stock_reservation_event_no_delete', 'landed_cost_allocation_no_delete', 'landed_cost_allocation_line_no_delete')$t$, 8);
+select pg_temp.expect_count('stock tables: consumption, adjustments, reservations, events and allocation lines are insert only',
+    $t$select count(*) from pg_trigger where not tgisinternal and tgname in ('stock_layer_consumption_append_only', 'stock_layer_adjustment_append_only', 'stock_reservation_append_only', 'stock_reservation_event_append_only', 'landed_cost_allocation_line_append_only')$t$, 5);
+select pg_temp.expect_count('stock tables: the stock role writes layers, reservations and allocations, the read role writes none of them',
+    $t$select (has_table_privilege('cmd_stock', 'core.stock_cost_layer', 'insert') and has_table_privilege('cmd_stock', 'core.stock_reservation_event', 'insert') and has_table_privilege('cmd_stock', 'core.landed_cost_allocation', 'insert')
+       and has_table_privilege('cmd_stock', 'core.item_tracking', 'insert'))::int
+       + (has_table_privilege('cmd_read', 'core.stock_cost_layer', 'insert') or has_table_privilege('cmd_read', 'core.stock_reservation', 'insert') or has_table_privilege('cmd_read', 'core.item_tracking', 'insert'))::int * 10$t$, 1);
+select pg_temp.expect_count('stock tables: the posting role cannot touch a layer or a reservation',
+    $t$select (has_table_privilege('cmd_post', 'core.stock_cost_layer', 'insert') or has_table_privilege('cmd_post', 'core.stock_reservation_event', 'insert') or has_table_privilege('cmd_post', 'core.landed_cost_allocation', 'update'))::int$t$, 0);
+select pg_temp.expect_count('stock tables: only the exhausted flag of a layer and the status of an allocation have an update grant of the stock role',
+    $t$select (has_column_privilege('cmd_stock', 'core.stock_cost_layer', 'exhausted', 'update') and has_column_privilege('cmd_stock', 'core.landed_cost_allocation', 'status', 'update'))::int
+       + (has_column_privilege('cmd_stock', 'core.stock_cost_layer', 'quantity_base', 'update') or has_column_privilege('cmd_stock', 'core.landed_cost_allocation', 'total_cost_lc', 'update'))::int * 10$t$, 1);
+select pg_temp.expect_count('stock tables: the guards of a layer, an allocation and a lot exist',
+    $t$select count(*) from pg_trigger where not tgisinternal and tgname in ('stock_cost_layer_guard', 'landed_cost_allocation_guard', 'item_tracking_guard')$t$, 3);
+
 -- isolation: tenant B sees none of the rows of tenant A in the five tables
 select set_config('app.tenant_id', '99999999-9999-4999-8999-999999999999', false);
 select pg_temp.expect_count('new tables: tenant B sees none of A''s rows',

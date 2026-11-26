@@ -66,6 +66,13 @@ public sealed partial class PurchaseInvoiceCommands
             journalId = r.GetGuid(0); kind = r.GetString(1); originalStockId = r.IsDBNull(2) ? null : r.GetGuid(2); supplier = r.GetGuid(3); currency = r.GetString(4).Trim(); grossAmount = r.GetDecimal(5);
         }
         if (kind != k.Expected) return Fail(Error("REVERSAL.TYPE_NOT_REVERSIBLE", "P2", "/purchase_invoice_id", ("invoice_kind", kind)));
+        // a charge line of the invoice that has a landed cost allocation which is not reversed: the allocation is reversed first (10, 6.8)
+        await using (TenantTransaction probe = await TenantTransaction.BeginAsync(source, tenantId, CommandRole.Read, ct: ct))
+        await using (var cmd = probe.Command("select exists (select 1 from core.landed_cost_allocation where tenant_id = @t and company_id = @c and cost_source_document_id = @j and status = 'POSTED')"))
+        {
+            cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("c", req.CompanyId); cmd.Parameters.AddWithValue("j", journalId);
+            if ((bool)(await cmd.ExecuteScalarAsync(ct))!) return Fail(Error("INVENTORY.ALLOCATION_EXISTS", "P6", "/purchase_invoice_id", ("reason", "reverse the landed cost allocation first")));
+        }
 
         Guid mirrorInvoiceId = Guid.NewGuid();
         Guid? mirrorStockId = originalStockId is null ? null : Guid.NewGuid();

@@ -15,25 +15,55 @@ namespace FinanceCore.Data;
 /// derived (the row hash of the mirror fulfilment document).
 /// </summary>
 internal sealed record StockReverseOptions(string CommandName, bool WriteLog, bool Commit, bool AllowDerived, Func<StockDerivation, Task<byte[]?>>? DetailDigest,
-    Func<TenantTransaction, DateOnly, int, int, long, byte[], CancellationToken, Task<(long Seq, byte[] Hash)>>? ResetClearings = null);
+    Func<TenantTransaction, DateOnly, int, int, long, byte[], CancellationToken, Task<(long Seq, byte[] Hash)>>? ResetClearings = null, bool AllowCostAdjustment = false,
+    Func<TenantTransaction, CancellationToken, Task<CommandError?>>? Guard = null);
 
 /// <summary>
 /// stock-documents:reverse (10, 5.5, 6.2): the mirror of a stock document posted directly, movement by movement with the opposite sign and the original value, and the mirror of its
 /// derived journal with the automatic clearing of a GR/IR open item. The reversal date defaults to the posting date of the original and is never moved. A receipt of a moving average item
-/// is reversed only if what it brought is still there (INVENTORY.RECEIPT_CONSUMED). Built choices are in 07, 13.2x. Not built: FIFO layers, tracking, negative stock.
+/// is reversed only if what it brought is still there (INVENTORY.RECEIPT_CONSUMED). Built choices are in 07, 13.2x. FIFO layers and tracking are mirrored (see the loop below).
 /// </summary>
 public sealed partial class StockCommands
 {
     public const string ReversePermission = StockReversalRules.Permission;
+
+    private static async Task<(decimal Qty, decimal Value)> CostBalanceAsync(TenantTransaction tx, Guid tenantId, Guid companyId, Guid itemId, Guid? costWarehouse, Guid? tracking, CancellationToken ct)
+    {
+        await using var cmd = tx.Command(
+            "select cost_qty_after, cost_value_after_lc from core.stock_movement where tenant_id = @t and company_id = @c and item_id = @i and cost_warehouse_id is not distinct from @cw::uuid " +
+            "and tracking_id is not distinct from @tr::uuid order by chain_seq desc, line_no desc limit 1");
+        cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("c", companyId); cmd.Parameters.AddWithValue("i", itemId);
+        cmd.Parameters.Add(new NpgsqlParameter("cw", NpgsqlDbType.Uuid) { Value = (object?)costWarehouse ?? DBNull.Value });
+        cmd.Parameters.Add(new NpgsqlParameter("tr", NpgsqlDbType.Uuid) { Value = (object?)tracking ?? DBNull.Value });
+        await using var r = await cmd.ExecuteReaderAsync(ct);
+        return await r.ReadAsync(ct) ? (r.GetDecimal(0), r.GetDecimal(1)) : (0m, 0m);
+    }
+
+    private static async Task<decimal> StockBalanceAsync(TenantTransaction tx, Guid tenantId, Guid companyId, Guid itemId, Guid warehouseId, Guid? locationId, Guid? tracking, string status, CancellationToken ct)
+    {
+        await using var cmd = tx.Command(
+            "select stock_qty_after from core.stock_movement where tenant_id = @t and company_id = @c and item_id = @i and warehouse_id = @w and location_id is not distinct from @l::uuid " +
+            "and tracking_id is not distinct from @tr::uuid and stock_status = @st order by chain_seq desc, line_no desc limit 1");
+        cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("c", companyId); cmd.Parameters.AddWithValue("i", itemId); cmd.Parameters.AddWithValue("w", warehouseId);
+        cmd.Parameters.Add(new NpgsqlParameter("l", NpgsqlDbType.Uuid) { Value = (object?)locationId ?? DBNull.Value });
+        cmd.Parameters.Add(new NpgsqlParameter("tr", NpgsqlDbType.Uuid) { Value = (object?)tracking ?? DBNull.Value });
+        cmd.Parameters.AddWithValue("st", status);
+        return await cmd.ExecuteScalarAsync(ct) is decimal d ? d : 0m;
+    }
+
+    private static async Task<bool> AllowNegativeStockAsync(TenantTransaction tx, Guid tenantId, Guid companyId, Guid warehouseId, Guid itemId, CancellationToken ct)
+    {
+        await using var cmd = tx.Command("select allow_negative_stock from core.item_warehouse where tenant_id = @t and company_id = @c and warehouse_id = @w and item_id = @i and active");
+        cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("c", companyId); cmd.Parameters.AddWithValue("w", warehouseId); cmd.Parameters.AddWithValue("i", itemId);
+        return await cmd.ExecuteScalarAsync(ct) is true;
+    }
 
     private sealed record Original(
         string DocumentType, string Status, Guid? JournalId, bool Derived, DateOnly PostingDate, string? CurrencyTc, int MovementCount);
 
     private sealed record OriginalMovement(
         int LineNo, string MovementType, string CostSource, Guid ItemId, Guid WarehouseId, Guid? LocationId, decimal Quantity, string UnitCode, decimal BaseQuantity, decimal ValueLc,
-        decimal? ValueTc, string? LineRef, string? LineText, Guid? RefDocument, int? RefLine);
-
-    private sealed record Mirror(OriginalMovement From, decimal Quantity, decimal BaseQuantity, decimal ValueLc, decimal? ValueTc, decimal CostQtyAfter, decimal CostValueAfter, decimal StockQtyAfter);
+        decimal? ValueTc, string? LineRef, string? LineText, Guid? RefDocument, int? RefLine, Guid? TrackingId, string StockStatus, Guid? CostWarehouseId, bool LotExpired);
 
     public async Task<CommandResult<StockDocumentResult>> ReverseAsync(Guid tenantId, CommandContext ctx, ReverseStockDocumentRequest req, CancellationToken ct = default)
     {
@@ -81,7 +111,7 @@ public sealed partial class StockCommands
         // P2: the original, the company, the date
         Original? original = await ReadOriginalAsync(false);
         if (original is null) return Reject(Error("REVERSAL.NOT_FOUND", "P2", "/stock_document_id"));
-        if (original.DocumentType is not ("STOCK_RECEIPT" or "STOCK_ISSUE" or "STOCK_ADJUSTMENT" or "STOCK_RETURN") || (original.Derived && options?.AllowDerived != true))
+        if ((original.DocumentType is not ("STOCK_RECEIPT" or "STOCK_ISSUE" or "STOCK_ADJUSTMENT" or "STOCK_RETURN" or "STOCK_TRANSFER" or "STOCK_STATUS_CHANGE") && !(options?.AllowCostAdjustment == true && original.DocumentType == "STOCK_COST_ADJUSTMENT")) || (original.Derived && options?.AllowDerived != true))
             return Reject(Error("REVERSAL.TYPE_NOT_REVERSIBLE", "P2", "/stock_document_id", ("document_type", original.DocumentType),
                 ("owning_command", original.Derived ? "the order command that created it (11, 6.8)" : null)));
         if (original.Status != "posted") return Reject(Error("REVERSAL.ALREADY_REVERSED", "P2", "/stock_document_id"));
@@ -112,7 +142,8 @@ public sealed partial class StockCommands
 
         var movements = new List<OriginalMovement>();
         await using (var cmd = tx.Command(
-            "select line_no, movement_type, cost_source, item_id, warehouse_id, location_id, quantity, unit_code, base_quantity, value_lc, value_tc, source_line_ref, line_text, valuation_ref_document_id, valuation_ref_line_no from core.stock_movement " +
+            "select line_no, movement_type, cost_source, item_id, warehouse_id, location_id, quantity, unit_code, base_quantity, value_lc, value_tc, source_line_ref, line_text, valuation_ref_document_id, valuation_ref_line_no, " +
+            "tracking_id, stock_status, cost_warehouse_id, lot_expired from core.stock_movement " +
             "where tenant_id = @t and company_id = @c and stock_document_id = @d order by line_no"))
         {
             cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("c", companyId); cmd.Parameters.AddWithValue("d", originalId);
@@ -120,7 +151,7 @@ public sealed partial class StockCommands
             while (await r.ReadAsync(ct))
                 movements.Add(new OriginalMovement(r.GetInt32(0), r.GetString(1), r.GetString(2), r.GetGuid(3), r.GetGuid(4), r.IsDBNull(5) ? null : r.GetGuid(5), r.GetDecimal(6), r.GetString(7).Trim(),
                     r.GetDecimal(8), r.GetDecimal(9), r.IsDBNull(10) ? null : r.GetDecimal(10), r.IsDBNull(11) ? null : r.GetString(11), r.IsDBNull(12) ? null : r.GetString(12),
-                    r.IsDBNull(13) ? null : r.GetGuid(13), r.IsDBNull(14) ? null : r.GetInt32(14)));
+                    r.IsDBNull(13) ? null : r.GetGuid(13), r.IsDBNull(14) ? null : r.GetInt32(14), r.IsDBNull(15) ? null : r.GetGuid(15), r.GetString(16).Trim(), r.IsDBNull(17) ? null : r.GetGuid(17), r.GetBoolean(18)));
         }
         bool hasOpenItems = false;
         if (original.JournalId is { } journalOfOriginal)
@@ -148,25 +179,89 @@ public sealed partial class StockCommands
         if ((await ReadOriginalAsync(true))!.Status != "posted") return Reject(Error("REVERSAL.ALREADY_REVERSED", "P7", "/stock_document_id"));
         var recheck = await JournalDocumentPoster.CheckPeriodAsync(tx, tenantId, companyId, date, ctx, true, ct);
         if (recheck.Errors.Count > 0) return CommandResult<StockDocumentResult>.Rejected(recheck.Errors.Select(e => e with { Path = "/reversal_date" }).ToList());
+        // an owning command may test what it needs under the locks (the reversibility test of a landed cost, 6.8)
+        if (options?.Guard is { } guard && await guard(tx, ct) is { } guardError) return Reject(guardError);
         // an owning command that cleared items of the original itself (a receipt that covered an invoice) resets those clearings first, under the CLEARING head
         if (options?.ResetClearings is { } resetClearings && hasOpenItems) (clearingSeq, clearingHash) = await resetClearings(tx, date, fiscalYear, periodNo, clearingSeq, clearingHash, ct);
 
-        // P4 to P6 under the locks: the mirror of each movement and the running balances. What a receipt brought must still be there.
-        var cost = new Dictionary<Guid, (decimal Qty, decimal Value)>();
-        var stock = new Dictionary<(Guid, Guid, Guid?), decimal>();
-        var mirrors = new List<Mirror>();
+        // P4 to P6 under the locks: the mirror of each movement and the running balances. What a receipt brought must still be there. A FIFO layer that the original created is consumed by its mirror line
+        // and must be untouched (5.5); the consumption of the original is mirrored by the negated rows, so the quantity returns to the same layers.
+        var itemRows = new Dictionary<Guid, ItemRow>();
+        foreach (Guid itemId in movements.Select(m => m.ItemId).Distinct()) itemRows[itemId] = (await ReadItemAsync(tx, tenantId, companyId, itemId, ct))!;
+        var consumedBy = new Dictionary<int, List<Derivation.ConsumptionPlan>>();
+        await using (var cmd = tx.Command("select line_no, layer_doc_id, layer_line_no, quantity_base, value_lc from core.stock_layer_consumption where tenant_id = @t and company_id = @c and stock_document_id = @d order by line_no, layer_doc_id, layer_line_no"))
+        {
+            cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("c", companyId); cmd.Parameters.AddWithValue("d", originalId);
+            await using var r = await cmd.ExecuteReaderAsync(ct);
+            while (await r.ReadAsync(ct))
+            {
+                if (!consumedBy.TryGetValue(r.GetInt32(0), out var list)) consumedBy[r.GetInt32(0)] = list = [];
+                list.Add(new Derivation.ConsumptionPlan(r.GetGuid(1), r.GetInt32(2), -r.GetDecimal(3), -r.GetDecimal(4)));
+            }
+        }
+        var layerOf = new Dictionary<int, (decimal Quantity, decimal Value, decimal RemainingQuantity, decimal RemainingValue)>();
+        await using (var cmd = tx.Command(
+            "select l.line_no, l.quantity_base, l.value_lc, l.quantity_base - coalesce((select sum(c.quantity_base) from core.stock_layer_consumption c where c.tenant_id = l.tenant_id and c.company_id = l.company_id and c.layer_doc_id = l.stock_document_id and c.layer_line_no = l.line_no), 0), " +
+            "l.value_lc + coalesce((select sum(a.value_lc) from core.stock_layer_adjustment a where a.tenant_id = l.tenant_id and a.company_id = l.company_id and a.layer_doc_id = l.stock_document_id and a.layer_line_no = l.line_no), 0) - " +
+            "coalesce((select sum(c.value_lc) from core.stock_layer_consumption c where c.tenant_id = l.tenant_id and c.company_id = l.company_id and c.layer_doc_id = l.stock_document_id and c.layer_line_no = l.line_no), 0) " +
+            "from core.stock_cost_layer l where l.tenant_id = @t and l.company_id = @c and l.stock_document_id = @d"))
+        {
+            cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("c", companyId); cmd.Parameters.AddWithValue("d", originalId);
+            await using var r = await cmd.ExecuteReaderAsync(ct);
+            while (await r.ReadAsync(ct)) layerOf[r.GetInt32(0)] = (r.GetDecimal(1), r.GetDecimal(2), r.GetDecimal(3), r.GetDecimal(4));
+        }
+        var availableDelta = new Dictionary<(Guid, Guid), decimal>();
+        var cost = new Dictionary<(Guid, Guid?, Guid?), (decimal Qty, decimal Value)>();
+        var stock = new Dictionary<(Guid, Guid, Guid?, Guid?, string), decimal>();
+        var mirrors = new List<Derivation.Planned>();
         foreach (OriginalMovement m in movements)
         {
-            if (!cost.ContainsKey(m.ItemId)) cost[m.ItemId] = await CostBalanceAsync(tx, tenantId, companyId, m.ItemId, ct);
-            var skey = (m.ItemId, m.WarehouseId, m.LocationId);
-            if (!stock.ContainsKey(skey)) stock[skey] = await StockBalanceAsync(tx, tenantId, companyId, m.ItemId, m.WarehouseId, m.LocationId, ct);
+            var ckey = (m.ItemId, m.CostWarehouseId, m.TrackingId);
+            var skey = (m.ItemId, m.WarehouseId, m.LocationId, m.TrackingId, m.StockStatus);
+            if (!cost.ContainsKey(ckey)) cost[ckey] = await CostBalanceAsync(tx, tenantId, companyId, m.ItemId, m.CostWarehouseId, m.TrackingId, ct);
+            if (!stock.ContainsKey(skey)) stock[skey] = await StockBalanceAsync(tx, tenantId, companyId, m.ItemId, m.WarehouseId, m.LocationId, m.TrackingId, m.StockStatus, ct);
             decimal baseQty = -m.BaseQuantity, value = -m.ValueLc;
-            (decimal costQty, decimal costValue) = cost[m.ItemId];
+            (decimal costQty, decimal costValue) = cost[ckey];
             costQty += baseQty; costValue += value; stock[skey] += baseQty;
-            if (baseQty < 0m && (costQty < 0m || costValue < 0m || (costQty == 0m && costValue != 0m) || stock[skey] < 0m))
-                return Reject(Error("INVENTORY.RECEIPT_CONSUMED", "P4", $"/movements/{m.LineNo}", ("item_id", m.ItemId), ("on_hand", cost[m.ItemId].Qty), ("reversed", -baseQty)));
-            cost[m.ItemId] = (costQty, costValue);
-            mirrors.Add(new Mirror(m, -m.Quantity, baseQty, value, m.ValueTc is { } vt ? -vt : null, costQty, costValue, stock[skey]));
+            bool negativeAllowed = baseQty < 0m && await AllowNegativeStockAsync(tx, tenantId, companyId, m.WarehouseId, m.ItemId, ct) && !layerOf.ContainsKey(m.LineNo);
+            if (baseQty < 0m && !negativeAllowed && (costQty < 0m || costValue < 0m || (costQty == 0m && costValue != 0m) || stock[skey] < 0m))
+                return Reject(Error("INVENTORY.RECEIPT_CONSUMED", "P4", $"/movements/{m.LineNo}", ("item_id", m.ItemId), ("on_hand", cost[ckey].Qty), ("reversed", -baseQty)));
+            // a mirror that takes available stock away must leave what is reserved (4.5): the same check as a new movement
+            bool standard = true;
+            if (m.LocationId is { } mirrorLocation)
+            {
+                await using var lc = tx.Command("select location_type from core.warehouse_location where tenant_id = @t and company_id = @c and warehouse_id = @w and location_id = @l");
+                lc.Parameters.AddWithValue("t", tenantId); lc.Parameters.AddWithValue("c", companyId); lc.Parameters.AddWithValue("w", m.WarehouseId); lc.Parameters.AddWithValue("l", mirrorLocation);
+                standard = await lc.ExecuteScalarAsync(ct) is string lt && lt.Trim() == "STANDARD";
+            }
+            if (m.StockStatus == "AVAILABLE" && standard && baseQty != 0m)
+            {
+                var akey = (m.ItemId, m.WarehouseId);
+                if (baseQty < 0m)
+                {
+                    decimal onHandAfter = await ReservationCommands.OnHandAvailableAsync(tx, tenantId, companyId, m.ItemId, m.WarehouseId, null, ct) + availableDelta.GetValueOrDefault(akey) + baseQty;
+                    decimal reserved = await ReservationCommands.ReservedAsync(tx, tenantId, companyId, m.ItemId, m.WarehouseId, null, false, ct);
+                    if (reserved > 0m && onHandAfter < reserved) return Reject(Error("INVENTORY.STOCK_RESERVED", "P4", $"/movements/{m.LineNo}", ("item_id", m.ItemId), ("reserved", reserved), ("on_hand_after", onHandAfter)));
+                }
+                availableDelta[akey] = availableDelta.GetValueOrDefault(akey) + baseQty;
+            }
+            cost[ckey] = (costQty, costValue);
+            var mirror = new Derivation.Planned
+            {
+                LineNo = mirrors.Count + 1, LineRef = m.LineRef, LineText = m.LineText, Item = itemRows[m.ItemId], MovementType = m.MovementType, CostSource = m.CostSource, UnitCode = m.UnitCode,
+                RequestIndex = m.LineNo - 1, WarehouseId = m.WarehouseId, LocationId = m.LocationId, TrackingId = m.TrackingId, StockStatus = m.StockStatus, CostWarehouseId = m.CostWarehouseId,
+                Quantity = -m.Quantity, BaseQuantity = baseQty, ValueLc = value, ValueTc = m.ValueTc is { } vt ? -vt : null, CostQtyAfter = costQty, CostValueAfter = costValue, StockQtyAfter = stock[skey],
+                RefDocument = m.RefDocument, RefLine = m.RefLine, LotExpired = m.LotExpired, ReversalOfLine = m.LineNo
+            };
+            // a layer that the original created is consumed whole by the mirror, and only if nothing of it has been used (5.5, B8)
+            if (layerOf.TryGetValue(m.LineNo, out var layer))
+            {
+                if (layer.RemainingQuantity != layer.Quantity || layer.RemainingValue != layer.Value)
+                    return Reject(Error("INVENTORY.RECEIPT_CONSUMED", "P4", $"/movements/{m.LineNo}", ("item_id", m.ItemId), ("remaining", layer.RemainingQuantity), ("quantity", layer.Quantity)));
+                mirror.Consumptions.Add(new Derivation.ConsumptionPlan(originalId, m.LineNo, layer.RemainingQuantity, layer.RemainingValue));
+            }
+            if (consumedBy.TryGetValue(m.LineNo, out var given)) mirror.Consumptions.AddRange(given);
+            mirrors.Add(mirror);
         }
 
         // the derived journal: the mirror of the journal of the original (ADR-048), its GR/IR open item cleared against the original item
@@ -214,19 +309,15 @@ public sealed partial class StockCommands
         Guid stockId = Guid.NewGuid();
         long chainSeq = stockSeq + 1;
         string? currencyTc = original.CurrencyTc;
-        var movementRows = mirrors.Select((m, i) => (IReadOnlyDictionary<string, object?>)new Dictionary<string, object?>
+        var movementRows = mirrors.Select(m => (IReadOnlyDictionary<string, object?>)MovementRow(tenantId, companyId, stockId, chainSeq, date, m, company.LocalCurrency)).ToList();
+        var consumptionRows = mirrors.SelectMany(m => m.Consumptions.Select(c => (IReadOnlyDictionary<string, object?>)new Dictionary<string, object?>
         {
-            ["tenant_id"] = tenantId, ["company_id"] = companyId, ["stock_document_id"] = stockId, ["line_no"] = i + 1, ["chain_seq"] = chainSeq, ["movement_type"] = m.From.MovementType,
-            ["cost_source"] = m.From.CostSource, ["valuation_ref_document_id"] = m.From.RefDocument, ["valuation_ref_line_no"] = m.From.RefLine, ["posting_date"] = date, ["item_id"] = m.From.ItemId,
-            ["warehouse_id"] = m.From.WarehouseId, ["location_id"] = m.From.LocationId, ["tracking_id"] = null, ["stock_status"] = "AVAILABLE", ["quantity"] = m.Quantity,
-            ["unit_code"] = m.From.UnitCode, ["base_quantity"] = m.BaseQuantity, ["value_lc"] = m.ValueLc, ["unit_cost_lc"] = StockValuation.UnitCost(m.ValueLc, m.BaseQuantity),
-            ["value_tc"] = m.ValueTc, ["currency_tc"] = m.ValueTc is null ? null : currencyTc, ["cost_warehouse_id"] = null, ["cost_qty_after"] = m.CostQtyAfter,
-            ["cost_value_after_lc"] = m.CostValueAfter, ["stock_qty_after"] = m.StockQtyAfter, ["lot_expired"] = false, ["count_ref"] = null,
-            ["expected_book_quantity"] = null, ["source_line_ref"] = m.From.LineRef, ["reversal_of_line_no"] = m.From.LineNo
-        }).ToList();
-        byte[] movementDigest = StockHash2.MovementDigest(movementRows);
+            ["tenant_id"] = tenantId, ["company_id"] = companyId, ["stock_document_id"] = stockId, ["line_no"] = m.LineNo, ["layer_doc_id"] = c.LayerDoc, ["layer_line_no"] = c.LayerLine,
+            ["quantity_base"] = c.Quantity, ["value_lc"] = c.Value
+        })).ToList();
+        byte[] movementDigest = StockHash2.MovementDigest(movementRows, consumptionRows);
         byte[]? detailDigest = options?.DetailDigest is { } provide
-            ? await provide(new StockDerivation(stockId, mirrorJournalId, mirrors.Select((m, i) => new DerivedMovement(i + 1, m.From.LineNo - 1, m.BaseQuantity, m.ValueLc)).ToList()))
+            ? await provide(new StockDerivation(stockId, mirrorJournalId, mirrors.Select(m => new DerivedMovement(m.LineNo, m.RequestIndex, m.BaseQuantity, m.ValueLc)).ToList()))
             : null;
         var body = new Dictionary<string, object?>
         {
@@ -280,29 +371,7 @@ public sealed partial class StockCommands
             cmd.Parameters.AddWithValue("prev", stockPrev); cmd.Parameters.AddWithValue("row", rowHash);
             await cmd.ExecuteNonQueryAsync(ct);
         }
-        for (int i = 0; i < mirrors.Count; i++)
-        {
-            Mirror m = mirrors[i];
-            await using var cmd = tx.Command(
-                "insert into core.stock_movement (tenant_id, company_id, stock_document_id, line_no, chain_seq, movement_type, cost_source, posting_date, item_id, warehouse_id, location_id, stock_status, " +
-                "quantity, unit_code, base_quantity, value_lc, unit_cost_lc, value_tc, currency_tc, cost_qty_after, cost_value_after_lc, stock_qty_after, lot_expired, source_line_ref, reversal_of_line_no, " +
-                "line_text, valuation_ref_document_id, valuation_ref_line_no) values (@t, @c, @d, @n, @cs, @type, @src, @pd, @i, @w, @l, 'AVAILABLE', @q, @u, @bq, @v, @uc, @vt, @ct, @cq, @cv, @sq, false, @ref, @rl, @text, @rd, @rn)");
-            cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("c", companyId); cmd.Parameters.AddWithValue("d", stockId); cmd.Parameters.AddWithValue("n", i + 1);
-            cmd.Parameters.AddWithValue("cs", chainSeq); cmd.Parameters.AddWithValue("type", m.From.MovementType); cmd.Parameters.AddWithValue("src", m.From.CostSource);
-            cmd.Parameters.AddWithValue("pd", date); cmd.Parameters.AddWithValue("i", m.From.ItemId); cmd.Parameters.AddWithValue("w", m.From.WarehouseId);
-            cmd.Parameters.Add(new NpgsqlParameter("l", NpgsqlDbType.Uuid) { Value = (object?)m.From.LocationId ?? DBNull.Value });
-            cmd.Parameters.AddWithValue("q", m.Quantity); cmd.Parameters.AddWithValue("u", m.From.UnitCode); cmd.Parameters.AddWithValue("bq", m.BaseQuantity); cmd.Parameters.AddWithValue("v", m.ValueLc);
-            cmd.Parameters.Add(new NpgsqlParameter("uc", NpgsqlDbType.Numeric) { Value = (object?)StockValuation.UnitCost(m.ValueLc, m.BaseQuantity) ?? DBNull.Value });
-            cmd.Parameters.Add(new NpgsqlParameter("vt", NpgsqlDbType.Numeric) { Value = (object?)m.ValueTc ?? DBNull.Value });
-            cmd.Parameters.Add(new NpgsqlParameter("ct", NpgsqlDbType.Text) { Value = m.ValueTc is null ? DBNull.Value : currencyTc ?? company.LocalCurrency });
-            cmd.Parameters.AddWithValue("cq", m.CostQtyAfter); cmd.Parameters.AddWithValue("cv", m.CostValueAfter); cmd.Parameters.AddWithValue("sq", m.StockQtyAfter);
-            cmd.Parameters.Add(new NpgsqlParameter("ref", NpgsqlDbType.Text) { Value = (object?)m.From.LineRef ?? DBNull.Value });
-            cmd.Parameters.AddWithValue("rl", m.From.LineNo);
-            cmd.Parameters.Add(new NpgsqlParameter("text", NpgsqlDbType.Text) { Value = (object?)m.From.LineText ?? DBNull.Value });
-            cmd.Parameters.Add(new NpgsqlParameter("rd", NpgsqlDbType.Uuid) { Value = (object?)m.From.RefDocument ?? DBNull.Value });
-            cmd.Parameters.Add(new NpgsqlParameter("rn", NpgsqlDbType.Integer) { Value = (object?)m.From.RefLine ?? DBNull.Value });
-            await cmd.ExecuteNonQueryAsync(ct);
-        }
+        await WriteMovementsAsync(tx, tenantId, companyId, stockId, chainSeq, date, mirrors, company.LocalCurrency, ct);
         await using (var cmd = tx.Command(
             "update core.stock_document set status = 'reversed', reversed_by_stock_document_id = @m where tenant_id = @t and company_id = @c and stock_document_id = @d and status = 'posted'"))
         {
@@ -334,12 +403,12 @@ public sealed partial class StockCommands
                 ["document_type"] = "STOCK_REVERSAL", ["posting_date"] = date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture), ["movement_count"] = mirrors.Count,
                 ["journal_document_id"] = mirrorJournalId, ["reversal_of_stock_document_id"] = originalId
             }), ct);
-        foreach (var last in mirrors.GroupBy(m => (m.From.ItemId, m.From.WarehouseId, m.From.LocationId)).Select(g => g.Last()))
-            await CommandSupport.WriteOutboxAsync(tx, tenantId, companyId, ctx, "stock.balance_changed", "STOCK_BALANCE", $"{companyId:D}/{last.From.ItemId:D}/{last.From.WarehouseId:D}", "CHANGED", at, isAudit: false, null,
-                JsonSerializer.Serialize(new Dictionary<string, object?> { ["item_id"] = last.From.ItemId, ["warehouse_id"] = last.From.WarehouseId, ["location_id"] = last.From.LocationId, ["quantity_after"] = last.StockQtyAfter }), ct);
+        foreach (var last in mirrors.GroupBy(m => (m.Item.ItemId, m.WarehouseId, m.LocationId)).Select(g => g.Last()))
+            await CommandSupport.WriteOutboxAsync(tx, tenantId, companyId, ctx, "stock.balance_changed", "STOCK_BALANCE", $"{companyId:D}/{last.Item.ItemId:D}/{last.WarehouseId:D}", "CHANGED", at, isAudit: false, null,
+                JsonSerializer.Serialize(new Dictionary<string, object?> { ["item_id"] = last.Item.ItemId, ["warehouse_id"] = last.WarehouseId, ["location_id"] = last.LocationId, ["quantity_after"] = last.StockQtyAfter }), ct);
 
         StockDocumentResult result = await LoadResultAsync(tx, tenantId, companyId, stockId, ct);
-        result = result with { Movements = result.Movements.Select(m => m with { LineRef = mirrors[m.LineNo - 1].From.LineRef }).ToList() };
+        result = result with { Movements = result.Movements.Select(m => m with { LineRef = mirrors[m.LineNo - 1].LineRef }).ToList() };
         if (options?.Commit != false) await tx.CommitAsync(ct);   // the deferred checks: the journal balances, the chain links and the head, the movement count, the outbox position
         return CommandResult<StockDocumentResult>.Ok(result, logId);
     }

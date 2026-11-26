@@ -805,6 +805,36 @@ For the resources `gl-accounts`, `business-partners` (with PII, company relation
 
 These deltas are applied in 02 and 06 with this spec.
 
+### 13.2bg Landed costs (F-IMPL-99, 2026-11-26)
+
+PROPOSED, written down so that spec and code agree. It builds on 10, 4.7, 6.6 and 6.8.
+
+1. **Built.** Migration 0060: `landed_cost_allocation` with lines. `landed-costs:allocate` and `:reverse`, the mirror allocation, `INVENTORY.ALLOCATION_EXISTS` on `purchase-invoices:reverse`. A FIFO layer takes the on-hand part through `stock_layer_adjustment` (0059).
+2. **Choices.** The amount defaults to the remaining amount of the cost line; one COST_ADJUST line per target also when zero; the reversal is the generic stock reversal for the document type.
+3. **Not built.** A cost line in a foreign currency; a receipt that covered negative stock.
+
+### 13.2bf Reservations (F-IMPL-98, 2026-11-26)
+
+PROPOSED, written down so that spec and code agree. It builds on 10, 4.5 and 6.5.
+
+1. **Built.** Migration 0060: `stock_reservation` and its events. `reservations:create`, `:adjust`, `:release`, `availability:query`, the check `INVENTORY.STOCK_RESERVED` and the consumption by an issue that names the reservation.
+2. **Not built.** `auto_reserve`, reservations in the order flows.
+
+### 13.2be FIFO (F-IMPL-97, 2026-11-26)
+
+PROPOSED, written down so that spec and code agree. It builds on 10, 4.3, 5.3 and 5.5.
+
+1. **Built.** Migration 0059: `stock_cost_layer`, `stock_layer_consumption`, `stock_layer_adjustment`. Layers in the engine, the movement digest over the consumption rows, reversal and verification of layers.
+2. **Choices.** One layer per creating movement line, so a FIFO transfer under the cost scope WAREHOUSE has an IN line per consumed layer.
+3. **Not built.** `receipt_legacy_ref`, FIFO price differences of purchase invoices.
+
+### 13.2bd The stock engine: tracking, negative stock, transfers (F-IMPL-96, 2026-11-26)
+
+PROPOSED, written down so that spec and code agree. It builds on 10, 3.8, 3.10, 4.2, 5.4 and 6.2.
+
+1. **Built.** Migration 0059: `item_tracking`. Lots and serials, the cost key by lot, the cost scope, negative stock with its settlement, TRANSFER and STATUS_CHANGE, the location types, `item-trackings:set-status` and the reads of lots.
+2. **Not built.** The dimension defaults of 10, 7, `lot-traces:query`, the ledger and valuation reads, tracking in the order flows.
+
 ### 13.2bc Extension attributes (F-IMPL-95, 2026-11-26)
 
 PROPOSED, written down so that spec and code agree. It builds on 15, 3.2 to 3.6a and 4, and on 09, 2.4.2.

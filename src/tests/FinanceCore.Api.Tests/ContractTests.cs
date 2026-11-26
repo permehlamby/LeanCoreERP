@@ -58,7 +58,9 @@ public class ContractTests
         Assert.Equal("write.config", catalog.Find("account-determinations:create-version")?.Permission);
         Assert.Equal("read.config", catalog.Find("account-determinations:list")?.Permission);
         Assert.Null(catalog.Find("account-determinations:get"));
-        Assert.Equal(8 * 6 + 1 + 3, catalog.All.Count);
+        Assert.Equal("read.config", catalog.Find("item-trackings:list")?.Permission);
+        Assert.Equal("read.config", catalog.Find("item-trackings:get")?.Permission);
+        Assert.Equal(8 * 6 + 1 + 3 + 2, catalog.All.Count);
     }
 
     [Fact]
@@ -81,7 +83,11 @@ public class ContractTests
         Assert.Equal("stock.post", catalog.Find("stock-documents:post")?.Permission);
         Assert.Equal("stock.reverse", catalog.Find("stock-documents:reverse")?.Permission);
         foreach (string name in new[] { "stock-documents:get", "stock-documents:list", "stock-balances:query" }) Assert.Equal("read.inventory", catalog.Find(name)?.Permission);
-        Assert.Equal(5, catalog.All.Count);
+        foreach (string name in new[] { "reservations:create", "reservations:adjust", "reservations:release" }) Assert.Equal("stock.reserve", catalog.Find(name)?.Permission);
+        Assert.Equal("read.inventory", catalog.Find("availability:query")?.Permission);
+        foreach (string name in new[] { "landed-costs:allocate", "landed-costs:reverse" }) Assert.Equal("landed_cost.allocate", catalog.Find(name)?.Permission);
+        Assert.Equal("write.config", catalog.Find("item-trackings:set-status")?.Permission);
+        Assert.Equal(12, catalog.All.Count);
     }
 
     [Fact]
@@ -329,6 +335,10 @@ public class ContractTests
         "ORDER.INVOICE_EXCEEDS_OPEN", "ORDER.ACCOUNT_DETERMINATION_MISSING",   // 11, 6.4 limits an invoice by open to invoice and uses the REVENUE and AR_CONTROL roles without naming codes (F-IMPL-55)
         "MATCH.QUANTITY_EXCEEDS_ORDERED",   // 11, 7.2 limits a two-way line by ordered plus tolerance without naming a code (F-IMPL-58)
         "STOCK.COST_KEY_MISMATCH", "STOCK.DETAIL_DIGEST_MISMATCH", "STOCK.MOVEMENT_COUNT_MISMATCH", "STOCK.MOVEMENT_DIGEST_MISMATCH",
+        "STOCK.LAYER_MISMATCH", "STOCK.LAYER_EXHAUSTED_MISMATCH",   // 10, 4.3 says the exhausted flag is verified from the consumption, not the names of the breaks (F-IMPL-96)
+        "INVENTORY.SERIAL_ON_HAND",            // 10, 3.8.1 says a serial cannot be received while it is on hand, without a code (F-IMPL-96)
+        "INVENTORY.NEGATIVE_STOCK_ISSUED",     // 10, 6.2 lists a warning for negative stock issued without naming it (F-IMPL-96)
+        "INVENTORY.ALLOCATION_EXCEEDS_SOURCE", // 10, 6.6 says the remaining amount of the cost line must cover the allocation, without a code (F-IMPL-99)
         "MIGRATION.LEGACY_TAX_PERIOD_INVALID",   // 13, 3.6 says a legacy tax summary belongs to the VAT period that holds the cutover without naming a code (F-IMPL-88)
         "FULFILMENT.DETAIL_DIGEST_MISMATCH", "FULFILMENT.LINE_COUNT_MISMATCH", "FULFILMENT.LINE_DIGEST_MISMATCH"   // 06, 7.4 names the kinds of a break, not the checks of the STOCK chain (F-IMPL-61)
     ];

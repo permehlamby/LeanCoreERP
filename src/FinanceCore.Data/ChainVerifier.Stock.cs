@@ -10,8 +10,8 @@ public sealed partial class ChainVerifier
     /// <summary>
     /// chains:verify for the STOCK chain (10, 4.1, 5.6): recomputes the movement digest and the row hash of every stock document from the stored columns, checks the links, the gapless
     /// chain_seq, the head, the movement count, that the journal document of a stock document binds what it should (the row hash of the stock document, or for a document derived by a purchase
-    /// invoice the digest of its link digest and its row hash, ADR-052 extended) and that the cost key of every item follows from the movements (the quantity and the value after a movement are
-    /// those before plus the movement).
+    /// invoice the digest of its link digest and its row hash, ADR-052 extended) and that the cost key (item, cost warehouse, lot or serial) follows from the movements (the quantity and the value after a movement are
+    /// those before plus the movement), that the movement digest covers the consumption rows, and that every FIFO layer matches its movement, is not over-consumed and has the exhausted flag that its consumption gives.
     /// </summary>
     public async Task<VerificationResult> VerifyStockAsync(Guid tenantId, Guid companyId, CancellationToken ct = default)
     {
@@ -79,6 +79,23 @@ public sealed partial class ChainVerifier
             }
         }
 
+        var consumptionOf = new Dictionary<Guid, List<IReadOnlyDictionary<string, object?>>>();
+        await using (var cmd = tx.Command("select stock_document_id, line_no, layer_doc_id, layer_line_no, quantity_base, value_lc from core.stock_layer_consumption where tenant_id = @t and company_id = @c"))
+        {
+            cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("c", companyId);
+            await using var r = await cmd.ExecuteReaderAsync(ct);
+            while (await r.ReadAsync(ct))
+            {
+                Guid id = r.GetGuid(0);
+                if (!consumptionOf.TryGetValue(id, out var list)) consumptionOf[id] = list = [];
+                list.Add(new Dictionary<string, object?>
+                {
+                    ["tenant_id"] = tenantId, ["company_id"] = companyId, ["stock_document_id"] = id, ["line_no"] = (long)r.GetInt32(1), ["layer_doc_id"] = r.GetGuid(2), ["layer_line_no"] = (long)r.GetInt32(3),
+                    ["quantity_base"] = r.GetDecimal(4), ["value_lc"] = r.GetDecimal(5)
+                });
+            }
+        }
+
         var journalDigest = new Dictionary<Guid, byte[]?>();
         await using (var cmd = tx.Command(
             "select document_id, detail_digest from core.journal_document where tenant_id = @t and company_id = @c and document_id in (select journal_document_id from core.stock_document where tenant_id = @t and company_id = @c and journal_document_id is not null)"))
@@ -90,8 +107,8 @@ public sealed partial class ChainVerifier
 
         byte[] prev = LedgerHash2.Genesis(tenantId, companyId, StockHash2.ChainType, "");
         long expected = 1;
-        var cost = new Dictionary<Guid, (decimal Qty, decimal Value)>();
-        string[] valueMoving = ["RECEIPT", "ISSUE", "ADJUST_IN", "ADJUST_OUT", "COST_ADJUST", "RETURN_IN", "RETURN_OUT", "OPENING_IN"];
+        var cost = new Dictionary<(Guid, Guid?, Guid?), (decimal Qty, decimal Value)>();
+        string[] valueMoving = ["RECEIPT", "ISSUE", "ADJUST_IN", "ADJUST_OUT", "COST_ADJUST", "RETURN_IN", "RETURN_OUT", "OPENING_IN", "TRANSFER_OUT", "TRANSFER_IN"];
         foreach (var d in docs)
         {
             if (d.Seq != expected) { problems.Add(new("CHAIN.SEQUENCE_GAP", d.Seq, $"expected chain_seq {expected}")); expected = d.Seq; }
@@ -103,7 +120,7 @@ public sealed partial class ChainVerifier
                 if (moves.Count != (int)(long)d.Body["movement_count"]!) problems.Add(new("STOCK.MOVEMENT_COUNT_MISMATCH", d.Seq, $"{moves.Count} movements, the document says {d.Body["movement_count"]}"));
                 if (moves.Count > 0)
                 {
-                    byte[] digest = StockHash2.MovementDigest(moves.Select(m => (IReadOnlyDictionary<string, object?>)m).ToList());
+                    byte[] digest = StockHash2.MovementDigest(moves.Select(m => (IReadOnlyDictionary<string, object?>)m).ToList(), consumptionOf.GetValueOrDefault(d.Id));
                     if (!digest.AsSpan().SequenceEqual((byte[])d.Body["movement_digest"]!)) problems.Add(new("STOCK.MOVEMENT_DIGEST_MISMATCH", d.Seq, "recomputed movement_digest differs from the stored one"));
                 }
                 byte[] row = StockHash2.RowHash(tenantId, companyId, d.Seq, d.Prev, d.Body);
@@ -119,8 +136,8 @@ public sealed partial class ChainVerifier
             // the cost key follows from the movements that move value
             foreach (var m in moves)
             {
-                if (!valueMoving.Contains((string)m["movement_type"]!) || m["cost_warehouse_id"] is not null || m["tracking_id"] is not null) continue;
-                Guid item = (Guid)m["item_id"]!;
+                if (!valueMoving.Contains((string)m["movement_type"]!)) continue;
+                var item = ((Guid)m["item_id"]!, (Guid?)m["cost_warehouse_id"], (Guid?)m["tracking_id"]);
                 var before = cost.GetValueOrDefault(item);
                 decimal qty = before.Qty + (decimal)m["base_quantity"]!, value = before.Value + (decimal)m["value_lc"]!;
                 if (qty != (decimal)m["cost_qty_after"]! || value != (decimal)m["cost_value_after_lc"]!)
@@ -129,6 +146,29 @@ public sealed partial class ChainVerifier
             }
             prev = d.Row;
             expected = d.Seq + 1;
+        }
+
+        // the FIFO layers: each belongs to a receiving movement, is not over-consumed, and the exhausted flag follows from the consumption
+        await using (var cmd = tx.Command(
+            "select l.stock_document_id, l.line_no, l.quantity_base, l.value_lc, l.exhausted, m.base_quantity, m.value_lc, " +
+            "coalesce((select sum(c.quantity_base) from core.stock_layer_consumption c where c.tenant_id = l.tenant_id and c.company_id = l.company_id and c.layer_doc_id = l.stock_document_id and c.layer_line_no = l.line_no), 0), " +
+            "coalesce((select sum(c.value_lc) from core.stock_layer_consumption c where c.tenant_id = l.tenant_id and c.company_id = l.company_id and c.layer_doc_id = l.stock_document_id and c.layer_line_no = l.line_no), 0), " +
+            "coalesce((select sum(a.value_lc) from core.stock_layer_adjustment a where a.tenant_id = l.tenant_id and a.company_id = l.company_id and a.layer_doc_id = l.stock_document_id and a.layer_line_no = l.line_no), 0), " +
+            "(select d.chain_seq from core.stock_document d where d.tenant_id = l.tenant_id and d.company_id = l.company_id and d.stock_document_id = l.stock_document_id) " +
+            "from core.stock_cost_layer l join core.stock_movement m on m.tenant_id = l.tenant_id and m.company_id = l.company_id and m.stock_document_id = l.stock_document_id and m.line_no = l.line_no " +
+            "where l.tenant_id = @t and l.company_id = @c"))
+        {
+            cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("c", companyId);
+            await using var r = await cmd.ExecuteReaderAsync(ct);
+            while (await r.ReadAsync(ct))
+            {
+                decimal qty = r.GetDecimal(2), value = r.GetDecimal(3), movementQty = r.GetDecimal(5), consumedQty = r.GetDecimal(7), consumedValue = r.GetDecimal(8), adjusted = r.GetDecimal(9);
+                long seq = r.GetInt64(10);
+                string where = $"layer {r.GetGuid(0):D}/{r.GetInt32(1)}";
+                if (qty > movementQty || movementQty <= 0m) problems.Add(new("STOCK.LAYER_MISMATCH", seq, $"{where}: the layer holds {qty}, its movement {movementQty}"));
+                if (consumedQty > qty || consumedValue > value + adjusted) problems.Add(new("STOCK.LAYER_MISMATCH", seq, $"{where}: consumed quantity {consumedQty} and value {consumedValue} exceed the layer"));
+                if (r.GetBoolean(4) != (consumedQty >= qty)) problems.Add(new("STOCK.LAYER_EXHAUSTED_MISMATCH", seq, $"{where}: the exhausted flag does not follow from the consumption"));
+            }
         }
 
         if (headFound)

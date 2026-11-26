@@ -7,7 +7,7 @@ using Npgsql;
 namespace FinanceCore.Data;
 
 /// <summary>What a master resource lets a caller read (09, 3): its table, its key, the columns a `filter` may name (equal to) and whether the table is the tenant's.</summary>
-public sealed record MasterReadSpec(string Resource, string Table, string IdColumn, string[] Filterable, string OrderBy, bool TenantTable = true, bool Versioned = false, string? ExtensionType = null);
+public sealed record MasterReadSpec(string Resource, string Table, string IdColumn, string[] Filterable, string OrderBy, bool TenantTable = true, bool Versioned = false, string? ExtensionType = null, bool NoActiveFlag = false);
 
 /// <summary>
 /// The generic get and list of the master data (09, 3, permission read.config): the row as JSON with its typed values, `active` = true by default and `include_inactive` for all
@@ -28,6 +28,8 @@ public sealed class MasterReads(NpgsqlDataSource source)
         new("warehouse-locations", "warehouse_location", "location_id", ["company_id", "warehouse_id", "location_code", "location_type"], "warehouse_id, location_code"),
         new("item-companies", "item_company", "item_company_id", ["company_id", "item_id", "valuation_method"], "company_id, item_id", ExtensionType: "ITEM_COMPANY"),
         new("item-warehouses", "item_warehouse", "item_warehouse_id", ["company_id", "warehouse_id", "item_id"], "warehouse_id, item_id", ExtensionType: "ITEM_WAREHOUSE"),
+        // a lot or serial (3.8) has a status and no active flag: the list shows all of them
+        new("item-trackings", "item_tracking", "tracking_id", ["item_id", "tracking_no", "kind", "status"], "item_id, tracking_no", NoActiveFlag: true),
         // pattern V: every version is a row and there is no active flag, so the list shows all versions and there is no get by key
         new("account-determinations", "account_determination", "determination_id", ["company_id", "role_code", "item_group_id", "warehouse_id", "partner_id", "item_id", "determination_id"], "company_id, role_code, determination_id, valid_from", Versioned: true)
     ];
@@ -96,8 +98,8 @@ public sealed class MasterReads(NpgsqlDataSource source)
         var ext = spec.ExtensionType is null ? ("", (NpgsqlCommand _) => { }, (CommandError?)null) : await ExtensionRead.FiltersAsync(tx, tenantId, ctx, spec.ExtensionType, req.Ext, $"x.{spec.IdColumn}::text", true, spec.Resource + ":list", ct);
         if (ext.Item3 is not null) return Reject<MasterRowList>(ext.Item3);
         await using var cmd = tx.Command(
-            $"select (to_jsonb(x) - 'tenant_id')::text from core.{spec.Table} x where x.tenant_id = @t{(spec.Versioned ? "" : " and (@all or x.active)")}{where}{ext.Item1}{SearchFilters.Where(req.Contains, "x", "s")} order by {spec.OrderBy} offset @o limit @n");
-        cmd.Parameters.AddWithValue("t", tenantId); if (!spec.Versioned) cmd.Parameters.AddWithValue("all", req.IncludeInactive); cmd.Parameters.AddWithValue("o", offset); cmd.Parameters.AddWithValue("n", limit + 1);
+            $"select (to_jsonb(x) - 'tenant_id')::text from core.{spec.Table} x where x.tenant_id = @t{(spec.Versioned || spec.NoActiveFlag ? "" : " and (@all or x.active)")}{where}{ext.Item1}{SearchFilters.Where(req.Contains, "x", "s")} order by {spec.OrderBy} offset @o limit @n");
+        cmd.Parameters.AddWithValue("t", tenantId); if (!spec.Versioned && !spec.NoActiveFlag) cmd.Parameters.AddWithValue("all", req.IncludeInactive); cmd.Parameters.AddWithValue("o", offset); cmd.Parameters.AddWithValue("n", limit + 1);
         SearchFilters.Bind(cmd, req.Contains, "s"); ext.Item2(cmd);
         int k = 0;
         foreach (string value in filter.Values) cmd.Parameters.AddWithValue($"f{k++}", value);

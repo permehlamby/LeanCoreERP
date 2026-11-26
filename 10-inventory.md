@@ -510,6 +510,17 @@ These deltas are applied in v0.2 (re-baseline of 14, sections 8 and 9). Added in
 
 No change to the cost layers or the derivation of `COST_ADJUST` movements. Stock purchase invoices built by order management reject tax codes with partial deduction, a deduction key or a cap (`ORDER.PARTIAL_DEDUCTION_NOT_SUPPORTED`, 11, 7.2), so the non-deductible part never has to enter a cost layer in release 1 (19, section 10). A later version decides whether it does.
 
+### 9.y Deltas of the implementation of the stock engine (F-IMPL-96 to 99, 2026-11-26)
+
+| Section | Change |
+|---|---|
+| 3.8.1 | A serial received while on hand is `INVENTORY.SERIAL_ON_HAND`. `item-trackings:set-status` and the reads `item-trackings:get`, `:list` exist (a lot is recalled by a command, not by a field of an update) |
+| 4.3 | A FIFO layer takes a landed cost through the insert-only `stock_layer_adjustment` and its consumption takes the remaining value in proportion to the remaining quantity. One layer per creating line: a FIFO transfer under the cost scope WAREHOUSE has an IN line per consumed layer |
+| 5.4, 6.2 | The warning of a negative stock issue is `INVENTORY.NEGATIVE_STOCK_ISSUED`. A transfer or status change cannot go below the stock of its source, also when negative stock is allowed |
+| 4.5 | A reservation keeps the base unit of its item (`reservations:adjust` is in base units). `reservation_id` on an ISSUE line names the reservation that the issue consumes |
+| 6.6 | `amount_lc` is optional on `landed-costs:allocate` (default: the remaining amount of the cost line); `INVENTORY.ALLOCATION_EXCEEDS_SOURCE` when it is too much; one COST_ADJUST line per target also when zero |
+| 6.8 | `landed-costs:reverse` is the generic stock reversal with the document type allowed for it; the test of a later movement is made under the locks of the reversal |
+
 ## 10. Assumptions
 
 | Ref | Item |

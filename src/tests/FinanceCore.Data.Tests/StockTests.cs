@@ -11,12 +11,12 @@ public class StockTests
 {
     private static string Describe<T>(CommandResult<T> r) => RevaluationTests.Describe(r);
     private static string[] Codes<T>(CommandResult<T> r) => RevaluationTests.Codes(r);
-    private static Dictionary<string, object?> D(params (string, object?)[] f) => f.ToDictionary(x => x.Item1, x => x.Item2);
-    private static CommandContext Stock(TestTenant t, string key) => t.Context(key, "stock.post");
+    internal static Dictionary<string, object?> D(params (string, object?)[] f) => f.ToDictionary(x => x.Item1, x => x.Item2);
+    internal static CommandContext Stock(TestTenant t, string key) => t.Context(key, "stock.post");
 
-    private sealed record S(TestTenant T, StockCommands Cmds, StockReads Reads, Guid Item, Guid Warehouse, Guid Inventory, Guid Cogs, Guid GrIr, Guid Gain, Guid Loss, Guid Group);
+    internal sealed record S(TestTenant T, StockCommands Cmds, StockReads Reads, Guid Item, Guid Warehouse, Guid Inventory, Guid Cogs, Guid GrIr, Guid Gain, Guid Loss, Guid Group);
 
-    private static async Task<Guid> AccountAsync(TestTenant t, string no, string type, string mode)
+    internal static async Task<Guid> AccountAsync(TestTenant t, string no, string type, string mode)
     {
         Guid id = Guid.NewGuid();
         await t.ExecuteAsync("insert into core.gl_account (tenant_id, company_id, account_id, account_no, name, account_type, tax_code_rule, open_item_mode) values (@t, @c, @a, @no, @no, @ty, 'FORBIDDEN', @m)",
@@ -24,7 +24,7 @@ public class StockTests
         return id;
     }
 
-    private static async Task<Guid> MasterAsync(TestTenant t, string resource, string key, Dictionary<string, object?> fields)
+    internal static async Task<Guid> MasterAsync(TestTenant t, string resource, string key, Dictionary<string, object?> fields)
     {
         var r = await new InventoryMasterCommands(t.App).CreateAsync(resource, t.TenantId, t.Context(key, "write.config"), new CreateInventoryMasterRequest(fields));
         Assert.True(r.Status == CommandStatus.Ok, resource + " " + Describe(r));
@@ -32,7 +32,7 @@ public class StockTests
     }
 
     /// <summary>An ACTIVE DKK company with the stock series (documents and journals), the accounts of the stock roles with catch-all determinations, a goods item at moving average and a warehouse.</summary>
-    private static async Task<S> SetupAsync(bool determination = true, bool series = true)
+    internal static async Task<S> SetupAsync(bool determination = true, bool series = true)
     {
         var t = await TestTenant.CreateReadyAsync();
         Guid inventory = await AccountAsync(t, "STK-INV", "ASSET", "NONE"), cogs = await AccountAsync(t, "STK-COGS", "EXPENSE", "NONE"), grir = await AccountAsync(t, "STK-GRIR", "LIABILITY", "GL_OPEN_ITEM");
@@ -66,20 +66,20 @@ public class StockTests
         return new S(t, new StockCommands(t.App), new StockReads(t.App), item, warehouse, inventory, cogs, grir, gain, loss, group);
     }
 
-    private static PostStockDocumentRequest Doc(S s, string type, string date, string? reason, params StockLineInput[] lines) =>
+    internal static PostStockDocumentRequest Doc(S s, string type, string date, string? reason, params StockLineInput[] lines) =>
         new(s.T.CompanyId, type, DateOnly.Parse(date), DateOnly.Parse(date), lines, reason);
 
-    private static StockLineInput Line(S s, decimal qty, decimal? price = null, string @ref = "L1", StockAdjustment? adjustment = null) =>
+    internal static StockLineInput Line(S s, decimal qty, decimal? price = null, string @ref = "L1", StockAdjustment? adjustment = null) =>
         new(@ref, s.Item, s.Warehouse, qty, "C62", UnitPrice: price, Adjustment: adjustment);
 
-    private static async Task<StockDocumentResult> PostAsync(S s, string key, PostStockDocumentRequest req)
+    internal static async Task<StockDocumentResult> PostAsync(S s, string key, PostStockDocumentRequest req)
     {
         var r = await s.Cmds.PostAsync(s.T.TenantId, Stock(s.T, key), req);
         Assert.True(r.Status == CommandStatus.Ok, Describe(r));
         return r.Value!;
     }
 
-    private static async Task<decimal> BalanceAsync(S s, Guid account) =>
+    internal static async Task<decimal> BalanceAsync(S s, Guid account) =>
         await s.T.ScalarAsync<decimal>($"select coalesce(sum(amount_lc), 0) from core.journal_line where tenant_id = @t and company_id = '{s.T.CompanyId}' and account_id = @a", ("a", account));
 
     [Fact]
@@ -199,11 +199,11 @@ public class StockTests
         Assert.Equal(["CONFIG.INVALID_REFERENCE"], Codes(await Post("p8", Doc(s, "RECEIPT", "2026-03-10", null, With(Line(s, 1, 1), item: await MasterAsync(t, "items", "svc", D(("item_no", "S-1"), ("name", "Service"), ("item_type", "SERVICE"), ("base_unit", "HUR"), ("quantity_scale", 0), ("item_group_id", s.Group))))))));
         Guid lot = await MasterAsync(t, "items", "lot", D(("item_no", "L-1"), ("name", "Lot item"), ("item_type", "GOODS"), ("base_unit", "C62"), ("quantity_scale", 0), ("item_group_id", s.Group), ("tracking_mode", "LOT")));
         await MasterAsync(t, "item-companies", "iclot", D(("company_id", t.CompanyId), ("item_id", lot), ("valuation_method", "MOVING_AVERAGE")));
-        Assert.Equal(["LIMIT.STOCK_TRACKING_NOT_BUILT"], Codes(await Post("p9", Doc(s, "RECEIPT", "2026-03-10", null, With(Line(s, 1, 1), item: lot)))));
+        Assert.Equal(["INVENTORY.TRACKING_REQUIRED"], Codes(await Post("p9", Doc(s, "RECEIPT", "2026-03-10", null, With(Line(s, 1, 1), item: lot)))));
         Guid fifo = await MasterAsync(t, "items", "fifo", D(("item_no", "F-1"), ("name", "Fifo item"), ("item_type", "GOODS"), ("base_unit", "C62"), ("quantity_scale", 0), ("item_group_id", s.Group)));
         await MasterAsync(t, "item-companies", "icfifo", D(("company_id", t.CompanyId), ("item_id", fifo), ("valuation_method", "FIFO")));
-        Assert.Equal(["LIMIT.STOCK_FIFO_NOT_BUILT"], Codes(await Post("p10", Doc(s, "RECEIPT", "2026-03-10", null, With(Line(s, 1, 1), item: fifo)))));
-        Assert.Equal(["SCHEMA.INVALID_VALUE"], Codes(await Post("p11", Doc(s, "TRANSFER", "2026-03-10", null, Line(s, 1, 1)))));
+        Assert.Equal(["INVENTORY.INSUFFICIENT_STOCK"], Codes(await Post("p10", Doc(s, "ISSUE", "2026-03-10", null, With(Line(s, 1), item: fifo)))));
+        Assert.Equal(["SCHEMA.INVALID_VALUE"], Codes(await Post("p11", Doc(s, "TRANSFER", "2026-03-10", null, Line(s, 1)))));
         // a closed period is refused like a posting
         await t.SetPeriodStatusAsync(3, "HARD_CLOSED");
         Assert.Contains("PERIOD", Codes(await Post("p12", Doc(s, "RECEIPT", "2026-03-10", null, Line(s, 1, 1))))[0]);

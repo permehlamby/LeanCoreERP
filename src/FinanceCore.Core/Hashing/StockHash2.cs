@@ -40,13 +40,28 @@ public static class StockHash2
         Qty("expected_book_quantity", true), Code("source_line_ref", true), Int("reversal_of_line_no", true)
     ];
 
-    /// <summary>SHA-256 of one block per movement, in line_no order. The caller passes the movements in that order. At least one movement.</summary>
-    public static byte[] MovementDigest(IReadOnlyList<IReadOnlyDictionary<string, object?>> movementsInLineOrder)
+    /// <summary>The L1 columns of stock_layer_consumption in table order (10, 4.1: the movement digest covers the movements and the consumption rows).</summary>
+    public static readonly IReadOnlyList<FieldSpec> Consumption =
+    [
+        Id("tenant_id"), Id("company_id"), Id("stock_document_id"), Int("line_no"), Id("layer_doc_id"), Int("layer_line_no"), Qty("quantity_base"), Amt("value_lc")
+    ];
+
+    /// <summary>
+    /// SHA-256 of one block per movement, in line_no order, each followed by the blocks of its consumption rows (in the order of layer_doc_id and layer_line_no). The caller passes the movements in
+    /// line order and the consumption rows of the document (a document without FIFO consumption has none, and its digest is the digest of the movements alone). At least one movement.
+    /// </summary>
+    public static byte[] MovementDigest(IReadOnlyList<IReadOnlyDictionary<string, object?>> movementsInLineOrder, IReadOnlyList<IReadOnlyDictionary<string, object?>>? consumptions = null)
     {
         if (movementsInLineOrder.Count == 0) throw new ArgumentException("A stock document has at least one movement");
         using var buffer = new MemoryStream();
         foreach (var movement in movementsInLineOrder)
+        {
             buffer.Write(Canonical.Block(Canonical.EncodeFields(Movement, movement)));
+            long line = Convert.ToInt64(movement["line_no"], System.Globalization.CultureInfo.InvariantCulture);
+            foreach (var c in (consumptions ?? []).Where(c => Convert.ToInt64(c["line_no"], System.Globalization.CultureInfo.InvariantCulture) == line)
+                         .OrderBy(c => c["layer_doc_id"]!.ToString(), StringComparer.Ordinal).ThenBy(c => Convert.ToInt64(c["layer_line_no"], System.Globalization.CultureInfo.InvariantCulture)))
+                buffer.Write(Canonical.Block(Canonical.EncodeFields(Consumption, c)));
+        }
         return SHA256.HashData(buffer.ToArray());
     }
 

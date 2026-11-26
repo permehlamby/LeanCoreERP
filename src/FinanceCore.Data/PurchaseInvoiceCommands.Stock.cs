@@ -80,6 +80,16 @@ public sealed partial class PurchaseInvoiceCommands
         await CommandSupport.LockOrCreateHeadAsync(tx, tenantId, companyId, ClearingHash2.ChainType, "", LedgerHash2.Genesis(tenantId, companyId, ClearingHash2.ChainType, ""), ct);
         (long headSeq, byte[] prev, _) = await CommandSupport.LockOrCreateHeadAsync(tx, tenantId, companyId, StockHash2.ChainType, "", LedgerHash2.Genesis(tenantId, companyId, StockHash2.ChainType, ""), ct);
 
+        // a price difference is a cost adjustment of the cost key without lot or serial and without a warehouse, at moving average: FIFO layers, tracked items and the cost scope WAREHOUSE are not built here
+        if (adjustments.Count > 0)
+        {
+            string scope = await StockCommands.ReadCostScopeAsync(tx, tenantId, companyId, postingDate, ct);
+            await using var guard = tx.Command("select exists (select 1 from core.item i join core.item_company c on c.tenant_id = i.tenant_id and c.company_id = @c and c.item_id = i.item_id where i.tenant_id = @t and i.item_id = any(@ids) and (i.tracking_mode <> 'NONE' or c.valuation_method <> 'MOVING_AVERAGE'))");
+            guard.Parameters.AddWithValue("t", tenantId); guard.Parameters.AddWithValue("c", companyId); guard.Parameters.AddWithValue("ids", adjustments.Select(a => a.Item).Distinct().ToArray());
+            if (scope == "WAREHOUSE" || (bool)(await guard.ExecuteScalarAsync(ct))!)
+                throw new MatchRejection(Error("LIMIT.STOCK_COST_ADJUSTMENT_KEY_NOT_BUILT", "P2", "/lines", ("reason", "a cost adjustment of a FIFO or tracked item or with the cost scope WAREHOUSE")));
+        }
+
         // the cost state under the lock must be the one the split was made from
         var cost = new Dictionary<Guid, (decimal Qty, decimal Value)>();
         foreach (var (item, before) in costRead)
