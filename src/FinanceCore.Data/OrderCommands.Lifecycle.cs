@@ -73,7 +73,7 @@ public sealed partial class OrderCommands
     private static string LineWhere(OrderKind kind) => $"tenant_id = @t and company_id = @c and {kind.IdColumn} = @o and line_no = @n";
 
     private static async Task<HeaderContext> BuildContextAsync(
-        TenantTransaction tx, Guid tenantId, JournalDocumentPoster.CompanyRow company, Guid companyId, DateOnly orderDate, string currency, DateOnly? defaultDate, string? shipFrom, CancellationToken ct)
+        TenantTransaction tx, Guid tenantId, JournalDocumentPoster.CompanyRow company, Guid companyId, DateOnly orderDate, string currency, DateOnly? defaultDate, string? shipFrom, CancellationToken ct, string? shipToCountry = null)
     {
         int scale;
         await using (var cmd = tx.Command("select minor_units from platform.ref_currency where currency_code = @c"))
@@ -81,7 +81,7 @@ public sealed partial class OrderCommands
             cmd.Parameters.AddWithValue("c", currency);
             scale = Convert.ToInt32(await cmd.ExecuteScalarAsync(ct) ?? 2, CultureInfo.InvariantCulture);
         }
-        return new HeaderContext(companyId, company.Country ?? "", scale, await ReadSettingsAsync(tx, tenantId, companyId, orderDate, ct), defaultDate, shipFrom);
+        return new HeaderContext(companyId, company.Country ?? "", scale, await ReadSettingsAsync(tx, tenantId, companyId, orderDate, ct), defaultDate, shipFrom, shipToCountry);
     }
 
     // ---------------------------------------------------------------------------------------------------------
@@ -120,7 +120,9 @@ public sealed partial class OrderCommands
 
         DateOnly? defaultDate = header.TryGetValue(kind.Kind == "SALES" ? "requested_delivery_date" : "expected_receipt_date", out Patch? dd) ? dd.Value as DateOnly? : null;
         string? shipFrom = header.TryGetValue("ship_from_country", out Patch? sf) ? sf.Value as string : null;
-        HeaderContext hc = await BuildContextAsync(tx, tenantId, company, companyId, orderDate, currency, defaultDate, shipFrom, ct);
+        var (addressRows, addressError) = await ResolveAddressesAsync(tx, kind, tenantId, party, req.Addresses, ct);
+        if (addressError is not null) return CommandResult<OrderResult>.Rejected([addressError]);
+        HeaderContext hc = await BuildContextAsync(tx, tenantId, company, companyId, orderDate, currency, defaultDate, shipFrom, ct, addressRows.FirstOrDefault(a => a.Role == "SHIP_TO")?.Country);
         var lines = new List<NewLine>();
         for (int i = 0; i < req.Lines.Count; i++)
             if (await BuildLineAsync(tx, kind, tenantId, hc, req.Lines[i], linePatches[i], $"/lines/{i}", errors, ct) is { } built) lines.Add(built);
@@ -162,6 +164,7 @@ public sealed partial class OrderCommands
             for (int i = 0; i < sets.Count; i++) insert.Parameters.Add(new NpgsqlParameter($"h{i}", sets[i].Item2) { Value = sets[i].Item3 ?? DBNull.Value });
             await insert.ExecuteNonQueryAsync(ct);
         }
+        await InsertAddressesAsync(tx, kind, tenantId, companyId, orderId, addressRows, await AddressRetentionAsync(tx, tenantId, companyId, fiscalYear, orderDate, at, ct), ct);
         var refs = new Dictionary<int, string?>();
         for (int i = 0; i < lines.Count; i++) { await InsertLineAsync(tx, kind, tenantId, companyId, orderId, i + 1, lines[i], ct); refs[i + 1] = lines[i].LineRef; }
 
@@ -369,7 +372,7 @@ public sealed partial class OrderCommands
             var company = (await JournalDocumentPoster.ReadCompanyAsync(tx, tenantId, h.CompanyId, ct))!;
             JsonElement current = await HeaderJsonAsync(tx, kind, tenantId, req.Id, ct);
             DateOnly? defaultDate = DateOnly.TryParse(Str(current, kind.Kind == "SALES" ? "requested_delivery_date" : "expected_receipt_date"), CultureInfo.InvariantCulture, out DateOnly dd) ? dd : null;
-            HeaderContext hc = await BuildContextAsync(tx, tenantId, company, h.CompanyId, h.OrderDate, h.Currency, defaultDate, Str(current, "ship_from_country"), ct);
+            HeaderContext hc = await BuildContextAsync(tx, tenantId, company, h.CompanyId, h.OrderDate, h.Currency, defaultDate, Str(current, "ship_from_country"), ct, await ShipToCountryAsync(tx, kind, tenantId, h.CompanyId, req.Id, ct));
             var problems = new List<CommandError>();
             NewLine? line = await BuildLineAsync(tx, kind, tenantId, hc, req.Line, patches, "/line", problems, ct);
             if (line is null || problems.Count > 0) return CommandResult<OrderResult>.Rejected(problems);

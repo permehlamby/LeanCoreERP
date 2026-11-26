@@ -75,7 +75,10 @@ public sealed record OrderKind(
 }
 
 // ---- requests (11, 6.1, 6.2). `fields` and the line dictionaries are checked against the registries of the kind.
-public sealed record CreateOrderRequest(IReadOnlyDictionary<string, object?> Fields, IReadOnlyList<IReadOnlyDictionary<string, object?>> Lines);
+/// <summary>An address of an order given by the caller instead of the one copied from the partner (11, 4.7): a ship-to address is order data, not partner master data.</summary>
+public sealed record OrderAddressInput(string? Name, string? AddressLine1, string? AddressLine2, string? PostalCode, string? City, string CountryCode, string? ContactReference = null);
+
+public sealed record CreateOrderRequest(IReadOnlyDictionary<string, object?> Fields, IReadOnlyList<IReadOnlyDictionary<string, object?>> Lines, IReadOnlyDictionary<string, OrderAddressInput>? Addresses = null);
 
 public sealed record LineChange(int LineNo, IReadOnlyDictionary<string, object?> Fields);
 
@@ -118,16 +121,20 @@ public sealed record ListOrdersRequest(
     Guid? PartnerId = null, string? LifecycleStatus = null, DateOnly? DateFrom = null, DateOnly? DateTo = null, string? SourceDocumentRef = null, int? Limit = null, string? Cursor = null,
     IReadOnlyList<string>? Include = null, IReadOnlyList<Feed.ExtensionFilter>? Ext = null);
 
-public sealed record OrderDetail(System.Text.Json.JsonElement Order, System.Text.Json.JsonElement? Lines, System.Text.Json.JsonElement? Events, System.Text.Json.JsonElement? Changes, System.Text.Json.JsonElement? Progress = null);
+public sealed record OrderDetail(System.Text.Json.JsonElement Order, System.Text.Json.JsonElement? Lines, System.Text.Json.JsonElement? Events, System.Text.Json.JsonElement? Changes, System.Text.Json.JsonElement? Progress = null, System.Text.Json.JsonElement? Addresses = null);
 
 public sealed record OrderList(IReadOnlyList<System.Text.Json.JsonElement> Items, ReadPage Page);
 
 public static class OrderRules
 {
-    public static readonly IReadOnlyList<string> Includes = ["lines", "events", "changes", "progress", "extensions"];
+    public static readonly IReadOnlyList<string> Includes = ["lines", "events", "changes", "progress", "extensions", "addresses"];
+
+    /// <summary>The address roles of an order (11, 4.7): a sales order has a ship-to and a bill-to address, a purchase order the ship-from address of the supplier.</summary>
+    public static IReadOnlyList<string> AddressRoles(string kind) => kind == "SALES" ? ["SHIP_TO", "BILL_TO"] : ["SHIP_FROM"];
 
     public static byte[] Fingerprint(string command, CreateOrderRequest r) =>
-        MasterRules.Fingerprint(command, MasterRules.Text(r.Fields) + "|" + string.Join("#", r.Lines.Select(l => MasterRules.Text(l))));
+        MasterRules.Fingerprint(command, MasterRules.Text(r.Fields) + "|" + string.Join("#", r.Lines.Select(l => MasterRules.Text(l))) +
+            (r.Addresses is { Count: > 0 } a ? "|" + string.Join("#", a.OrderBy(x => x.Key, StringComparer.Ordinal).Select(x => $"{x.Key}={x.Value.Name}/{x.Value.AddressLine1}/{x.Value.AddressLine2}/{x.Value.PostalCode}/{x.Value.City}/{x.Value.CountryCode}/{x.Value.ContactReference}")) : ""));
 
     private static string Lines(IReadOnlyList<LineChange>? l) => l is null ? "-" : string.Join("#", l.Select(x => x.LineNo.ToString(CultureInfo.InvariantCulture) + "{" + MasterRules.Text(x.Fields) + "}"));
 

@@ -65,6 +65,14 @@ public sealed class OrderReads(NpgsqlDataSource source)
                 $"and x.{fulfilId} = l.{kind.IdColumn} and x.{fulfilLine} = l.line_no) f on true " +
                 $"left join lateral (select sum(y.base_quantity) q from core.{returnTable} y where y.tenant_id = l.tenant_id and y.company_id = l.company_id and y.{fulfilId} = l.{kind.IdColumn} and y.{fulfilLine} = l.line_no) rt on true where l.tenant_id = @t and l.company_id = @c and l.{kind.IdColumn} = @o")
             : null;
+        // 4.7: the address snapshots are personal data, the read is logged as access to the field group ORDER_ADDRESS (09, 5.2) in the transaction of the read
+        JsonElement? addresses = null;
+        if (include.Contains("addresses"))
+        {
+            addresses = await Array("select coalesce(jsonb_agg(to_jsonb(a) - 'tenant_id' - 'company_id' order by address_role), '[]'::jsonb)::text from core.order_address_snapshot a where tenant_id = @t and company_id = @c and order_kind = @k and order_id = @o");
+            Guid? partner = Parse(json).TryGetProperty(kind.PartyColumn, out JsonElement pe) && Guid.TryParse(pe.GetString(), out Guid pid) ? pid : null;
+            await ReadAccessLog.WriteAsync(tx, tenantId, ctx, kind.Resource + ":get", ReadAccessLog.OrderAddress, companyId, partner, null, null, null, ct);
+        }
         JsonElement header = Parse(json);
         if (include.Contains("extensions"))
         {
@@ -78,7 +86,8 @@ public sealed class OrderReads(NpgsqlDataSource source)
             }
             await tx.CommitAsync(ct);
         }
-        return CommandResult<OrderDetail>.Ok(new OrderDetail(header, lines, events, changes, progress), Guid.Empty);
+        if (addresses is not null && !include.Contains("extensions")) await tx.CommitAsync(ct);
+        return CommandResult<OrderDetail>.Ok(new OrderDetail(header, lines, events, changes, progress, addresses), Guid.Empty);
     }
 
     public async Task<CommandResult<OrderList>> ListAsync(OrderKind kind, Guid tenantId, CommandContext ctx, ListOrdersRequest req, CancellationToken ct = default)

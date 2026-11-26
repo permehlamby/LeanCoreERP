@@ -805,6 +805,14 @@ For the resources `gl-accounts`, `business-partners` (with PII, company relation
 
 These deltas are applied in 02 and 06 with this spec.
 
+### 13.2bl Address snapshots of orders (F-IMPL-106, 2026-11-26)
+
+PROPOSED, written down so that spec and code agree. It builds on 11, 4.5, 4.7, 09, 5.2 and 12, 4.1.
+
+1. **Built.** Migration 0065: `order_address_snapshot`. The snapshots are written at placement (SHIP_TO and BILL_TO of a sales order, SHIP_FROM of a purchase order), `addresses` on the create requests, the default destination country from the ship-to address, `include=addresses` with a read log row of the field group ORDER_ADDRESS.
+2. **Choices.** A tenant without an ADDRESS_SNAPSHOT retention rule gets `retention_until` null. The read log row names the partner and the company, not a document.
+3. **Not built.** The retention job (anonymisation, clearing of search columns), the change log entries of the snapshot, a change of an address after placement.
+
 ### 13.2bk Dropship, first slice (F-IMPL-105, 2026-11-26)
 
 PROPOSED, written down so that spec and code agree. It builds on 11, 4.2, 4.6, 5.3, 5.5, 6.6 and 13.2w, 13.2bf.

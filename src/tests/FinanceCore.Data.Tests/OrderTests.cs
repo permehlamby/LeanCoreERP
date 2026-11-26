@@ -72,6 +72,59 @@ public class OrderTests
     }
 
     private static async Task<long> CountAsync(TestTenant t, string sql) => await t.ScalarAsync<long>(sql);
+    [Fact]
+    public async Task AnOrderKeepsTheAddressesAsTheyWereAtPlacementAndTheShipToCountryIsTheDefaultDestination()
+    {
+        var s = await SetupAsync();
+        var t = s.T;
+
+        // copied from the partner: a ship-to and a bill-to address, the destination country of a line without one is the ship-to country
+        var plain = await s.Orders.CreateAsync(OrderKind.Sales, t.TenantId, Sales(t, "a1"), new(SalesHeader(s), [Wo(StockLine(s), "destination_country")]));
+        Assert.True(plain.Status == CommandStatus.Ok, Describe(plain));
+        Assert.Equal(("DK", "DK", true, "DK"), (
+            await t.ScalarAsync<string>($"select country_code from core.order_address_snapshot where tenant_id = @t and order_id = '{plain.Value!.OrderId}' and address_role = 'SHIP_TO'"),
+            await t.ScalarAsync<string>($"select country_code from core.order_address_snapshot where tenant_id = @t and order_id = '{plain.Value.OrderId}' and address_role = 'BILL_TO'"),
+            await t.ScalarAsync<bool>($"select copied_from_partner from core.order_address_snapshot where tenant_id = @t and order_id = '{plain.Value.OrderId}' and address_role = 'SHIP_TO'"),
+            await t.ScalarAsync<string>($"select destination_country from core.sales_order_line where tenant_id = @t and sales_order_id = '{plain.Value.OrderId}' and line_no = 1")));
+
+        // a ship-to address given by the caller is order data: it is not copied, and its country is the default destination
+        var given = new Dictionary<string, OrderAddressInput> { ["SHIP_TO"] = new("Dock 4", "Havnevej 1", null, "20000", "Malmö", "SE", "Lars") };
+        var custom = await s.Orders.CreateAsync(OrderKind.Sales, t.TenantId, Sales(t, "a2"), new(SalesHeader(s), [Wo(StockLine(s), "destination_country")], given));
+        Assert.True(custom.Status == CommandStatus.Ok, Describe(custom));
+        Assert.Equal(("SE", false, "Malmö", true, "SE"), (
+            await t.ScalarAsync<string>($"select country_code from core.order_address_snapshot where tenant_id = @t and order_id = '{custom.Value!.OrderId}' and address_role = 'SHIP_TO'"),
+            await t.ScalarAsync<bool>($"select copied_from_partner from core.order_address_snapshot where tenant_id = @t and order_id = '{custom.Value.OrderId}' and address_role = 'SHIP_TO'"),
+            await t.ScalarAsync<string>($"select city from core.order_address_snapshot where tenant_id = @t and order_id = '{custom.Value.OrderId}' and address_role = 'SHIP_TO'"),
+            await t.ScalarAsync<bool>($"select copied_from_partner from core.order_address_snapshot where tenant_id = @t and order_id = '{custom.Value.OrderId}' and address_role = 'BILL_TO'"),
+            await t.ScalarAsync<string>($"select destination_country from core.sales_order_line where tenant_id = @t and sales_order_id = '{custom.Value.OrderId}' and line_no = 1")));
+
+        // the roles of the kind and a country that exists
+        var badRole = new Dictionary<string, OrderAddressInput> { ["SHIP_FROM"] = new(null, null, null, null, null, "SE") };
+        Assert.Equal(["SCHEMA.INVALID_VALUE"], Codes(await s.Orders.CreateAsync(OrderKind.Sales, t.TenantId, Sales(t, "a3"), new(SalesHeader(s), [StockLine(s)], badRole))));
+        var badCountry = new Dictionary<string, OrderAddressInput> { ["SHIP_TO"] = new(null, null, null, null, null, "ZZ") };
+        Assert.Equal(["CONFIG.INVALID_REFERENCE"], Codes(await s.Orders.CreateAsync(OrderKind.Sales, t.TenantId, Sales(t, "a4"), new(SalesHeader(s), [StockLine(s)], badCountry))));
+
+        // the snapshot is frozen
+        await Assert.ThrowsAsync<Npgsql.PostgresException>(() => t.ExecuteAsync($"update core.order_address_snapshot set city = 'X' where tenant_id = @t and order_id = '{custom.Value.OrderId}' and address_role = 'SHIP_TO'"));
+
+        // a purchase order has the ship-from address of the supplier
+        var purchase = await s.Orders.CreateAsync(OrderKind.Purchase, t.TenantId, Buy(t, "a5"), new(
+            D(("company_id", t.CompanyId), ("order_date", "2026-03-10"), ("order_currency", "DKK"), ("supplier_partner_id", s.Supplier), ("ship_from_country", "DK")),
+            [D(("item_id", s.Item), ("quantity", 5), ("unit_code", "C62"), ("unit_price", 10), ("warehouse_id", s.Warehouse))]));
+        Assert.True(purchase.Status == CommandStatus.Ok, Describe(purchase));
+        Assert.Equal(["SHIP_FROM"], await t.ScalarAsync<string[]>($"select array_agg(address_role) from core.order_address_snapshot where tenant_id = @t and order_id = '{purchase.Value!.OrderId}'"));
+
+        // a read with include=addresses returns them and is logged as access to the field group ORDER_ADDRESS
+        long before = await CountAsync(t, "select count(*) from core.read_access_log where tenant_id = @t and field_group = 'ORDER_ADDRESS'");
+        var read = await s.Reads.GetAsync(OrderKind.Sales, t.TenantId, t.Context("g1", OrderKind.ReadPermission), new(custom.Value.OrderId, ["addresses"]));
+        Assert.True(read.Status == CommandStatus.Ok, Describe(read));
+        Assert.Equal(2, read.Value!.Addresses!.Value.GetArrayLength());
+        Assert.Equal(before + 1, await CountAsync(t, "select count(*) from core.read_access_log where tenant_id = @t and field_group = 'ORDER_ADDRESS'"));
+        var noAddresses = await s.Reads.GetAsync(OrderKind.Sales, t.TenantId, t.Context("g2", OrderKind.ReadPermission), new(custom.Value.OrderId, ["lines"]));
+        Assert.Null(noAddresses.Value!.Addresses);
+        Assert.Equal(before + 1, await CountAsync(t, "select count(*) from core.read_access_log where tenant_id = @t and field_group = 'ORDER_ADDRESS'"));
+    }
+
 
     [Fact]
     public async Task ASalesOrderIsPlacedWithNumberDerivedAmountsAndDefaults()
@@ -116,7 +169,7 @@ public class OrderTests
         Assert.Equal(["ORDER.CONFIRMED_DATE_ON_CREATE"], Codes(await Place("q3", SalesHeader(s), W(StockLine(s), "confirmed_date", "2026-04-01"))));
         Assert.Equal(["SCHEMA.REQUIRED_FIELD_MISSING"], Codes(await Place("q4", SalesHeader(s), Wo(W(StockLine(s), "fulfilment_type", "DROPSHIP"), "warehouse_id"))));   // a dropship line names its purchase line
         Assert.Equal(["SCHEMA.REQUIRED_FIELD_MISSING"], Codes(await Place("q5", SalesHeader(s), Wo(StockLine(s), "warehouse_id"))).Distinct().ToArray());   // a stock line needs a warehouse
-        Assert.Equal(["SCHEMA.REQUIRED_FIELD_MISSING"], Codes(await Place("q6", SalesHeader(s), Wo(StockLine(s), "destination_country"))));
+        Assert.Equal(CommandStatus.Ok, (await Place("q6", SalesHeader(s), Wo(StockLine(s), "destination_country"))).Status);   // the destination is the ship-to country of the customer
         Assert.Equal(["SCHEMA.REQUIRED_FIELD_MISSING"], Codes(await s.Orders.CreateAsync(OrderKind.Sales, t.TenantId, Sales(t, "q7"), new(SalesHeader(s), []))));
         Assert.Equal(["CONFIG.INVALID_REFERENCE"], Codes(await Place("q8", SalesHeader(s), W(StockLine(s), "item_id", Guid.NewGuid()))));
         Assert.Equal(["SCHEMA.INVALID_VALUE"], Codes(await Place("q9", SalesHeader(s), W(StockLine(s, 1, 1), "discount_pct", 101))));

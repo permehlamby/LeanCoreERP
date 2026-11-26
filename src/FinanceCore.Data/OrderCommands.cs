@@ -159,7 +159,7 @@ public sealed partial class OrderCommands(NpgsqlDataSource source)
         Guid? TaxClass, Guid? Warehouse, string Origin, string Destination, decimal Over, decimal Under, DateOnly? RequestedDate, string? LineText, string Fulfilment, string? Policy, string? MatchMode,
         Guid? DropshipOrder = null, int? DropshipLine = null);
 
-    private sealed record HeaderContext(Guid CompanyId, string CompanyCountry, int CurrencyScale, OrderSettings Settings, DateOnly? DefaultDate, string? ShipFrom);
+    private sealed record HeaderContext(Guid CompanyId, string CompanyCountry, int CurrencyScale, OrderSettings Settings, DateOnly? DefaultDate, string? ShipFrom, string? ShipToCountry = null);
 
     /// <summary>Checks one line against the company's data and derives what the core computes (11, 6.2): base quantity, net amount, tax geography and the defaults of the line.</summary>
     private static async Task<NewLine?> BuildLineAsync(
@@ -245,7 +245,7 @@ public sealed partial class OrderCommands(NpgsqlDataSource source)
         // tax geography (11, 4.5): the origin is the warehouse country or, for a service, the company country (a purchase: the supplier's ship-from country); the destination
         // is the ship-to country, and there is no address snapshot yet, so it must be given (F-IMPL-49)
         string? origin = S("origin_country") ?? (kind.Kind == "SALES" ? (fulfilment == "STOCK" ? warehouseCountry : h.CompanyCountry) : h.ShipFrom);
-        string? destination = S("destination_country") ?? (kind.Kind == "PURCHASE" ? (warehouseCountry ?? h.CompanyCountry) : null);
+        string? destination = S("destination_country") ?? (kind.Kind == "PURCHASE" ? (warehouseCountry ?? h.CompanyCountry) : h.ShipToCountry);
         if (origin is null) Bad("origin_country", "SCHEMA.REQUIRED_FIELD_MISSING", "the country the goods come from");
         if (destination is null) Bad("destination_country", "SCHEMA.REQUIRED_FIELD_MISSING", "the country the goods go to");
         foreach (var (field, code) in new[] { ("origin_country", origin), ("destination_country", destination) })
