@@ -68,6 +68,8 @@ builder.Services.AddSingleton(sp => new YearEndCommands(sp.GetRequiredService<Np
 builder.Services.AddSingleton(sp => new LedgerReads(sp.GetRequiredService<NpgsqlDataSource>()));
 builder.Services.AddSingleton(sp => new IcReconciliationReads(sp.GetRequiredService<NpgsqlDataSource>()));
 builder.Services.AddSingleton(sp => new EventFeed(sp.GetRequiredService<NpgsqlDataSource>()));
+builder.Services.AddSingleton(sp => new ExtensionCommands(sp.GetRequiredService<NpgsqlDataSource>()));
+builder.Services.AddSingleton(sp => new ExtensionReads(sp.GetRequiredService<NpgsqlDataSource>()));
 builder.Services.AddSingleton(sp => new AuditReads(sp.GetRequiredService<NpgsqlDataSource>()));
 builder.Services.AddSingleton(sp => new PartnerReads(sp.GetRequiredService<NpgsqlDataSource>()));
 builder.Services.AddSingleton(sp => new MigrationReads(sp.GetRequiredService<NpgsqlDataSource>()));
@@ -79,6 +81,7 @@ builder.Services.AddSingleton<ICommandModule, VatModule>();
 builder.Services.AddSingleton<ICommandModule, ClosingModule>();
 builder.Services.AddSingleton<ICommandModule, ReadModule>();
 builder.Services.AddSingleton<ICommandModule, FeedModule>();
+builder.Services.AddSingleton<ICommandModule, ExtensionModule>();
 builder.Services.AddSingleton<ICommandModule, MigrationModule>();
 builder.Services.AddSingleton<ICommandModule, InventoryModule>();
 builder.Services.AddSingleton<ICommandModule, OrderModule>();

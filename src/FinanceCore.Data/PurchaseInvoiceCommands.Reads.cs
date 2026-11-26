@@ -1,5 +1,6 @@
 using FinanceCore.Core.Commands;
 using FinanceCore.Core.Masters;
+using FinanceCore.Core.Reads;
 using Npgsql;
 
 namespace FinanceCore.Data;
@@ -8,7 +9,7 @@ namespace FinanceCore.Data;
 /// gr-ir:query (11, 8, permission read.orders): the GR/IR items of a company, that is the open items without partner on the accounts that its GR_IR role names, with the document that holds each (a receipt,
 /// a receipt without an order, a return, an invoice, a credit note or a write-off), the supplier and the orders where the document has them, the age in days, the value and the state: OPEN (open or
 /// partly cleared), WRITTEN_OFF (cleared by gr-ir:write-off and not reset), CLEARED. The answer also gives the reconciliation: the residual of all open items and the balance of the accounts in the ledger,
-/// which are equal because every clearing of a GR/IR item nets to zero. One snapshot of the read role. Not built: a cursor (the limit cuts the list), the as-of reconstruction of past states, the
+/// which are equal because every clearing of a GR/IR item nets to zero. One snapshot of the read role. A cursor is an offset in the order (posting date, document, line), signed and bound to the query. Not built: the as-of reconstruction of past states, the
 /// order line of an item (only the orders of its document).
 /// </summary>
 public sealed partial class PurchaseInvoiceCommands
@@ -23,6 +24,8 @@ public sealed partial class PurchaseInvoiceCommands
         int limit = req.Limit ?? GrIrQueryRules.DefaultLimit;
         if (limit < 1 || limit > GrIrQueryRules.MaxLimit) return Fail(Error("READ.INVALID_FILTER", "P1", "limit", ("field", "limit"), ("allowed", $"1 to {GrIrQueryRules.MaxLimit}")));
         DateOnly asOf = req.AsOf ?? DateOnly.FromDateTime(DateTime.UtcNow);
+        string cursorKind = ReadRules.QueryKind("gr-ir", req.CompanyId, state, req.PurchaseOrderId, req.SupplierPartnerId);
+        if (!ReadRules.TryDecodeCursor(req.Cursor, cursorKind, out long offset)) return Fail(Error("READ.CURSOR_INVALID", "P1", "cursor"));
 
         await using TenantTransaction tx = await TenantTransaction.BeginAsync(source, tenantId, CommandRole.Read, ct: ct, snapshot: true);
         await using (var cmd = tx.Command("select 1 from core.company where tenant_id = @t and company_id = @c"))
@@ -73,6 +76,7 @@ public sealed partial class PurchaseInvoiceCommands
         }
         decimal open = all.Where(i => i.State == "OPEN").Sum(i => i.ResidualLc);
         var filtered = all.Where(i => (state == "ALL" || i.State == state) && (req.PurchaseOrderId is null || i.OrderIds.Contains(req.PurchaseOrderId.Value)) && (req.SupplierPartnerId is null || i.SupplierPartnerId == req.SupplierPartnerId)).ToList();
-        return CommandResult<GrIrQueryResult>.Ok(new GrIrQueryResult(filtered.Take(limit).ToList(), open, gl, open == gl, limit, filtered.Count > limit), Guid.Empty);
+        return CommandResult<GrIrQueryResult>.Ok(new GrIrQueryResult(filtered.Skip((int)offset).Take(limit).ToList(), open, gl, open == gl,
+            new ReadPage(filtered.Count > offset + limit ? ReadRules.EncodeCursor(cursorKind, offset + limit) : null, limit)), Guid.Empty);
     }
 }

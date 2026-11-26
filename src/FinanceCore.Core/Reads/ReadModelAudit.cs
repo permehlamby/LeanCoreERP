@@ -7,14 +7,16 @@ namespace FinanceCore.Core.Reads;
 // ---- aging:query (09, 4.5)
 public sealed record AgingRequest(
     Guid CompanyId, DateOnly? AsOfDate = null, string? Basis = null, IReadOnlyList<int>? Buckets = null, IReadOnlyList<string>? GroupBy = null,
-    Guid? AccountId = null, Guid? PartnerId = null, string? Currency = null, long? MinLedgerSeq = null);
+    Guid? AccountId = null, Guid? PartnerId = null, string? Currency = null, long? MinLedgerSeq = null, IReadOnlyList<Guid>? CompanyIds = null, Guid? GroupId = null);
 
 public sealed record AgingBucketRead(string Label, int? FromDays, int? ToDays, Amounts Remaining, long ItemCount);
 
-public sealed record AgingRow(IReadOnlyDictionary<string, string?> Keys, IReadOnlyList<AgingBucketRead> Buckets, Amounts Total, long ItemCount);
+public sealed record AgingRow(IReadOnlyDictionary<string, string?> Keys, IReadOnlyList<AgingBucketRead> Buckets, Amounts Total, long ItemCount, CurrencyCodes? Currencies = null);
 
+/// <summary>Currencies and GrandTotal are null when the companies read have more than one currency combination (4.1.2): GrandTotals then holds one total per combination, and every row names its combination.</summary>
 public sealed record AgingResult(
-    DateOnly AsOfDate, string Basis, IReadOnlyList<int> Buckets, CurrencyCodes Currencies, IReadOnlyList<AgingRow> Rows, AgingRow GrandTotal, ReadSnapshot Snapshot);
+    DateOnly AsOfDate, string Basis, IReadOnlyList<int> Buckets, CurrencyCodes? Currencies, IReadOnlyList<AgingRow> Rows, AgingRow? GrandTotal, ReadSnapshot Snapshot,
+    IReadOnlyList<AgingRow>? GrandTotals = null, IReadOnlyList<CompanyRead>? Companies = null, GroupRead? Group = null);
 
 /// <summary>The buckets of an aging run (09, 4.5, Q8): the boundaries are days past the basis date. 0, 30, 60, 90 give: current (not past the date), 1-30, 31-60, 61-90 and over 90.</summary>
 public static class AgingRules
@@ -149,11 +151,16 @@ public static class DocumentContextRules
 }
 
 // ---- business-partners:get and :list (09, 3, 5)
-public sealed record GetPartnerRequest(Guid PartnerId, bool IncludePii = false, string? PurposeCode = null);
+public sealed record GetPartnerRequest(Guid PartnerId, bool IncludePii = false, string? PurposeCode = null, bool IncludeExtensions = false);
 
 public sealed record ListPartnersRequest(
     string? CodePrefix = null, string? PartnerKind = null, bool? IsCustomer = null, bool? IsSupplier = null, string? Status = null, bool IncludePii = false,
-    string? PurposeCode = null, int? Limit = null, string? Cursor = null);
+    string? PurposeCode = null, int? Limit = null, string? Cursor = null, bool IncludeExtensions = false, IReadOnlyList<Feed.ExtensionFilter>? Ext = null);
+
+/// <summary>business-partners:search (09, 5.3): partners by prefix or contains on the personal fields (legal_name, trade_name, address_line_1, address_line_2, postal_code, city, email), with the role filters of the list. Needs read.config and read.pii.</summary>
+public sealed record SearchPartnersRequest(
+    IReadOnlyDictionary<string, string>? Contains = null, IReadOnlyDictionary<string, string>? Prefix = null, string? PartnerKind = null, bool? IsCustomer = null, bool? IsSupplier = null,
+    string? Status = null, string? PurposeCode = null, int? Limit = null, string? Cursor = null);
 
 public sealed record PartnerPiiRead(
     string LegalName, string? TradeName, string? AddressLine1, string? AddressLine2, string? PostalCode, string? City, string CountryCode, string? Email, string? Phone,
@@ -161,7 +168,7 @@ public sealed record PartnerPiiRead(
 
 public sealed record PartnerRead(
     Guid PartnerId, string PartnerCode, string PartnerKind, bool IsCustomer, bool IsSupplier, Guid? IcCompanyId, string Status, string RestrictionStatus,
-    DateOnly? RetentionUntil, DateTime? AnonymisedAt, long RowVersion, PartnerPiiRead? Pii);
+    DateOnly? RetentionUntil, DateTime? AnonymisedAt, long RowVersion, PartnerPiiRead? Pii, IReadOnlyDictionary<string, object?>? Extensions = null);
 
 public sealed record PartnerResult(PartnerRead Partner, bool PiiOmitted);
 

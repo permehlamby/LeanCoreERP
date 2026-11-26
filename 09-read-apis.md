@@ -505,6 +505,17 @@ These deltas are applied with this spec.
 |---|---|---|
 | ADR-196 | Resources `applied-config-package-item` and `company-policy-setting`, the include `items` on `applied-config-package` and its filters `kind`, `country_code`, `state` (3). Applied config packages move from `read.audit` to `read.config` (2.3, as 18, 7.2 decided). Index of the items (6). The event `package.applied` already maps to PACKAGE_APPLIED (4.8) | 06, 07, 18 |
 
+### 9.7 Deltas of the implementation (F-IMPL-90 to 94, 2026-11-26)
+
+| Section | Change |
+|---|---|
+| 2.4 | The cursor of the reads of orders (`open-orders:query`, `uninvoiced:query`, `gr-ir:query`, the lists of fulfilment documents and invoices) is a signed offset bound to the query, not a keyset (the lists have no single numeric key). The answer is `page {next_cursor, limit}` (F-IMPL-90) |
+| 2.4.1, 5.3 | The normalised search is computed by the database function `core.search_norm` on both sides and indexed as an expression, not stored in a search column computed by the application (20, 8). The scope of a search of the ledger is a date range of at most 366 days, an account, a partner or a number prefix. `business-partners:search` does not find a RESTRICTED partner without the purpose STATUTORY (F-IMPL-91) |
+| 3 | `issue_state` and the include `issue_records` on the invoice lists and `journal-documents:list` (F-IMPL-90) |
+| 4.1.2, 4.1.3, 4.5 | `company_ids` and `group_id` in `balances:query` and `aging:query`: one of company_id, company_ids, group_id; totals are null and `TotalsByCurrency` is given when the companies have more than one currency combination (F-IMPL-92) |
+| 5.2 | `access.summary` and the purge are jobs (`ReadLogJobs`); `read_log_retention_days` is null by default and then the longest retention rule of the tenant counts; only summarised days are purged (F-IMPL-93) |
+| 2.4.2 | Extensions in the reads are built with the extension storage and commands of 15 (F-IMPL-95): include on partners, items, warehouses, item-companies, item-warehouses, orders and open items, filters with the six operators, `contains` with a scope on open items, `PII_EXTENSION` in the read log |
+
 ## 10. ADRs raised by this spec (now in 01-adr-log, which is authoritative)
 
 **ADR-086: Read API shape.** Generic `get` and `list` on every entity with typed filters, deterministic sorting and cursor paging, plus named report operations for balances, trial balance, account ledger, open items, aging, partner balances, document drill-down, audit events and chain status.

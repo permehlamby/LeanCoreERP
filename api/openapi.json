@@ -13471,6 +13471,7 @@
               "API.COMMAND_NOT_FOUND",
               "API.RATE_LIMITED",
               "APP.INACTIVE",
+              "APP.NAMESPACE_TAKEN",
               "APP.NOT_INACTIVE",
               "APP.NOT_REGISTERED",
               "AUTH.CLIENT_CERTIFICATE_MISMATCH",
@@ -13553,6 +13554,18 @@
               "EVENT.NOT_SUBSCRIBED",
               "EVENT.POSITION_EXPIRED",
               "EVENT.REWIND_NOT_BACKWARD",
+              "EXT.COMPANY_OUT_OF_SCOPE",
+              "EXT.DEFINITION_LIMIT",
+              "EXT.DEFINITION_LOCKED",
+              "EXT.ENTITY_ANONYMISED",
+              "EXT.ENTITY_CLOSED",
+              "EXT.ENTITY_NOT_EXTENDABLE",
+              "EXT.NOT_OWNER",
+              "EXT.REF_INVALID",
+              "EXT.TYPE_MISMATCH",
+              "EXT.UNKNOWN_DEFINITION",
+              "EXT.VALUE_NOT_ALLOWED",
+              "EXT.VERSION_CONFLICT",
               "FISCAL_YEAR.ALREADY_OPEN",
               "FISCAL_YEAR.NOT_CONTIGUOUS",
               "FISCAL_YEAR.START_DATE_INVALID",
@@ -13677,6 +13690,8 @@
               "POSTING.SOFT_CLOSE_OVERRIDE",
               "RATE.FALLBACK_USED",
               "RATE.RATE_NOT_FOUND",
+              "READ.CONTAINS_REQUIRES_SCOPE",
+              "READ.CONTAINS_TOO_SHORT",
               "READ.CURSOR_INVALID",
               "READ.INVALID_FILTER",
               "READ.LIMIT_EXCEEDED",
@@ -13783,6 +13798,37 @@
           }
         }
       },
+      "ExtensionFilter": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "field": {
+            "type": "string"
+          },
+          "op": {
+            "type": "string"
+          },
+          "value": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "values": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "field",
+          "op"
+        ]
+      },
       "FieldChange": {
         "type": "object",
         "additionalProperties": false,
@@ -13849,6 +13895,15 @@
           "id": {
             "type": "string",
             "format": "uuid"
+          },
+          "include": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            }
           }
         },
         "required": [
@@ -14015,6 +14070,32 @@
               "string",
               "null"
             ]
+          },
+          "contains": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "additionalProperties": true,
+            "description": "A set of named fields. The fields the command knows are typed by their kind (07, 11.1)"
+          },
+          "include": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            }
+          },
+          "ext": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/ExtensionFilter"
+            }
           }
         },
         "required": [

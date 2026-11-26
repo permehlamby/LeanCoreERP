@@ -31,5 +31,6 @@ public sealed class ReadModule : ICommandModule
         const string config = PartnerReadRules.ConfigPermission;
         catalog.Add<GetPartnerRequest, PartnerResult>("business-partners:get", config, (sp, t, c, r, ct) => sp.GetRequiredService<PartnerReads>().GetAsync(t, c, r, ct));
         catalog.Add<ListPartnersRequest, PartnerList>("business-partners:list", config, (sp, t, c, r, ct) => sp.GetRequiredService<PartnerReads>().ListAsync(t, c, r, ct));
+        catalog.Add<SearchPartnersRequest, PartnerList>("business-partners:search", config, (sp, t, c, r, ct) => sp.GetRequiredService<PartnerReads>().SearchAsync(t, c, r, ct));
     }
 }

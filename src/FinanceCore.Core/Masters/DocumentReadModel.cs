@@ -8,10 +8,13 @@ public sealed record GetDocumentRequest(Guid Id, IReadOnlyList<string>? Include 
 /// <summary>The header as typed JSON and the includes asked for: lines, for an invoice the journal document, and the issue records of an invoice (22).</summary>
 public sealed record DocumentDetail(JsonElement Document, JsonElement? Lines, JsonElement? JournalDocument, JsonElement? IssueRecords);
 
-/// <summary>The filters of a list: the company, the partner (customer or supplier), the date range of the document, the status of a fulfilment document (posted or reversed) or the kind of an invoice (INVOICE, CREDIT_NOTE, REVERSAL).</summary>
-public sealed record ListDocumentsRequest(Guid CompanyId, Guid? PartnerId = null, DateOnly? DateFrom = null, DateOnly? DateTo = null, string? Status = null, int? Limit = null);
+/// <summary>The filters of a list: the company, the partner (customer or supplier), the date range of the document, the status of a fulfilment document (posted or reversed) or the kind of an invoice (INVOICE, CREDIT_NOTE, REVERSAL),
+/// and for an invoice list the issue state (ISSUED or NOT_ISSUED, 09, 3, 22 delta 6) and the include `issue_records`. Cursor: the `next_cursor` of the page before.</summary>
+public sealed record ListDocumentsRequest(
+    Guid CompanyId, Guid? PartnerId = null, DateOnly? DateFrom = null, DateOnly? DateTo = null, string? Status = null, int? Limit = null, string? Cursor = null, string? IssueState = null,
+    IReadOnlyList<string>? Include = null);
 
-public sealed record DocumentList(IReadOnlyList<JsonElement> Items, int Limit, bool Truncated);
+public sealed record DocumentList(IReadOnlyList<JsonElement> Items, Reads.ReadPage Page);
 
 /// <summary>One kind of document: the resource, the tables and the columns that the read needs.</summary>
 public sealed record DocumentKind(string Resource, string Header, string Line, string IdColumn, string DateColumn, string PartyColumn, string StatusColumn, bool Chained, bool Invoice, string InvoiceKind = "")

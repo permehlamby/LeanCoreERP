@@ -8,7 +8,7 @@ namespace FinanceCore.Data;
 /// </summary>
 internal static class ReadAccessLog
 {
-    public const string Identity = "PII_IDENTITY", Address = "PII_ADDRESS", Contact = "PII_CONTACT", LegalSnapshot = "LEGAL_SNAPSHOT";
+    public const string Identity = "PII_IDENTITY", Address = "PII_ADDRESS", Contact = "PII_CONTACT", LegalSnapshot = "LEGAL_SNAPSHOT", Search = "SEARCH";
 
     public static async Task WriteAsync(
         TenantTransaction tx, Guid tenantId, CommandContext ctx, string operation, string fieldGroup, Guid? companyId, Guid? partnerId, Guid? documentId,

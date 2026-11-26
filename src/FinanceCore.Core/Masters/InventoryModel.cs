@@ -85,9 +85,11 @@ public static class InventoryRules
 }
 
 // ---- the generic reads of the master data (09, 3): {resource}:get and {resource}:list, permission read.config
-public sealed record GetMasterRequest(Guid Id);
+public sealed record GetMasterRequest(Guid Id, IReadOnlyList<string>? Include = null);
 
-public sealed record ListMasterRequest(IReadOnlyDictionary<string, string>? Filter = null, bool IncludeInactive = false, int? Limit = null, string? Cursor = null);
+/// <summary>Contains: a substring search (09, 2.4.1) on name and description of the resources that have the column.</summary>
+public sealed record ListMasterRequest(
+    IReadOnlyDictionary<string, string>? Filter = null, bool IncludeInactive = false, int? Limit = null, string? Cursor = null, IReadOnlyDictionary<string, string>? Contains = null, IReadOnlyList<string>? Include = null, IReadOnlyList<Feed.ExtensionFilter>? Ext = null);
 
 public sealed record MasterRowResult(JsonElement Row);
 

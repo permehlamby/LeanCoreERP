@@ -1093,6 +1093,42 @@ select pg_temp.expect_error('ic link: truncate is rejected', $t$truncate core.ic
 select pg_temp.expect_count('ic link: the update and the delete guards exist',
     $t$select count(*) from pg_trigger where tgrelid = 'core.ic_order_link'::regclass and not tgisinternal and tgname in ('ic_order_link_append_only', 'ic_order_link_no_delete')$t$, 2);
 
+-- search (0056): one normalisation for both sides, and a value that is never a pattern
+select pg_temp.expect_count('search: NFKD, accents removed, case folded, white space collapsed',
+    $t$select count(*) from (select 1 where core.search_norm('  CAFÉ   Zürich ') = 'cafe zurich') x$t$, 1);
+select pg_temp.expect_count('search: the pattern escapes backslash, percent and underscore',
+    $t$select count(*) from (select 1 where core.search_pattern('a_b%c') = '%a\_b\%c%') x$t$, 1);
+select pg_temp.expect_count('search: the full-width percent sign is escaped after the normalisation',
+    $t$select count(*) from (select 1 where core.search_pattern(U&'100\FF05') = '%100\%%') x$t$, 1);
+
+-- the jobs of the read access log (0057): the state table is protected, the retention role may append events
+select pg_temp.expect_count('read log jobs: the summary state has RLS and no delete or truncate',
+    $t$select count(*) from pg_class c where c.oid = 'core.read_log_summary_state'::regclass and c.relrowsecurity and c.relforcerowsecurity$t$, 1);
+select pg_temp.expect_count('read log jobs: the delete and truncate guards of the state exist',
+    $t$select count(*) from pg_trigger where tgrelid = 'core.read_log_summary_state'::regclass and not tgisinternal and tgname in ('read_log_summary_state_no_delete', 'read_log_summary_state_no_truncate', 'read_log_summary_state_guard')$t$, 3);
+select pg_temp.expect_count('read log jobs: the retention role appends events and moves the head, the read role does not',
+    $t$select (has_table_privilege('cmd_retention', 'core.outbox_event', 'insert') and has_column_privilege('cmd_retention', 'core.outbox_head', 'last_position', 'update'))::int
+       + (has_table_privilege('cmd_read', 'core.outbox_event', 'insert') or has_table_privilege('cmd_read', 'core.read_log_summary_state', 'insert'))::int * 10$t$, 1);
+select pg_temp.expect_error('read log jobs: the summary state only moves forward',
+    $t$set local role cmd_retention; insert into core.read_log_summary_state (tenant_id, summarised_through) values ('11111111-1111-4111-8111-111111111111', '2026-03-10');
+       update core.read_log_summary_state set summarised_through = '2026-03-09' where tenant_id = '11111111-1111-4111-8111-111111111111'$t$, '%only moves forward%');
+
+-- extension attributes (0058): the four tables are protected, the identity of a definition and the counter are guarded
+select pg_temp.expect_count('extensions: RLS is forced on the four tables',
+    $t$select count(*) from pg_class where oid in ('core.app_namespace'::regclass, 'core.extension_definition'::regclass, 'core.extension_value'::regclass, 'core.extension_counter'::regclass) and relrowsecurity and relforcerowsecurity$t$, 4);
+select pg_temp.expect_count('extensions: namespaces, definitions and counters cannot be deleted, no table can be truncated',
+    $t$select count(*) from pg_trigger where not tgisinternal and tgname in ('app_namespace_no_delete', 'extension_definition_no_delete', 'extension_counter_no_delete', 'app_namespace_no_truncate', 'extension_definition_no_truncate', 'extension_value_no_truncate', 'extension_counter_no_truncate')$t$, 7);
+select pg_temp.expect_count('extensions: the read role cannot write them, the configuration role can',
+    $t$select (has_table_privilege('cmd_read', 'core.extension_value', 'insert') or has_table_privilege('cmd_read', 'core.extension_definition', 'insert'))::int * 10
+       + (has_table_privilege('cmd_config', 'core.extension_value', 'insert') and has_table_privilege('cmd_config', 'core.extension_value', 'delete') and has_table_privilege('cmd_config', 'core.extension_definition', 'insert'))::int$t$, 1);
+select pg_temp.expect_count('extensions: the posting role cannot write a value',
+    $t$select has_table_privilege('cmd_post', 'core.extension_value', 'insert')::int$t$, 0);
+select pg_temp.expect_error('extensions: a value row holds exactly one value column',
+    $t$set local role cmd_config; insert into core.extension_value (tenant_id, definition_id, entity_key, version_stamp, value_text, value_bool)
+       values ('11111111-1111-4111-8111-111111111111', gen_random_uuid(), 'k', 1, 'a', true)$t$, '%check constraint%');
+select pg_temp.expect_error('extensions: the namespace core is reserved',
+    $t$insert into core.app_namespace (tenant_id, namespace, app_id, created_by) values ('11111111-1111-4111-8111-111111111111', 'core', gen_random_uuid(), 't')$t$, '%check constraint%');
+
 -- isolation: tenant B sees none of the rows of tenant A in the five tables
 select set_config('app.tenant_id', '99999999-9999-4999-8999-999999999999', false);
 select pg_temp.expect_count('new tables: tenant B sees none of A''s rows',

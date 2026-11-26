@@ -71,7 +71,7 @@ public class ReadAuditTests
 
         var r = await reads.AgingAsync(t.TenantId, Ledger(t), new(t.CompanyId, new DateOnly(2026, 5, 1)));
         Assert.True(r.Status == CommandStatus.Ok, Describe(r));
-        var total = r.Value!.GrandTotal;
+        var total = r.Value!.GrandTotal!;
         Assert.Equal([200m, 1000m, 0m, 500m, 0m], total.Buckets.Select(b => b.Remaining.Lc).ToArray());
         Assert.Equal([1L, 1L, 0L, 1L, 0L], total.Buckets.Select(b => b.ItemCount).ToArray());
         Assert.Equal((1700m, 3L), (total.Total.Lc, total.ItemCount));
@@ -79,7 +79,7 @@ public class ReadAuditTests
         Assert.Equal(1700m, r.Value.Rows.Single().Total.Lc);   // no group key: one row
 
         // an item is aged by its remaining amount as of the date, so an earlier date drops what was posted later
-        var earlier = (await reads.AgingAsync(t.TenantId, Ledger(t), new(t.CompanyId, new DateOnly(2026, 3, 20)))).Value!.GrandTotal;
+        var earlier = (await reads.AgingAsync(t.TenantId, Ledger(t), new(t.CompanyId, new DateOnly(2026, 3, 20)))).Value!.GrandTotal!;
         Assert.Equal((1500m, 2L), (earlier.Total.Lc, earlier.ItemCount));
 
         var byAccount = await reads.AgingAsync(t.TenantId, Ledger(t), new(t.CompanyId, new DateOnly(2026, 5, 1), Buckets: [30], GroupBy: ["account_id", "currency"]));
@@ -89,7 +89,7 @@ public class ReadAuditTests
         Assert.Equal([1200m, 500m], row.Buckets.Select(b => b.Remaining.Lc).ToArray());
         Assert.Equal(["<=30", ">30"], row.Buckets.Select(b => b.Label).ToArray());
 
-        var byDocumentDate = (await reads.AgingAsync(t.TenantId, Ledger(t), new(t.CompanyId, new DateOnly(2026, 5, 1), Basis: "DOCUMENT_DATE"))).Value!.GrandTotal;
+        var byDocumentDate = (await reads.AgingAsync(t.TenantId, Ledger(t), new(t.CompanyId, new DateOnly(2026, 5, 1), Basis: "DOCUMENT_DATE"))).Value!.GrandTotal!;
         Assert.Equal([0m, 200m, 1000m, 500m, 0m], byDocumentDate.Buckets.Select(b => b.Remaining.Lc).ToArray());
 
         Assert.Equal(["SCHEMA.INVALID_VALUE"], Codes(await reads.AgingAsync(t.TenantId, Ledger(t), new(t.CompanyId, Basis: "NOPE"))));

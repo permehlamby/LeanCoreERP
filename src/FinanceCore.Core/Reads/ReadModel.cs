@@ -38,6 +38,10 @@ public static class ReadRules
         return Convert.ToBase64String(Encoding.UTF8.GetBytes($"{text}|{Sign(text)}"));
     }
 
+    /// <summary>The kind of a cursor of a query with filters: the name and a short digest of the filter values, so a cursor of another query (other company or other filter) is refused (READ.CURSOR_INVALID).</summary>
+    public static string QueryKind(string name, params object?[] filters) =>
+        name + ":" + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(string.Join("\u001f", filters.Select(f => Convert.ToString(f, System.Globalization.CultureInfo.InvariantCulture) ?? "")))))[..12];
+
     public static bool TryDecodeCursor(string? cursor, string kind, out long value)
     {
         value = 0;
@@ -61,7 +65,18 @@ public sealed record GetJournalDocumentRequest(Guid DocumentId, bool IncludeLine
 
 public sealed record ListJournalDocumentsRequest(
     Guid CompanyId, string? DocumentType = null, int? FiscalYear = null, int? FiscalPeriod = null, DateOnly? PostingDateFrom = null, DateOnly? PostingDateTo = null,
-    string? Status = null, string? NumberPrefix = null, int? Limit = null, string? Cursor = null, long? MinLedgerSeq = null, bool IncludeLines = false);
+    string? Status = null, string? NumberPrefix = null, int? Limit = null, string? Cursor = null, long? MinLedgerSeq = null, bool IncludeLines = false,
+    IReadOnlyDictionary<string, string>? Contains = null, Guid? AccountId = null, Guid? PartnerId = null, string? IssueState = null);
+
+/// <summary>The operator contains (09, 2.4.1): the fields that may be searched, the minimum length and the widest date range that is a scope for a search of the ledger.</summary>
+public static class SearchRules
+{
+    public const int MinLength = 3, MaxScopeDays = 366;
+    public static readonly string[] JournalDocumentFields = ["header_text", "external_reference", "source_document_ref"];
+    public static readonly string[] PartnerFields = ["legal_name", "trade_name", "address_line_1", "address_line_2", "postal_code", "city", "email"];
+    public static readonly string[] MasterFields = ["name", "description"];
+    public static readonly string[] IssueStateDocumentTypes = ["AR_INVOICE", "AR_CREDIT", "AP_INVOICE", "AP_CREDIT"];
+}
 
 public sealed record JournalLineRead(
     int LineNo, string LineType, Guid AccountId, decimal AmountTc, string CurrencyTc, Amounts Amounts, int? ReversedLineNo, Guid? PartnerId, string? LineText);
@@ -79,12 +94,32 @@ public sealed record JournalDocumentList(IReadOnlyList<JournalDocumentRead> Item
 public sealed record BalancesRequest(
     Guid CompanyId, string Mode, DateOnly? AsOfDate = null, DateOnly? FromDate = null, DateOnly? ToDate = null, string? Rule = null, IReadOnlyList<string>? GroupBy = null,
     Guid? AccountId = null, string? AccountType = null, string? DocumentType = null, string? LineType = null, IReadOnlyList<string>? ExcludeDocumentTypes = null,
-    long? MinLedgerSeq = null, Guid? GroupAccountId = null, Guid? IcCounterpartCompanyId = null, bool? IsIntercompany = null);
+    long? MinLedgerSeq = null, Guid? GroupAccountId = null, Guid? IcCounterpartCompanyId = null, bool? IsIntercompany = null,
+    IReadOnlyList<Guid>? CompanyIds = null, Guid? GroupId = null);
 
-public sealed record BalanceRow(IReadOnlyDictionary<string, string?> Keys, Amounts Debit, Amounts Credit, Amounts Net, long LineCount);
+/// <summary>The companies a read covers (09, 4.1.2, 4.1.3): one, several (company_ids) or the members of a group at the reporting date. Several need read.cross_company.</summary>
+public static class CrossCompanyRules
+{
+    public const string Permission = "read.cross_company";
+    public const int MaxCompanies = 100;
+}
 
+/// <summary>The group of a group read and the companies that were members at the date (ADR-018).</summary>
+public sealed record GroupRead(Guid GroupId, DateOnly MembershipDate, IReadOnlyList<Guid> CompanyIds);
+
+/// <summary>A company of a cross-company read: its currencies and whether its periods in the range are all hard-closed.</summary>
+public sealed record CompanyRead(Guid CompanyId, CurrencyCodes Currencies, bool L2Stable);
+
+/// <summary>Currencies is the currency combination of the row: amounts are never added across different currency codes (4.1.2).</summary>
+public sealed record BalanceRow(IReadOnlyDictionary<string, string?> Keys, Amounts Debit, Amounts Credit, Amounts Net, long LineCount, CurrencyCodes? Currencies = null);
+
+public sealed record CurrencyTotals(CurrencyCodes Currencies, Amounts Debit, Amounts Credit);
+
+/// <summary>Currencies, TotalDebit and TotalCredit are null when the companies read have more than one currency combination: the totals are then in TotalsByCurrency. Companies and Group are set when several
+/// companies or a group were read. Snapshot holds the ledger positions of all companies read (a ledger id is unique).</summary>
 public sealed record BalancesResult(
-    string Mode, string Rule, CurrencyCodes Currencies, IReadOnlyList<BalanceRow> Rows, Amounts TotalDebit, Amounts TotalCredit, bool L2Stable, ReadSnapshot Snapshot);
+    string Mode, string Rule, CurrencyCodes? Currencies, IReadOnlyList<BalanceRow> Rows, Amounts? TotalDebit, Amounts? TotalCredit, bool L2Stable, ReadSnapshot Snapshot,
+    IReadOnlyList<CompanyRead>? Companies = null, GroupRead? Group = null, IReadOnlyList<CurrencyTotals>? TotalsByCurrency = null);
 
 public sealed record TrialBalanceRequest(
     Guid CompanyId, int FiscalYear, int FromPeriod, int ToPeriod, bool IncludeSpecialPeriods = true, long? MinLedgerSeq = null);
@@ -112,11 +147,12 @@ public sealed record AccountLedgerResult(
 // ---- open-items:query and partner-balances:query (09, 4.4, 4.6)
 public sealed record OpenItemsRequest(
     Guid CompanyId, DateOnly? AsOfDate = null, Guid? AccountId = null, Guid? PartnerId = null, DateOnly? DueFrom = null, DateOnly? DueTo = null, string? Currency = null,
-    bool IncludeCleared = false, int? Limit = null, string? Cursor = null, long? MinLedgerSeq = null);
+    bool IncludeCleared = false, int? Limit = null, string? Cursor = null, long? MinLedgerSeq = null, IReadOnlyList<string>? Include = null, IReadOnlyList<Feed.ExtensionFilter>? Ext = null);
 
 public sealed record OpenItemRead(
     Guid DocumentId, int LineNo, string DocumentNumber, Guid AccountId, Guid? PartnerId, DateOnly PostingDate, DateOnly? DueDate, string CurrencyTc,
-    decimal OriginalTc, decimal ClearedTc, decimal RemainingTc, Amounts Original, Amounts Cleared, Amounts Remaining, int DaysPastDue, string CachedStatus);
+    decimal OriginalTc, decimal ClearedTc, decimal RemainingTc, Amounts Original, Amounts Cleared, Amounts Remaining, int DaysPastDue, string CachedStatus,
+    IReadOnlyDictionary<string, object?>? Extensions = null);
 
 public sealed record OpenItemsResult(DateOnly AsOfDate, CurrencyCodes Currencies, IReadOnlyList<OpenItemRead> Items, ReadPage Page, ReadSnapshot Snapshot);
 

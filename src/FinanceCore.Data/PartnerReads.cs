@@ -1,5 +1,6 @@
 using FinanceCore.Core.Commands;
 using FinanceCore.Core.Reads;
+using FinanceCore.Core.Masters;
 using Npgsql;
 using NpgsqlTypes;
 
@@ -9,7 +10,7 @@ namespace FinanceCore.Data;
 /// business-partners:get and :list (09, 3, 5): the partner master without personal data with read.config, and with include_pii the personal data of 07, 9.2 with
 /// read.pii. Without read.pii the personal fields are left out (not masked) and the response says pii_omitted. Every personal-data read writes its rows to
 /// read_access_log in the same transaction (5.2): one row per partner and field group (PII_IDENTITY, PII_ADDRESS, PII_CONTACT), with the position in a list.
-/// A RESTRICTED partner (12, 5.3) is read only for the statutory purpose. Not built: business-partners:search and the contains operator (2.4.1), company_relations,
+/// A RESTRICTED partner (12, 5.3) is read only for the statutory purpose. business-partners:search (5.3) finds partners by prefix or contains on the personal fields, needs read.pii and logs the field group SEARCH and the groups of the fields returned. Not built: company_relations,
 /// tax_registrations and bank accounts as includes, extensions, the filter ic_company_id.
 /// </summary>
 public sealed class PartnerReads(NpgsqlDataSource source)
@@ -77,8 +78,61 @@ public sealed class PartnerReads(NpgsqlDataSource source)
             if (Restricted(partner, req.PurposeCode) is { } restricted) return Reject<PartnerResult>(restricted);
             if (partner.Pii is not null) await LogAsync(tx, tenantId, ctx, partner, Operation + ":get", req.PurposeCode, null, ct);
         }
+        if (req.IncludeExtensions) partner = partner with { Extensions = (await ExtensionRead.LoadAsync(tx, tenantId, ctx, "BUSINESS_PARTNER", [partner.PartnerId.ToString("D")], Operation + ":get", ct))[partner.PartnerId.ToString("D")] };
         await tx.CommitAsync(ct);
         return CommandResult<PartnerResult>.Ok(new PartnerResult(partner, req.IncludePii && !wantPii), Guid.Empty);
+    }
+
+    /// <summary>business-partners:search (09, 5.3). Needs read.config and read.pii: the search runs on personal data. A RESTRICTED partner is not found without the statutory purpose.</summary>
+    public async Task<CommandResult<PartnerList>> SearchAsync(Guid tenantId, CommandContext ctx, SearchPartnersRequest req, CancellationToken ct = default)
+    {
+        if (Denied(ctx) is { } denied) return Reject<PartnerList>(denied);
+        if (!ctx.Permissions.Contains(PartnerReadRules.PiiPermission)) return Reject<PartnerList>(Error("AUTH.PERMISSION_MISSING", "P0", "", ("permission", PartnerReadRules.PiiPermission)));
+        int limit = req.Limit ?? ReadRules.DefaultLimit;
+        if (limit is < 1 or > ReadRules.MaxLimit) return Reject<PartnerList>(Error("READ.LIMIT_EXCEEDED", "P1", "limit", ("max", ReadRules.MaxLimit)));
+        if (req.PartnerKind is not (null or "ORGANISATION" or "PERSON")) return Reject<PartnerList>(Error("READ.INVALID_FILTER", "P1", "partner_kind", ("field", "partner_kind")));
+        if (req.Status is not (null or "ACTIVE" or "BLOCKED" or "ANONYMISED")) return Reject<PartnerList>(Error("READ.INVALID_FILTER", "P1", "status", ("field", "status")));
+        if (!ReadAccessLog.ValidPurpose(req.PurposeCode)) return Reject<PartnerList>(Error("SCHEMA.INVALID_VALUE", "P1", "purpose_code", ("reason", "1 to 50 characters")));
+        if (req.Contains is not { Count: > 0 } && req.Prefix is not { Count: > 0 }) return Reject<PartnerList>(Error("SCHEMA.INVALID_VALUE", "P1", "contains", ("reason", "contains or prefix is required")));
+        if (SearchFilters.Validate(req.Contains, SearchRules.PartnerFields, "contains") is { } badContains) return Reject<PartnerList>(badContains);
+        foreach (string f in (req.Prefix ?? new Dictionary<string, string>()).Keys)
+            if (!SearchRules.PartnerFields.Contains(f)) return Reject<PartnerList>(Error("READ.INVALID_FILTER", "P1", "prefix", ("field", f), ("allowed", SearchRules.PartnerFields)));
+        string Flat(IReadOnlyDictionary<string, string>? d) => string.Join(',', (d ?? new Dictionary<string, string>()).OrderBy(x => x.Key, StringComparer.Ordinal).Select(x => x.Key + "=" + x.Value));
+        string cursorKind = ReadRules.QueryKind("bps", Flat(req.Contains), Flat(req.Prefix), req.PartnerKind, req.IsCustomer, req.IsSupplier, req.Status, req.PurposeCode);
+        if (!ReadRules.TryDecodeCursor(req.Cursor, cursorKind, out long offset)) return Reject<PartnerList>(Error("READ.CURSOR_INVALID", "P1", "cursor"));
+
+        // the columns come from the allowlist; a prefix compares the normalised start of the column with the normalised value
+        string prefixSql = string.Concat((req.Prefix ?? new Dictionary<string, string>()).Keys.Select((f, n) => $" and left(core.search_norm(i.{f}), length(core.search_norm(@x{n}))) = core.search_norm(@x{n})"));
+        await using TenantTransaction tx = await TenantTransaction.BeginAsync(source, tenantId, CommandRole.Read, ct: ct, snapshot: true);
+        var items = new List<PartnerRead>();
+        await using (var cmd = tx.Command(
+            "select " + Select + "where p.tenant_id = @t and i.partner_id is not null" + SearchFilters.Where(req.Contains, "i", "s") + prefixSql +
+            " and (@kind::text is null or p.partner_kind = @kind) and (@cust::boolean is null or p.is_customer = @cust) and (@supp::boolean is null or p.is_supplier = @supp) " +
+            "and (@status::text is null or p.status = @status) and (p.restriction_status <> 'RESTRICTED' or @statutory) order by p.partner_code offset @o limit @n"))
+        {
+            cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("o", offset); cmd.Parameters.AddWithValue("n", limit + 1);
+            cmd.Parameters.AddWithValue("statutory", req.PurposeCode == PartnerReadRules.StatutoryPurpose);
+            cmd.Parameters.Add(new NpgsqlParameter("kind", NpgsqlDbType.Text) { Value = (object?)req.PartnerKind ?? DBNull.Value });
+            cmd.Parameters.Add(new NpgsqlParameter("cust", NpgsqlDbType.Boolean) { Value = (object?)req.IsCustomer ?? DBNull.Value });
+            cmd.Parameters.Add(new NpgsqlParameter("supp", NpgsqlDbType.Boolean) { Value = (object?)req.IsSupplier ?? DBNull.Value });
+            cmd.Parameters.Add(new NpgsqlParameter("status", NpgsqlDbType.Text) { Value = (object?)req.Status ?? DBNull.Value });
+            SearchFilters.Bind(cmd, req.Contains, "s");
+            int n = 0;
+            foreach (string value in (req.Prefix ?? new Dictionary<string, string>()).Values) cmd.Parameters.AddWithValue($"x{n++}", value);
+            await using var r = await cmd.ExecuteReaderAsync(ct);
+            while (await r.ReadAsync(ct)) items.Add(ReadPartner(r, true));
+        }
+        string? next = null;
+        if (items.Count > limit) { items.RemoveAt(limit); next = ReadRules.EncodeCursor(cursorKind, offset + limit); }
+        // the log (5.2): the field group SEARCH for every partner found, and the groups of the fields returned; a search that finds nothing is logged once, without a partner
+        if (items.Count == 0) await ReadAccessLog.WriteAsync(tx, tenantId, ctx, Operation + ":search", ReadAccessLog.Search, null, null, null, req.PurposeCode, null, ct);
+        for (int i = 0; i < items.Count; i++)
+        {
+            await ReadAccessLog.WriteAsync(tx, tenantId, ctx, Operation + ":search", ReadAccessLog.Search, null, items[i].PartnerId, null, req.PurposeCode, (int)offset + i + 1, ct);
+            if (items[i].Pii is not null) await LogAsync(tx, tenantId, ctx, items[i], Operation + ":search", req.PurposeCode, (int)offset + i + 1, ct);
+        }
+        await tx.CommitAsync(ct);
+        return CommandResult<PartnerList>.Ok(new PartnerList(items, new ReadPage(next, limit), false), Guid.Empty);
     }
 
     public async Task<CommandResult<PartnerList>> ListAsync(Guid tenantId, CommandContext ctx, ListPartnersRequest req, CancellationToken ct = default)
@@ -93,13 +147,15 @@ public sealed class PartnerReads(NpgsqlDataSource source)
         bool wantPii = req.IncludePii && ctx.Permissions.Contains(PartnerReadRules.PiiPermission);
 
         await using TenantTransaction tx = await TenantTransaction.BeginAsync(source, tenantId, CommandRole.Read, ct: ct, snapshot: true);
+        var ext = await ExtensionRead.FiltersAsync(tx, tenantId, ctx, "BUSINESS_PARTNER", req.Ext, "p.partner_id::text", true, Operation + ":list", ct);
+        if (ext.Error is not null) return Reject<PartnerList>(ext.Error);
         var items = new List<PartnerRead>();
         await using (var cmd = tx.Command(
-            "select " + Select + "where p.tenant_id = @t and (@prefix::text is null or p.partner_code like @prefix || '%') and (@kind::text is null or p.partner_kind = @kind) " +
+            "select " + Select + "where p.tenant_id = @t" + ext.Sql + " and (@prefix::text is null or p.partner_code like @prefix || '%') and (@kind::text is null or p.partner_kind = @kind) " +
             "and (@cust::boolean is null or p.is_customer = @cust) and (@supp::boolean is null or p.is_supplier = @supp) and (@status::text is null or p.status = @status) " +
             "order by p.partner_code offset @o limit @n"))
         {
-            cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("o", offset); cmd.Parameters.AddWithValue("n", limit + 1);
+            cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("o", offset); cmd.Parameters.AddWithValue("n", limit + 1); ext.Bind(cmd);
             cmd.Parameters.Add(new NpgsqlParameter("prefix", NpgsqlDbType.Text) { Value = (object?)req.CodePrefix ?? DBNull.Value });
             cmd.Parameters.Add(new NpgsqlParameter("kind", NpgsqlDbType.Text) { Value = (object?)req.PartnerKind ?? DBNull.Value });
             cmd.Parameters.Add(new NpgsqlParameter("cust", NpgsqlDbType.Boolean) { Value = (object?)req.IsCustomer ?? DBNull.Value });
@@ -118,6 +174,11 @@ public sealed class PartnerReads(NpgsqlDataSource source)
                 if (Restricted(items[i], req.PurposeCode) is not null) { items[i] = items[i] with { Pii = null }; continue; }
                 if (items[i].Pii is not null) await LogAsync(tx, tenantId, ctx, items[i], Operation + ":list", req.PurposeCode, (int)offset + i + 1, ct);
             }
+        }
+        if (req.IncludeExtensions)
+        {
+            var values = await ExtensionRead.LoadAsync(tx, tenantId, ctx, "BUSINESS_PARTNER", items.Select(i => i.PartnerId.ToString("D")).ToList(), Operation + ":list", ct);
+            items = items.Select(i => i with { Extensions = values[i.PartnerId.ToString("D")] }).ToList();
         }
         await tx.CommitAsync(ct);
         return CommandResult<PartnerList>.Ok(new PartnerList(items, new ReadPage(next, limit), req.IncludePii && !wantPii), Guid.Empty);

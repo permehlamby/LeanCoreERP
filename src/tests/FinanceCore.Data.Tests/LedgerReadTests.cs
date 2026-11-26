@@ -72,7 +72,7 @@ public class LedgerReadTests
         Assert.Equal(-1000m, rows["REVENUE"].Net.Lc);
         Assert.Equal(400m, rows["EXPENSE"].Debit.Lc);
         Assert.Equal(0m, rows.Values.Sum(r => r.Net.Lc));
-        Assert.Equal(("DKK", "EUR", "EUR"), (byType.Value.Currencies.Lc, byType.Value.Currencies.Gc, byType.Value.Currencies.Rc));
+        Assert.Equal(("DKK", "EUR", "EUR"), (byType.Value.Currencies!.Lc, byType.Value.Currencies.Gc, byType.Value.Currencies.Rc));
         Assert.False(byType.Value.L2Stable);
 
         var movement = await reads.BalancesAsync(t.TenantId, Read(t), new(t.CompanyId, "MOVEMENT", FromDate: new DateOnly(2026, 5, 1), ToDate: new DateOnly(2026, 5, 31), GroupBy: ["account_id"]));

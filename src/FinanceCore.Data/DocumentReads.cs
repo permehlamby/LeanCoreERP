@@ -1,6 +1,7 @@
 using System.Text.Json;
 using FinanceCore.Core.Commands;
 using FinanceCore.Core.Masters;
+using FinanceCore.Core.Reads;
 using Npgsql;
 using NpgsqlTypes;
 
@@ -9,8 +10,8 @@ namespace FinanceCore.Data;
 /// <summary>
 /// The get and list of the documents of orders (11, 8, permission read.orders): sales-deliveries, purchase-receipts, sales-returns, purchase-returns, sales-invoices and purchase-invoices. A get gives
 /// the header as typed JSON (the hashes as hex) and the includes `lines` (for a purchase invoice with the match details: the receipt, the order price, the price difference and its parts), for
-/// an invoice `journal_document` and `issue_records`. A list filters by company, partner, date range and status (a fulfilment document) or kind (an invoice), newest first, cut at the limit. One
-/// snapshot of the read role. Not built: a cursor, the filter by issue state (22), the dropship confirmations (not built), the include of the stock document.
+/// an invoice `journal_document` and `issue_records`. A list filters by company, partner, date range and status (a fulfilment document) or kind (an invoice), newest first, with an offset cursor (signed, bound to the query), the filter issue_state (ISSUED or NOT_ISSUED, computed from invoice_issue_record, 22) on the invoice lists and the include issue_records. One
+/// snapshot of the read role. Not built: the dropship confirmations (not built), the include of the stock document.
 /// </summary>
 public sealed class DocumentReads(NpgsqlDataSource source)
 {
@@ -69,6 +70,13 @@ public sealed class DocumentReads(NpgsqlDataSource source)
         if (req.CompanyId == Guid.Empty) return Reject<DocumentList>(Error("SCHEMA.INVALID_VALUE", "P1", "company_id", ("reason", "required")));
         int limit = req.Limit ?? DocumentKind.DefaultLimit;
         if (limit < 1 || limit > DocumentKind.MaxLimit) return Reject<DocumentList>(Error("READ.INVALID_FILTER", "P1", "limit", ("field", "limit"), ("allowed", $"1 to {DocumentKind.MaxLimit}")));
+        if (req.IssueState is not (null or "ISSUED" or "NOT_ISSUED")) return Reject<DocumentList>(Error("READ.INVALID_FILTER", "P1", "issue_state", ("field", "issue_state"), ("allowed", new[] { "ISSUED", "NOT_ISSUED" })));
+        if (req.IssueState is not null && !kind.Invoice) return Reject<DocumentList>(Error("READ.INVALID_FILTER", "P1", "issue_state", ("field", "issue_state"), ("reason", "only the invoice lists")));
+        IReadOnlyList<string> include = req.Include ?? [];
+        foreach (string i in include)
+            if (i != "issue_records" || !kind.Invoice) return Reject<DocumentList>(Error("READ.INVALID_FILTER", "P1", "include", ("field", i), ("allowed", kind.Invoice ? new[] { "issue_records" } : Array.Empty<string>())));
+        string cursorKind = ReadRules.QueryKind(kind.Resource, req.CompanyId, req.PartnerId, req.DateFrom, req.DateTo, req.Status, req.IssueState);
+        if (!ReadRules.TryDecodeCursor(req.Cursor, cursorKind, out long offset)) return Reject<DocumentList>(Error("READ.CURSOR_INVALID", "P1", "cursor"));
         string[] statuses = kind.Invoice ? ["INVOICE", "CREDIT_NOTE", "REVERSAL"] : ["posted", "reversed"];
         if (req.Status is not null && !statuses.Contains(req.Status)) return Reject<DocumentList>(Error("READ.INVALID_FILTER", "P1", "status", ("field", "status"), ("allowed", statuses)));
         if (req.DateFrom is { } from && req.DateTo is { } to && from > to) return Reject<DocumentList>(Error("READ.INVALID_FILTER", "P1", "date_from", ("field", "date_from"), ("allowed", "not after date_to")));
@@ -81,9 +89,12 @@ public sealed class DocumentReads(NpgsqlDataSource source)
         var items = new List<JsonElement>();
         await using (var cmd = tx.Command(
             $"select {HeaderJson(kind)} from core.{kind.Header} h where h.tenant_id = @t and h.company_id = @c and (@p::uuid is null or h.{kind.PartyColumn} = @p) and (@f::date is null or h.{kind.DateColumn} >= @f) " +
-            $"and (@u::date is null or h.{kind.DateColumn} <= @u) and (@s::text is null or h.{kind.StatusColumn} = @s) order by h.{kind.DateColumn} desc, h.{kind.IdColumn} limit @n"))
+            $"and (@u::date is null or h.{kind.DateColumn} <= @u) and (@s::text is null or h.{kind.StatusColumn} = @s) " +
+            (kind.Invoice ? "and (@x::text is null or (@x = 'ISSUED') = exists (select 1 from core.invoice_issue_record q where q.tenant_id = h.tenant_id and q.company_id = h.company_id and q.invoice_kind = @k " +
+                $"and q.invoice_id = h.{kind.IdColumn})) " : "") + $"order by h.{kind.DateColumn} desc, h.{kind.IdColumn} offset @o limit @n"))
         {
-            cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("c", req.CompanyId); cmd.Parameters.AddWithValue("n", limit + 1);
+            cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("c", req.CompanyId); cmd.Parameters.AddWithValue("n", limit + 1); cmd.Parameters.AddWithValue("o", offset);
+            if (kind.Invoice) { cmd.Parameters.AddWithValue("k", kind.InvoiceKind); cmd.Parameters.Add(new NpgsqlParameter("x", NpgsqlDbType.Text) { Value = (object?)req.IssueState ?? DBNull.Value }); }
             cmd.Parameters.Add(new NpgsqlParameter("p", NpgsqlDbType.Uuid) { Value = (object?)req.PartnerId ?? DBNull.Value });
             cmd.Parameters.Add(new NpgsqlParameter("f", NpgsqlDbType.Date) { Value = (object?)req.DateFrom ?? DBNull.Value });
             cmd.Parameters.Add(new NpgsqlParameter("u", NpgsqlDbType.Date) { Value = (object?)req.DateTo ?? DBNull.Value });
@@ -91,6 +102,32 @@ public sealed class DocumentReads(NpgsqlDataSource source)
             await using var r = await cmd.ExecuteReaderAsync(ct);
             while (await r.ReadAsync(ct)) items.Add(Parse(r.GetString(0)));
         }
-        return CommandResult<DocumentList>.Ok(new DocumentList(items.Take(limit).ToList(), limit, items.Count > limit), Guid.Empty);
+        bool more = items.Count > limit;
+        List<JsonElement> page = items.Take(limit).ToList();
+        if (include.Contains("issue_records") && page.Count > 0)
+        {
+            // one query for the page: the records of its invoices, by invoice id
+            var byInvoice = new Dictionary<Guid, List<JsonElement>>();
+            await using (var cmd = tx.Command("select x.invoice_id, ((to_jsonb(x) - 'tenant_id' - 'company_id' - 'document_sha256') || jsonb_build_object('document_sha256', encode(x.document_sha256, 'hex')))::text from core.invoice_issue_record x " +
+                "where x.tenant_id = @t and x.company_id = @c and x.invoice_kind = @k and x.invoice_id = any(@ids) order by x.issued_at, x.issue_id"))
+            {
+                cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("c", req.CompanyId); cmd.Parameters.AddWithValue("k", kind.InvoiceKind);
+                cmd.Parameters.AddWithValue("ids", page.Select(p => p.GetProperty(kind.IdColumn).GetGuid()).ToArray());
+                await using var r = await cmd.ExecuteReaderAsync(ct);
+                while (await r.ReadAsync(ct))
+                {
+                    if (!byInvoice.TryGetValue(r.GetGuid(0), out List<JsonElement>? list)) byInvoice[r.GetGuid(0)] = list = [];
+                    list.Add(Parse(r.GetString(1)));
+                }
+            }
+            page = page.Select(p =>
+            {
+                var o = new Dictionary<string, JsonElement>();
+                foreach (JsonProperty prop in p.EnumerateObject()) o[prop.Name] = prop.Value;
+                o["issue_records"] = JsonSerializer.SerializeToElement(byInvoice.GetValueOrDefault(p.GetProperty(kind.IdColumn).GetGuid()) ?? []);
+                return JsonSerializer.SerializeToElement(o);
+            }).ToList();
+        }
+        return CommandResult<DocumentList>.Ok(new DocumentList(page, new ReadPage(more ? ReadRules.EncodeCursor(cursorKind, offset + limit) : null, limit)), Guid.Empty);
     }
 }

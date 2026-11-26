@@ -805,6 +805,45 @@ For the resources `gl-accounts`, `business-partners` (with PII, company relation
 
 These deltas are applied in 02 and 06 with this spec.
 
+### 13.2bc Extension attributes (F-IMPL-95, 2026-11-26)
+
+PROPOSED, written down so that spec and code agree. It builds on 15, 3.2 to 3.6a and 4, and on 09, 2.4.2.
+
+1. **Built.** Migration 0058: namespaces, definitions, values and the counter. `app-namespaces:create`, `extension-definitions:create`, `:update`, `:deactivate`, `extensions:set`, `:clear`, `extension-definitions:list`; `include=extensions` and the filters `ext` on partners, the master resources items, warehouses, item-companies and item-warehouses, orders and open items.
+2. **Rules.** The caller is an app and writes only in its own namespace; one namespace per command; the counter of the record and namespace is compared with `expected_version` and increased by one by every successful command; values are typed, limited and listed by the definition; `is_pii` is locked once a value exists and its values are logged on read with PII_EXTENSION.
+3. **Not built.** `extensions:set-batch`, anonymisation clearing, `app_id` on the change log, the entity types DIMENSION_VALUE, WAREHOUSE_LOCATION and ITEM_PARTNER.
+
+### 13.2az The jobs of the read access log (F-IMPL-93, 2026-11-26)
+
+PROPOSED, written down so that spec and code agree. It builds on 09, 5.2 and Q6 and on 15, 5.1.
+
+1. **Built.** Migration 0057: `tenant_setting.read_log_retention_days`, `read_log_summary_state`, and the retention role may append events and move the outbox head. `ReadLogJobs.SummariseAsync` writes one `access.summary` event per UTC day, company and field group (counts only) and is idempotent through the state. `PurgeAsync` deletes summarised rows older than the retention.
+2. **Retention.** The setting, else the longest retention rule of the tenant (class READ_LOG, else any class); no rule, no purge.
+3. **Not built.** A scheduler or CLI verb for the jobs.
+
+### 13.2ay Several companies in one read (F-IMPL-92, 2026-11-26)
+
+PROPOSED, written down so that spec and code agree. It builds on 09, 4.1.2, 4.1.3 and 4.5.
+
+1. **Built.** `balances:query` and `aging:query`: `company_ids` or `group_id` (one of company_id, company_ids, group_id), `read.cross_company` for several companies and for a group, merging per key and currency combination, `company_id` as a group key, the group read as the members at the reporting date.
+2. **Result.** Totals are null when the companies have more than one currency combination, and the totals by currency are given instead.
+3. **Not built.** Several companies in the other reports; company access beyond the tenant.
+
+### 13.2ax Search (F-IMPL-91, 2026-11-26)
+
+PROPOSED, written down so that spec and code agree. It builds on 09, 2.4.1 and 5.3 and on 20, 8.
+
+1. **Built.** Migration 0056: `core.search_norm`, `core.search_pattern` and trigram expression indexes. `contains` on `journal-documents:list` (with a scope) and on name and description of the generic master lists; `business-partners:search`, logged with the field group SEARCH.
+2. **Deviation.** No stored search column: the database normalises both sides with one function (20, 8 has the application do it).
+3. **Not built.** `contains` on `journal-lines` (no list exists) and on extension values.
+
+### 13.2aw Cursors and issue state in the reads of orders (F-IMPL-90, 2026-11-26)
+
+PROPOSED, written down so that spec and code agree. It builds on 09, 2.4 and 3, 11, 8 and 22, delta 6.
+
+1. **Built.** A signed offset cursor, bound to the query, on `open-orders:query`, `uninvoiced:query`, `gr-ir:query` and the six document lists; `page {next_cursor, limit}`. `issue_state` on the invoice lists and on `journal-documents:list` for the four invoice document types; the include `issue_records` on the invoice lists.
+2. **Not built.** As-of reconstruction of `gr-ir:query`.
+
 ### 13.2av The legacy tax summary in returns and settlement (F-IMPL-89, 2026-11-26)
 
 PROPOSED, written down so that spec and code agree. It builds on 08, 7.1 and 7.3 and on 13.2au.

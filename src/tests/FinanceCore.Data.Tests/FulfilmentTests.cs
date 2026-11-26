@@ -1677,7 +1677,14 @@ public class FulfilmentTests
         Assert.Equal(["READ.INVALID_FILTER"], Codes(await Query(new(t.CompanyId, Limit: 0))));
         Assert.Equal(["AUTH.PERMISSION_MISSING"], Codes(await Query(new(t.CompanyId), "purchase.invoice")));
         Assert.Equal(["READ.NOT_FOUND"], Codes(await Query(new(Guid.NewGuid()))));
-        Assert.True((await Query(new(t.CompanyId, Limit: 1))).Value!.Truncated);
+        var gp1 = (await Query(new(t.CompanyId, Limit: 1))).Value!;
+        Assert.NotNull(gp1.Page.NextCursor);
+        var gp2 = (await Query(new(t.CompanyId, Limit: 1, Cursor: gp1.Page.NextCursor))).Value!;
+        Assert.Single(gp2.Items);
+        Assert.NotEqual((gp1.Items[0].DocumentId, gp1.Items[0].LineNo), (gp2.Items[0].DocumentId, gp2.Items[0].LineNo));
+        Assert.Equal((back.TotalOpenLc, back.GlBalanceLc), (gp2.TotalOpenLc, gp2.GlBalanceLc));
+        // a cursor belongs to its query: another state is refused
+        Assert.Equal(["READ.CURSOR_INVALID"], Codes(await Query(new(t.CompanyId, State: "ALL", Limit: 1, Cursor: gp1.Page.NextCursor))));
     }
 
     [Fact]
@@ -1711,6 +1718,21 @@ public class FulfilmentTests
         Assert.Equal((30m, 10m, 100m), (u2.InvoicedBaseQuantity, u2.UninvoicedBaseQuantity, u2.Value));
         var us = Assert.Single((await Uninvoiced(new(t.CompanyId, "SALES"))).Value!.Items);
         Assert.Equal((10m, 25m, 250m), (us.UninvoicedBaseQuantity, us.UnitPrice, us.Value));
+
+        // a cursor: the second sales order gives a second open line, the page of one line points to the next, and a cursor of another query or a made-up one is refused
+        await SalesOrderAsync(s, "so2", GoodsLine(s, 5, 25));
+        var page1 = (await Open(new(t.CompanyId, "SALES", Limit: 1))).Value!;
+        Assert.Single(page1.Items);
+        Assert.NotNull(page1.Page.NextCursor);
+        var page2 = (await Open(new(t.CompanyId, "SALES", Limit: 1, Cursor: page1.Page.NextCursor))).Value!;
+        Assert.Single(page2.Items);
+        Assert.Null(page2.Page.NextCursor);
+        Assert.NotEqual(page1.Items[0].OrderId, page2.Items[0].OrderId);
+        Assert.Equal(["READ.CURSOR_INVALID"], Codes(await Open(new(t.CompanyId, "PURCHASE", Limit: 1, Cursor: page1.Page.NextCursor))));
+        Assert.Equal(["READ.CURSOR_INVALID"], Codes(await Open(new(t.CompanyId, "SALES", Cursor: "bm90IGEgY3Vyc29y"))));
+        Assert.Equal(["READ.CURSOR_INVALID"], Codes(await Uninvoiced(new(t.CompanyId, "SALES", Cursor: page1.Page.NextCursor))));
+        var uPage1 = (await Uninvoiced(new(t.CompanyId, "SALES", Limit: 1))).Value!;
+        Assert.Null(uPage1.Page.NextCursor);
 
         // the filters of the reads
         Assert.Equal(["READ.INVALID_FILTER"], Codes(await Open(new(t.CompanyId, "OTHER"))));
@@ -1759,7 +1781,33 @@ public class FulfilmentTests
         Assert.Empty((await List("purchase-receipts", new(t.CompanyId, DateFrom: new DateOnly(2030, 1, 1)))).Value!.Items);
         Assert.Empty((await List("purchase-receipts", new(t.CompanyId, Status: "reversed"))).Value!.Items);
 
+        // a cursor over a list: two receipts, one per page, in the order of the list, and a cursor of another filter is refused
+        await ReceiveAsync(s, "r2", po, 5, "2026-03-11");
+        var rp1 = (await List("purchase-receipts", new(t.CompanyId, Limit: 1))).Value!;
+        Assert.Single(rp1.Items);
+        Assert.NotNull(rp1.Page.NextCursor);
+        var rp2 = (await List("purchase-receipts", new(t.CompanyId, Limit: 1, Cursor: rp1.Page.NextCursor))).Value!;
+        Assert.Single(rp2.Items);
+        Assert.Null(rp2.Page.NextCursor);
+        Assert.NotEqual(rp1.Items[0].GetProperty("receipt_id").GetGuid(), rp2.Items[0].GetProperty("receipt_id").GetGuid());
+        Assert.Equal(["READ.CURSOR_INVALID"], Codes(await List("purchase-receipts", new(t.CompanyId, Status: "posted", Limit: 1, Cursor: rp1.Page.NextCursor))));
+        Assert.Equal(["READ.CURSOR_INVALID"], Codes(await List("sales-deliveries", new(t.CompanyId, Limit: 1, Cursor: rp1.Page.NextCursor))));
+
+        // the issue state (22): not issued until a record exists, and the include gives the records of the page
+        Assert.Single((await List("purchase-invoices", new(t.CompanyId, IssueState: "NOT_ISSUED"))).Value!.Items);
+        Assert.Empty((await List("purchase-invoices", new(t.CompanyId, IssueState: "ISSUED"))).Value!.Items);
+        var issued = await new InvoiceIssueCommands(t.App).RecordAsync(t.TenantId, Ctx(s, "iss1", InvoiceIssueRules.Permission),
+            new(t.CompanyId, "XML", "archive://2026/si-1.xml", "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08", "PEPPOL", "PURCHASE", invoiceId, null, new DateTimeOffset(2026, 3, 16, 9, 0, 0, TimeSpan.Zero)));
+        Assert.True(issued.Status == CommandStatus.Ok, Describe(issued));
+        Assert.Empty((await List("purchase-invoices", new(t.CompanyId, IssueState: "NOT_ISSUED"))).Value!.Items);
+        var withRecords = Assert.Single((await List("purchase-invoices", new(t.CompanyId, IssueState: "ISSUED", Include: ["issue_records"]))).Value!.Items);
+        Assert.Equal(1, withRecords.GetProperty("issue_records").GetArrayLength());
+        Assert.False(Assert.Single((await List("purchase-invoices", new(t.CompanyId))).Value!.Items).TryGetProperty("issue_records", out _));
+
         // the errors
+        Assert.Equal(["READ.INVALID_FILTER"], Codes(await List("purchase-receipts", new(t.CompanyId, IssueState: "ISSUED"))));
+        Assert.Equal(["READ.INVALID_FILTER"], Codes(await List("purchase-invoices", new(t.CompanyId, IssueState: "SENT"))));
+        Assert.Equal(["READ.INVALID_FILTER"], Codes(await List("purchase-invoices", new(t.CompanyId, Include: ["lines"]))));
         Assert.Equal(["READ.INVALID_FILTER"], Codes(await List("purchase-receipts", new(t.CompanyId, Status: "INVOICE"))));
         Assert.Equal(["READ.INVALID_FILTER"], Codes(await List("purchase-invoices", new(t.CompanyId, Limit: 0))));
         Assert.Equal(["READ.INVALID_FILTER"], Codes(await List("purchase-invoices", new(t.CompanyId, DateFrom: new DateOnly(2027, 1, 1), DateTo: new DateOnly(2026, 1, 1)))));

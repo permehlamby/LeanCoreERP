@@ -65,7 +65,20 @@ public sealed class OrderReads(NpgsqlDataSource source)
                 $"and x.{fulfilId} = l.{kind.IdColumn} and x.{fulfilLine} = l.line_no) f on true " +
                 $"left join lateral (select sum(y.base_quantity) q from core.{returnTable} y where y.tenant_id = l.tenant_id and y.company_id = l.company_id and y.{fulfilId} = l.{kind.IdColumn} and y.{fulfilLine} = l.line_no) rt on true where l.tenant_id = @t and l.company_id = @c and l.{kind.IdColumn} = @o")
             : null;
-        return CommandResult<OrderDetail>.Ok(new OrderDetail(Parse(json), lines, events, changes, progress), Guid.Empty);
+        JsonElement header = Parse(json);
+        if (include.Contains("extensions"))
+        {
+            string headerType = kind.Kind + "_ORDER", id = req.Id.ToString("D");
+            header = ExtensionRead.Attach(header, (await ExtensionRead.LoadAsync(tx, tenantId, ctx, headerType, [id], kind.Kind.ToLowerInvariant() + "-orders:get", ct))[id]);
+            if (lines is { } lineArray)
+            {
+                string Key(JsonElement l) => id + "/" + l.GetProperty("line_no").GetInt32();
+                var values = await ExtensionRead.LoadAsync(tx, tenantId, ctx, headerType + "_LINE", lineArray.EnumerateArray().Select(Key).ToList(), kind.Kind.ToLowerInvariant() + "-orders:get", ct);
+                lines = JsonSerializer.SerializeToElement(lineArray.EnumerateArray().Select(l => ExtensionRead.Attach(l, values[Key(l)])).ToList());
+            }
+            await tx.CommitAsync(ct);
+        }
+        return CommandResult<OrderDetail>.Ok(new OrderDetail(header, lines, events, changes, progress), Guid.Empty);
     }
 
     public async Task<CommandResult<OrderList>> ListAsync(OrderKind kind, Guid tenantId, CommandContext ctx, ListOrdersRequest req, CancellationToken ct = default)
@@ -76,14 +89,19 @@ public sealed class OrderReads(NpgsqlDataSource source)
         if (!ReadRules.TryDecodeCursor(req.Cursor, "ord:" + kind.Kind, out long offset)) return Reject<OrderList>(Error("READ.CURSOR_INVALID", "P1", "cursor"));
         if (req.LifecycleStatus is not (null or "OPEN" or "CLOSED" or "CANCELLED")) return Reject<OrderList>(Error("READ.INVALID_FILTER", "P1", "lifecycle_status", ("field", "lifecycle_status")));
 
+        foreach (string i in req.Include ?? [])
+            if (i != "extensions") return Reject<OrderList>(Error("READ.INVALID_FILTER", "P1", "include", ("field", i), ("allowed", new[] { "extensions" })));
         await using TenantTransaction tx = await TenantTransaction.BeginAsync(source, tenantId, CommandRole.Read, ct: ct, snapshot: true);
+        string headerType = kind.Kind + "_ORDER";
+        var ext = await ExtensionRead.FiltersAsync(tx, tenantId, ctx, headerType, req.Ext, $"h.{kind.IdColumn}::text", true, kind.Kind.ToLowerInvariant() + "-orders:list", ct);
+        if (ext.Error is not null) return Reject<OrderList>(ext.Error);
         var items = new List<JsonElement>();
         await using (var cmd = tx.Command(
-            $"select (to_jsonb(h) - 'tenant_id')::text from core.{kind.HeaderTable} h where tenant_id = @t and (@p::uuid is null or {kind.PartyColumn} = @p) and (@s::text is null or lifecycle_status = @s) " +
+            $"select (to_jsonb(h) - 'tenant_id')::text from core.{kind.HeaderTable} h where tenant_id = @t{ext.Sql} and (@p::uuid is null or {kind.PartyColumn} = @p) and (@s::text is null or lifecycle_status = @s) " +
             "and (@from::date is null or order_date >= @from) and (@to::date is null or order_date <= @to) and (@ref::text is null or source_document_ref = @ref) " +
             "order by order_date, order_number offset @o limit @n"))
         {
-            cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("o", offset); cmd.Parameters.AddWithValue("n", limit + 1);
+            cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("o", offset); cmd.Parameters.AddWithValue("n", limit + 1); ext.Bind(cmd);
             cmd.Parameters.Add(new NpgsqlParameter("p", NpgsqlDbType.Uuid) { Value = (object?)req.PartnerId ?? DBNull.Value });
             cmd.Parameters.Add(new NpgsqlParameter("s", NpgsqlDbType.Text) { Value = (object?)req.LifecycleStatus ?? DBNull.Value });
             cmd.Parameters.Add(new NpgsqlParameter("from", NpgsqlDbType.Date) { Value = (object?)req.DateFrom ?? DBNull.Value });
@@ -94,6 +112,13 @@ public sealed class OrderReads(NpgsqlDataSource source)
         }
         string? next = null;
         if (items.Count > limit) { items.RemoveAt(limit); next = ReadRules.EncodeCursor("ord:" + kind.Kind, offset + limit); }
+        if (req.Include?.Contains("extensions") == true)
+        {
+            string Key(JsonElement e) => e.GetProperty(kind.IdColumn).GetGuid().ToString("D");
+            var values = await ExtensionRead.LoadAsync(tx, tenantId, ctx, headerType, items.Select(Key).ToList(), kind.Kind.ToLowerInvariant() + "-orders:list", ct);
+            items = items.Select(e => ExtensionRead.Attach(e, values[Key(e)])).ToList();
+            await tx.CommitAsync(ct);
+        }
         return CommandResult<OrderList>.Ok(new OrderList(items, new ReadPage(next, limit)), Guid.Empty);
     }
 }

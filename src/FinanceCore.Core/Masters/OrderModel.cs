@@ -115,7 +115,8 @@ public sealed record OrderResult(
 public sealed record GetOrderRequest(Guid Id, IReadOnlyList<string>? Include = null);
 
 public sealed record ListOrdersRequest(
-    Guid? PartnerId = null, string? LifecycleStatus = null, DateOnly? DateFrom = null, DateOnly? DateTo = null, string? SourceDocumentRef = null, int? Limit = null, string? Cursor = null);
+    Guid? PartnerId = null, string? LifecycleStatus = null, DateOnly? DateFrom = null, DateOnly? DateTo = null, string? SourceDocumentRef = null, int? Limit = null, string? Cursor = null,
+    IReadOnlyList<string>? Include = null, IReadOnlyList<Feed.ExtensionFilter>? Ext = null);
 
 public sealed record OrderDetail(System.Text.Json.JsonElement Order, System.Text.Json.JsonElement? Lines, System.Text.Json.JsonElement? Events, System.Text.Json.JsonElement? Changes, System.Text.Json.JsonElement? Progress = null);
 
@@ -123,7 +124,7 @@ public sealed record OrderList(IReadOnlyList<System.Text.Json.JsonElement> Items
 
 public static class OrderRules
 {
-    public static readonly IReadOnlyList<string> Includes = ["lines", "events", "changes", "progress"];
+    public static readonly IReadOnlyList<string> Includes = ["lines", "events", "changes", "progress", "extensions"];
 
     public static byte[] Fingerprint(string command, CreateOrderRequest r) =>
         MasterRules.Fingerprint(command, MasterRules.Text(r.Fields) + "|" + string.Join("#", r.Lines.Select(l => MasterRules.Text(l))));

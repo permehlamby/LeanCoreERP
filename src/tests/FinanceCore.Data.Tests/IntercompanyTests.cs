@@ -13,7 +13,7 @@ public class IntercompanyTests
     private static string[] Codes<T>(CommandResult<T> r) => r.Errors.Select(e => e.Code).ToArray();
     private static CommandContext Ctx(TestTenant t, string key) => t.Context(key, IntercompanyRules.PostPermission);
 
-    private sealed record Second(Guid CompanyId, Guid Expense, Guid IcPayable, Guid IcReceivable);
+    internal sealed record Second(Guid CompanyId, Guid Expense, Guid IcPayable, Guid IcReceivable, Guid Bank = default);
 
     private static async Task<(Guid Receivable, Guid Payable)> IcAccounts(TestTenant t, Guid company, Guid counterpart, bool payableRole = true)
     {
@@ -26,7 +26,7 @@ public class IntercompanyTests
     }
 
     /// <summary>A second company in the same group, with the chart, series, year, ledger and chain head that a posting needs, and the IC accounts of both companies.</summary>
-    private static async Task<Second> AddSecond(TestTenant t, bool icPayableRole = true)
+    internal static async Task<Second> AddSecond(TestTenant t, bool icPayableRole = true)
     {
         Guid c2 = Guid.NewGuid(), ledger = Guid.NewGuid(), series = Guid.NewGuid(), expense = Guid.NewGuid(), bank = Guid.NewGuid();
         await t.ExecuteAsync(
@@ -47,7 +47,7 @@ public class IntercompanyTests
             ("n", c2), ("c", t.CompanyId), ("l", ledger), ("s", series), ("e", expense), ("bank", bank), ("genesis", LedgerHash2.Genesis(t.TenantId, c2, "LEDGER", ledger.ToString("D"))));
         var (rec2, pay2) = await IcAccounts(t, c2, t.CompanyId, icPayableRole);
         var (rec1, _) = await IcAccounts(t, t.CompanyId, c2);
-        return new Second(c2, expense, pay2, rec1);
+        return new Second(c2, expense, pay2, rec1, bank);
     }
 
     private static PostIntercompanyDocumentRequest Pair(TestTenant t, Second s, decimal amount = 1000m, string date = "2026-03-15") =>
@@ -121,7 +121,7 @@ public class IntercompanyTests
         Assert.Equal(0m, decimal.Parse(await t.ScalarAsync<string>("select coalesce(sum(amount_gc), 0)::text from core.journal_line where tenant_id = @t"), System.Globalization.CultureInfo.InvariantCulture));
         var reads = new LedgerReads(t.App);
         var net = await reads.BalancesAsync(t.TenantId, t.Context("rd", "read.ledger"), new(t.CompanyId, "CUMULATIVE", AsOfDate: new DateOnly(2026, 6, 30), IsIntercompany: true));
-        Assert.Equal(0m, net.Value!.TotalDebit.Lc + net.Value.TotalCredit.Lc);
+        Assert.Equal(0m, net.Value!.TotalDebit!.Lc + net.Value.TotalCredit!.Lc);
         foreach (Guid company in new[] { t.CompanyId, s.CompanyId })
         {
             Guid ledger = Guid.Parse(await t.ScalarAsync<string>("select ledger_id::text from core.ledger where tenant_id = @t and company_id = @co", ("co", company)));

@@ -12,7 +12,7 @@ namespace FinanceCore.Data;
 /// partner-balances:query. Every read runs in one repeatable-read transaction of the read role, so a response is one consistent snapshot (09, 2.2), and
 /// carries the ledger position it is consistent with. A caller that needs to see its own posting passes min_ledger_seq (READ.STALE_SNAPSHOT otherwise).
 /// The second slice adds aging:query and documents:get-context (LedgerReads.Aging.cs, LedgerReads.Context.cs). Not built: company access beyond the tenant,
-/// several companies and groups, extensions, sort and filter on every field. Amounts are decimals, not strings, as everywhere in this API.
+/// extensions, sort and filter on every field. Amounts are decimals, not strings, as everywhere in this API.
 /// </summary>
 public sealed partial class LedgerReads(NpgsqlDataSource source)
 {
@@ -144,6 +144,14 @@ public sealed partial class LedgerReads(NpgsqlDataSource source)
         if (CheckLimit(req.Limit, out int limit) is { } badLimit) return Reject<JournalDocumentList>(badLimit);
         if (!ReadRules.TryDecodeCursor(req.Cursor, "doc", out long after)) return Reject<JournalDocumentList>(Error("READ.CURSOR_INVALID", "P1", "cursor"));
         if (req.Status is not (null or "posted" or "reversed")) return Reject<JournalDocumentList>(Error("READ.INVALID_FILTER", "P1", "status", ("allowed", new[] { "posted", "reversed" })));
+        if (SearchFilters.Validate(req.Contains, SearchRules.JournalDocumentFields, "contains") is { } badSearch) return Reject<JournalDocumentList>(badSearch);
+        // a search of the ledger needs a scope, so it cannot scan the whole ledger (2.4.1): a date range of at most 12 months, an account, a partner or a number prefix
+        if (req.Contains is { Count: > 0 } && !(req.AccountId is not null || req.PartnerId is not null || !string.IsNullOrEmpty(req.NumberPrefix)
+                || (req.PostingDateFrom is { } scopeFrom && req.PostingDateTo is { } scopeTo && scopeTo >= scopeFrom && scopeTo.DayNumber - scopeFrom.DayNumber < SearchRules.MaxScopeDays)))
+            return Reject<JournalDocumentList>(Error("READ.CONTAINS_REQUIRES_SCOPE", "P1", "contains", ("scope", "posting_date range of at most 12 months, account_id, partner_id or number_prefix")));
+        if (req.IssueState is not (null or "ISSUED" or "NOT_ISSUED")) return Reject<JournalDocumentList>(Error("READ.INVALID_FILTER", "P1", "issue_state", ("field", "issue_state"), ("allowed", new[] { "ISSUED", "NOT_ISSUED" })));
+        if (req.IssueState is not null && !SearchRules.IssueStateDocumentTypes.Contains(req.DocumentType ?? ""))
+            return Reject<JournalDocumentList>(Error("READ.INVALID_FILTER", "P1", "issue_state", ("field", "issue_state"), ("allowed", SearchRules.IssueStateDocumentTypes)));
 
         await using TenantTransaction tx = await TenantTransaction.BeginAsync(source, tenantId, CommandRole.Read, ct: ct, snapshot: true);
         var opened = await OpenAsync(tx, tenantId, req.CompanyId, req.PostingDateTo ?? DateOnly.FromDateTime(DateTime.UtcNow), req.MinLedgerSeq, ct);
@@ -158,7 +166,14 @@ public sealed partial class LedgerReads(NpgsqlDataSource source)
             $"select {DocumentSelect} from core.journal_document d where d.tenant_id = @t and d.company_id = @c and d.chain_seq > @after " +
             "and (@type::text is null or d.document_type = @type) and (@fy::int is null or d.fiscal_year = @fy) and (@fp::int is null or d.fiscal_period = @fp) " +
             "and (@from::date is null or d.posting_date >= @from) and (@to::date is null or d.posting_date <= @to) and (@status::text is null or d.status = @status) " +
-            "and (@prefix::text is null or d.document_number like @prefix || '%') order by d.chain_seq, d.document_id limit @n"))
+            "and (@prefix::text is null or d.document_number like @prefix || '%') " + SearchFilters.Where(req.Contains, "d", "s") +
+            " and (@acc::uuid is null or exists (select 1 from core.journal_line al where al.tenant_id = d.tenant_id and al.company_id = d.company_id and al.document_id = d.document_id and al.account_id = @acc)) " +
+            "and (@part::uuid is null or exists (select 1 from core.journal_line_open_item po where po.tenant_id = d.tenant_id and po.company_id = d.company_id and po.document_id = d.document_id and po.partner_id = @part)) " +
+            // the issue state (22): a record on the document itself or on the link record of the order-built invoice
+            "and (@issue::text is null or (@issue = 'ISSUED') = exists (select 1 from core.invoice_issue_record q where q.tenant_id = d.tenant_id and q.company_id = d.company_id and (q.document_id = d.document_id or q.invoice_id in " +
+            "(select si.sales_invoice_id from core.sales_invoice si where si.tenant_id = d.tenant_id and si.company_id = d.company_id and si.journal_document_id = d.document_id " +
+            "union all select pi.purchase_invoice_id from core.purchase_invoice pi where pi.tenant_id = d.tenant_id and pi.company_id = d.company_id and pi.journal_document_id = d.document_id)))) " +
+            "order by d.chain_seq, d.document_id limit @n"))
         {
             cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("c", req.CompanyId); cmd.Parameters.AddWithValue("after", after); cmd.Parameters.AddWithValue("n", limit + 1);
             cmd.Parameters.Add(new NpgsqlParameter("type", NpgsqlDbType.Text) { Value = (object?)req.DocumentType ?? DBNull.Value });
@@ -168,6 +183,10 @@ public sealed partial class LedgerReads(NpgsqlDataSource source)
             cmd.Parameters.Add(new NpgsqlParameter("to", NpgsqlDbType.Date) { Value = (object?)req.PostingDateTo ?? DBNull.Value });
             cmd.Parameters.Add(new NpgsqlParameter("status", NpgsqlDbType.Text) { Value = (object?)req.Status ?? DBNull.Value });
             cmd.Parameters.Add(new NpgsqlParameter("prefix", NpgsqlDbType.Text) { Value = (object?)req.NumberPrefix ?? DBNull.Value });
+            cmd.Parameters.Add(new NpgsqlParameter("acc", NpgsqlDbType.Uuid) { Value = (object?)req.AccountId ?? DBNull.Value });
+            cmd.Parameters.Add(new NpgsqlParameter("part", NpgsqlDbType.Uuid) { Value = (object?)req.PartnerId ?? DBNull.Value });
+            cmd.Parameters.Add(new NpgsqlParameter("issue", NpgsqlDbType.Text) { Value = (object?)req.IssueState ?? DBNull.Value });
+            SearchFilters.Bind(cmd, req.Contains, "s");
             await using var r = await cmd.ExecuteReaderAsync(ct);
             while (await r.ReadAsync(ct)) items.Add(ReadDocument(r));
         }
@@ -207,7 +226,7 @@ public sealed partial class LedgerReads(NpgsqlDataSource source)
         ["account_id"] = "l.account_id::text", ["account_type"] = "a.account_type", ["account_group"] = "a.account_group", ["fiscal_year"] = "l.fiscal_year::text",
         ["fiscal_period"] = "l.fiscal_period::text", ["posting_date"] = "l.posting_date::text", ["cost_center_id"] = "l.cost_center_id::text", ["project_id"] = "l.project_id::text",
         ["profit_center_id"] = "l.profit_center_id::text", ["business_unit_id"] = "l.business_unit_id::text", ["transaction_currency"] = "d.transaction_currency::text",
-        ["document_type"] = "d.document_type", ["line_type"] = "l.line_type", ["ledger_id"] = "l.ledger_id::text",
+        ["company_id"] = "l.company_id::text", ["document_type"] = "d.document_type", ["line_type"] = "l.line_type", ["ledger_id"] = "l.ledger_id::text",
         // 23, 6 and 7.1: the counterpart of an intercompany line, and the group account that the mapping at the reporting date gives
         ["ic_counterpart_company_id"] = "l.ic_counterpart_company_id::text", ["group_account_id"] = "m.group_account_id::text"
     };
@@ -243,11 +262,79 @@ public sealed partial class LedgerReads(NpgsqlDataSource source)
             shape.Add(Error("READ.INVALID_FILTER", "P1", "account_type", ("field", "account_type")));
         if (shape.Count > 0) return CommandResult<BalancesResult>.Rejected(shape);
 
+        if (CheckCompanySelection(ctx, req.CompanyId, req.CompanyIds, req.GroupId) is { } badSelection) return Reject<BalancesResult>(badSelection);
         await using TenantTransaction tx = await TenantTransaction.BeginAsync(source, tenantId, CommandRole.Read, ct: ct, snapshot: true);
-        var opened = await OpenAsync(tx, tenantId, req.CompanyId, to, req.MinLedgerSeq, ct);
-        if (opened.Error is not null) return Reject<BalancesResult>(opened.Error);
+        var selected = await ResolveCompaniesAsync(tx, tenantId, req.CompanyId, req.CompanyIds, req.GroupId, to, ct);
+        if (selected.Error is not null) return Reject<BalancesResult>(selected.Error);
+        if (selected.Ids!.Count == 0)
+            return CommandResult<BalancesResult>.Ok(new BalancesResult(req.Mode, rule, null, [], null, null, true, new ReadSnapshot(DateTime.UtcNow, []), [], selected.Group, []), Guid.Empty);
+        var perCompany = new List<(Guid CompanyId, CurrencyCodes Codes, ReadSnapshot Snapshot, List<BalanceRow> Rows, bool Stable)>();
+        foreach (Guid company in selected.Ids!)
+        {
+            var one = await BalancesOneAsync(tx, tenantId, req, company, rule, from, to, ct);
+            if (one.Error is not null) return Reject<BalancesResult>(one.Error);
+            perCompany.Add(one.Result!.Value);
+        }
+        bool multi = req.GroupId is not null || req.CompanyIds is { Count: > 1 };
+        List<BalanceRow> all = perCompany.SelectMany(c => c.Rows).ToList();
+        if (multi)
+        {
+            // several companies: rows with the same key and the same currency combination are added, nothing is added across currency codes (4.1.2)
+            all = all.GroupBy(x => string.Join('\u001f', x.Keys.Select(k => k.Key + "=" + k.Value)) + "\u001e" + x.Currencies)
+                .Select(g => g.Skip(1).Aggregate(g.First(), (s, x) => s with { Debit = Add(s.Debit, x.Debit), Credit = Add(s.Credit, x.Credit), Net = Add(s.Net, x.Net), LineCount = s.LineCount + x.LineCount }))
+                .OrderBy(x => string.Join('\u001f', x.Keys.Values.Select(v => v ?? "")), StringComparer.Ordinal).ThenBy(x => x.Currencies!.Lc, StringComparer.Ordinal)
+                .ThenBy(x => x.Currencies!.Gc, StringComparer.Ordinal).ThenBy(x => x.Currencies!.Rc, StringComparer.Ordinal).ToList();
+            if (all.Count > ReadRules.MaxGroups) return Reject<BalancesResult>(Error("READ.RESULT_TOO_LARGE", "P2", "group_by", ("max", ReadRules.MaxGroups)));
+        }
+        var combos = perCompany.Select(c => c.Codes).Distinct().ToList();
+        CurrencyCodes? only = combos.Count == 1 ? combos[0] : null;
+        Amounts ZeroFor(CurrencyCodes c) => c.Rc is not null ? new Amounts(0m, 0m, 0m) : ZeroNoRc;
+        var byCurrency = combos.Select(c => new CurrencyTotals(c, all.Where(x => x.Currencies == c).Aggregate(ZeroFor(c), (s, x) => Add(s, x.Debit)), all.Where(x => x.Currencies == c).Aggregate(ZeroFor(c), (s, x) => Add(s, x.Credit)))).ToList();
+        var allLedgers = perCompany.SelectMany(c => c.Snapshot.Ledgers).ToList();
+        var snapshot = new ReadSnapshot(perCompany[0].Snapshot.TakenAt, allLedgers);
+        return CommandResult<BalancesResult>.Ok(new BalancesResult(req.Mode, rule, only, all, only is null ? null : byCurrency[0].Debit, only is null ? null : byCurrency[0].Credit,
+            perCompany.All(c => c.Stable), snapshot, multi ? perCompany.Select(c => new CompanyRead(c.CompanyId, c.Codes, c.Stable)).ToList() : null, selected.Group, multi ? byCurrency : null), Guid.Empty);
+    }
+
+    /// <summary>The permission and the shape of the choice of companies: exactly one of company_id, company_ids and group_id; several companies and a group need read.cross_company (09, 2.3, 4.1.2).</summary>
+    private static CommandError? CheckCompanySelection(CommandContext ctx, Guid companyId, IReadOnlyList<Guid>? companyIds, Guid? groupId)
+    {
+        int given = (companyId != Guid.Empty ? 1 : 0) + (companyIds is not null ? 1 : 0) + (groupId is not null ? 1 : 0);
+        if (given > 1) return Error("SCHEMA.INVALID_VALUE", "P1", "company_ids", ("reason", "only one of company_id, company_ids and group_id"));
+        if (companyIds is not null && (companyIds.Count == 0 || companyIds.Count > CrossCompanyRules.MaxCompanies || companyIds.Distinct().Count() != companyIds.Count))
+            return Error("SCHEMA.INVALID_VALUE", "P1", "company_ids", ("reason", $"1 to {CrossCompanyRules.MaxCompanies} different companies"));
+        if ((groupId is not null || companyIds is { Count: > 1 }) && !ctx.Permissions.Contains(CrossCompanyRules.Permission))
+            return Error("AUTH.PERMISSION_MISSING", "P0", "", ("permission", CrossCompanyRules.Permission));
+        return null;
+    }
+
+    /// <summary>The companies of a read: the one company, the list, or the members of the group at the date (valid_from not after the date, valid_to after it).</summary>
+    private static async Task<(IReadOnlyList<Guid>? Ids, GroupRead? Group, CommandError? Error)> ResolveCompaniesAsync(
+        TenantTransaction tx, Guid tenantId, Guid companyId, IReadOnlyList<Guid>? companyIds, Guid? groupId, DateOnly date, CancellationToken ct)
+    {
+        if (groupId is null) return (companyIds ?? [companyId], null, null);
+        await using (var cmd = tx.Command("select 1 from core.company_group where tenant_id = @t and group_id = @g"))
+        {
+            cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("g", groupId.Value);
+            if (await cmd.ExecuteScalarAsync(ct) is null) return (null, null, Error("READ.NOT_FOUND", "P2", "group_id"));
+        }
+        var members = new List<Guid>();
+        await using (var cmd = tx.Command("select company_id from core.group_membership where tenant_id = @t and group_id = @g and valid_from <= @d and (valid_to is null or valid_to > @d) order by company_id"))
+        {
+            cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("g", groupId.Value); cmd.Parameters.AddWithValue("d", date);
+            await using var r = await cmd.ExecuteReaderAsync(ct);
+            while (await r.ReadAsync(ct)) members.Add(r.GetGuid(0));
+        }
+        return (members, new GroupRead(groupId.Value, date, members), null);
+    }
+
+    private async Task<((Guid CompanyId, CurrencyCodes Codes, ReadSnapshot Snapshot, List<BalanceRow> Rows, bool Stable)? Result, CommandError? Error)> BalancesOneAsync(
+        TenantTransaction tx, Guid tenantId, BalancesRequest req, Guid companyId, string rule, DateOnly from, DateOnly to, CancellationToken ct)
+    {
+        var opened = await OpenAsync(tx, tenantId, companyId, to, req.MinLedgerSeq, ct);
+        if (opened.Error is not null) return (null, opened.Error);
         bool hasRc = opened.Company!.Rc is not null;
-        int? fiscalYear = rule == "AUTO" ? await FiscalYearOfAsync(tx, tenantId, req.CompanyId, to, ct) : null;
+        int? fiscalYear = rule == "AUTO" ? await FiscalYearOfAsync(tx, tenantId, companyId, to, ct) : null;
 
         string[] keys = (req.GroupBy ?? []).Distinct().ToArray();
         var excluded = (req.ExcludeDocumentTypes ?? []).ToArray();
@@ -281,7 +368,7 @@ public sealed partial class LedgerReads(NpgsqlDataSource source)
         var rows = new List<BalanceRow>();
         await using (var cmd = tx.Command(sql))
         {
-            cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("c", req.CompanyId); cmd.Parameters.AddWithValue("to", to);
+            cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("c", companyId); cmd.Parameters.AddWithValue("to", to);
             if (req.Mode == "MOVEMENT") cmd.Parameters.AddWithValue("from", from);
             if (rule == "AUTO")
             {
@@ -299,19 +386,17 @@ public sealed partial class LedgerReads(NpgsqlDataSource source)
             await using var r = await cmd.ExecuteReaderAsync(ct);
             while (await r.ReadAsync(ct))
             {
-                if (rows.Count >= ReadRules.MaxGroups) return Reject<BalancesResult>(Error("READ.RESULT_TOO_LARGE", "P2", "group_by", ("max", ReadRules.MaxGroups)));
+                if (rows.Count >= ReadRules.MaxGroups) return (null, Error("READ.RESULT_TOO_LARGE", "P2", "group_by", ("max", ReadRules.MaxGroups)));
                 var k = new Dictionary<string, string?>();
                 for (int i = 0; i < names.Length; i++) k[names[i]] = r.IsDBNull(i) ? null : r.GetString(i).Trim();
                 if (byGroupAccount && k["group_account_type"] is { } gt) k["translation_rate_basis"] = GroupChartFields.EffectiveBasis(gt, k["translation_rate_basis"]);
                 int o = names.Length;
                 var debit = Amt(r, o, hasRc); var credit = Amt(r, o + 3, hasRc);
-                rows.Add(new BalanceRow(k, debit, credit, Add(debit, credit), r.GetInt64(o + 6)));
+                rows.Add(new BalanceRow(k, debit, credit, Add(debit, credit), r.GetInt64(o + 6), opened.Codes));
             }
         }
-        Amounts totalDebit = rows.Aggregate(hasRc ? new Amounts(0m, 0m, 0m) : ZeroNoRc, (s, x) => Add(s, x.Debit));
-        Amounts totalCredit = rows.Aggregate(hasRc ? new Amounts(0m, 0m, 0m) : ZeroNoRc, (s, x) => Add(s, x.Credit));
-        bool stable = await AllHardClosedAsync(tx, tenantId, req.CompanyId, req.Mode == "MOVEMENT" ? from : null, to, ct);
-        return CommandResult<BalancesResult>.Ok(new BalancesResult(req.Mode, rule, opened.Codes!, rows, totalDebit, totalCredit, stable, opened.Snapshot!), Guid.Empty);
+        bool stable = await AllHardClosedAsync(tx, tenantId, companyId, req.Mode == "MOVEMENT" ? from : null, to, ct);
+        return ((companyId, opened.Codes!, opened.Snapshot!, rows, stable), null);
     }
 
     // ---------------------------------------------------------------------------------------------------------
@@ -506,16 +591,29 @@ public sealed partial class LedgerReads(NpgsqlDataSource source)
         var opened = await OpenAsync(tx, tenantId, req.CompanyId, asOf, req.MinLedgerSeq, ct);
         if (opened.Error is not null) return Reject<OpenItemsResult>(opened.Error);
         bool hasRc = opened.Company!.Rc is not null;
+        foreach (string i in req.Include ?? [])
+            if (i != "extensions") return Reject<OpenItemsResult>(Error("READ.INVALID_FILTER", "P1", "include", ("field", i), ("allowed", new[] { "extensions" })));
+        // a contains on an extension of a ledger-scale resource needs a scope like the other contains filters (2.4.2): an account, a partner or a due date range
+        bool scoped = req.AccountId is not null || req.PartnerId is not null || (req.DueFrom is not null && req.DueTo is not null);
+        var ext = await ExtensionRead.FiltersAsync(tx, tenantId, ctx, "OPEN_ITEM", req.Ext, "l.company_id::text || '/' || l.document_id::text || '/' || l.line_no::text", scoped, "open-items:query", ct);
+        if (ext.Error is not null) return Reject<OpenItemsResult>(ext.Error);
         var items = new List<OpenItemRead>();
-        await using (var cmd = tx.Command(OpenItemSql + " order by o.due_date nulls last, l.document_id, l.line_no offset @o limit @n"))
+        await using (var cmd = tx.Command(OpenItemSql + ext.Sql + " order by o.due_date nulls last, l.document_id, l.line_no offset @o limit @n"))
         {
-            BindOpenItems(cmd, tenantId, req.CompanyId, asOf, req.AccountId, req.PartnerId, req.DueFrom, req.DueTo, req.Currency, req.IncludeCleared);
+            BindOpenItems(cmd, tenantId, req.CompanyId, asOf, req.AccountId, req.PartnerId, req.DueFrom, req.DueTo, req.Currency, req.IncludeCleared); ext.Bind(cmd);
             cmd.Parameters.AddWithValue("o", offset); cmd.Parameters.AddWithValue("n", limit + 1);
             await using var r = await cmd.ExecuteReaderAsync(ct);
             while (await r.ReadAsync(ct)) items.Add(ReadOpenItem(r, hasRc, asOf));
         }
         string? next = null;
         if (items.Count > limit) { items.RemoveAt(limit); next = ReadRules.EncodeCursor("oi", offset + limit); }
+        if (req.Include?.Contains("extensions") == true)
+        {
+            string Key(OpenItemRead i) => $"{req.CompanyId:D}/{i.DocumentId:D}/{i.LineNo}";
+            var values = await ExtensionRead.LoadAsync(tx, tenantId, ctx, "OPEN_ITEM", items.Select(Key).ToList(), "open-items:query", ct);
+            items = items.Select(i => i with { Extensions = values[Key(i)] }).ToList();
+            await tx.CommitAsync(ct);
+        }
         return CommandResult<OpenItemsResult>.Ok(new OpenItemsResult(asOf, opened.Codes!, items, new ReadPage(next, limit), opened.Snapshot!), Guid.Empty);
     }
 

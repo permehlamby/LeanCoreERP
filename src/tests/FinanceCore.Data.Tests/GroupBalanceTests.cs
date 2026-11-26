@@ -50,8 +50,8 @@ public class GroupBalanceTests
 
         // the filter, and the mapping resolved at the reporting date: before the mapping started the account is unmapped
         var filtered = await reads.BalancesAsync(t.TenantId, Read(t), new(t.CompanyId, "CUMULATIVE", AsOfDate: new DateOnly(2026, 6, 30), GroupAccountId: cash));
-        Assert.Equal(1000m, filtered.Value!.TotalDebit.Lc);
-        Assert.Equal(0m, filtered.Value.TotalCredit.Lc);
+        Assert.Equal(1000m, filtered.Value!.TotalDebit!.Lc);
+        Assert.Equal(0m, filtered.Value.TotalCredit!.Lc);
     }
 
     [Fact]
