@@ -65,6 +65,38 @@ public class ChainVerificationTests
     }
 
     [Fact]
+    public async Task ARangeKeepsTheBreaksInsideItAndCountsTheDocumentsOfTheRange()
+    {
+        var t = await TestTenant.CreateReadyAsync();
+        var poster = new JournalDocumentPoster(t.App);
+        for (int i = 1; i <= 3; i++) await poster.PostAsync(t.TenantId, t.Context("p" + i), t.Journal(amount: 100m * i));
+        await t.ExecuteAsync("""
+            alter table core.journal_line disable trigger journal_line_guard;
+            update core.journal_line set amount_lc = amount_lc + 1
+             where tenant_id = @t and document_id = (select document_id from core.journal_document where tenant_id = @t and chain_seq = 2) and line_no = 1;
+            alter table core.journal_line enable trigger journal_line_guard;
+            """);
+        var verify = new ChainVerification(t.App);
+
+        var before = await verify.VerifyAsync(t.TenantId, Ctx(t), new(t.CompanyId, "LEDGER", null, 1, 1));
+        Assert.True(before.Value!.Ok);
+        Assert.Equal(1, before.Value.Checked);
+
+        var inside = await verify.VerifyAsync(t.TenantId, Ctx(t), new(t.CompanyId, "LEDGER", null, 2, 2));
+        Assert.False(inside.Value!.Ok);
+        Assert.Equal(2L, inside.Value.FirstBreakSeq);
+        Assert.Equal(1, inside.Value.Checked);
+
+        var open = await verify.VerifyAsync(t.TenantId, Ctx(t), new(t.CompanyId, "LEDGER", null, 3, null));
+        Assert.True(open.Value!.Ok);
+        Assert.Equal(1, open.Value.Checked);
+
+        var past = await verify.VerifyAsync(t.TenantId, Ctx(t), new(t.CompanyId, "LEDGER", null, 10, 20));
+        Assert.True(past.Value!.Ok);
+        Assert.Equal(0, past.Value.Checked);
+    }
+
+    [Fact]
     public async Task PermissionTypeScopeAndCompanyAreChecked()
     {
         var t = await TestTenant.CreateReadyAsync();
@@ -75,8 +107,8 @@ public class ChainVerificationTests
         Assert.Equal(["SCHEMA.INVALID_VALUE"], Codes(await verify.VerifyAsync(t.TenantId, Ctx(t), new(t.CompanyId, "NOT_A_CHAIN"))));
         Assert.Equal(["SCHEMA.INVALID_VALUE"], Codes(await verify.VerifyAsync(t.TenantId, Ctx(t), new(Guid.Empty, "LEDGER"))));
         Assert.True((await verify.VerifyAsync(t.TenantId, Ctx(t), new(t.CompanyId, "FULFILMENT"))).Value!.Ok);   // every chain type is built, an empty chain is fine
-        Assert.Equal(["LIMIT.CHAIN_RANGE_NOT_BUILT"], Codes(await verify.VerifyAsync(t.TenantId, Ctx(t), new(t.CompanyId, "LEDGER", null, 1, 5))));
         Assert.Equal(["SCHEMA.INVALID_VALUE"], Codes(await verify.VerifyAsync(t.TenantId, Ctx(t), new(t.CompanyId, "LEDGER", null, 5, 1))));
+        Assert.Equal(["SCHEMA.INVALID_VALUE"], Codes(await verify.VerifyAsync(t.TenantId, Ctx(t), new(t.CompanyId, "LEDGER", null, 0, 1))));
         Assert.Equal(["COMPANY.NOT_FOUND"], Codes(await verify.VerifyAsync(t.TenantId, Ctx(t), new(Guid.NewGuid(), "LEDGER"))));
         Assert.Equal(["LEDGER.NOT_FOUND"], Codes(await verify.VerifyAsync(t.TenantId, Ctx(t), new(t.CompanyId, "LEDGER", Guid.NewGuid().ToString("D")))));
         Assert.Equal(["SCHEMA.INVALID_VALUE"], Codes(await verify.VerifyAsync(t.TenantId, Ctx(t), new(t.CompanyId, "CLEARING", "x"))));

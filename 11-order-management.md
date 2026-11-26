@@ -696,6 +696,8 @@ Added in v0.4 (14, section 11): receipt line `stock_document_line_no` and `stock
 
 These deltas are applied in v0.2 (re-baseline of 14, sections 8 and 9). Added in v0.3 (14, section 10): the two credit note reversal commands (6.5, 7.3, 6.8), APP_SUPPLIES price and reference rules (6.4), `cost_source` split of partly covered receipts (7.1), counters before chain heads (9), `scope_key` anchoring (5.5), approved IC permissions (6.1), IC documents are `AR_INVOICE`/`AP_INVOICE` (6.7), `order_address_snapshot.retention_until` is S (4.7).
 
+**Added 2026-11-26 (07, 13.2bh).** The supplier of a receipt without an order is an optional reference `supplier_partner_id` on a `stock-documents:post` RECEIPT (10 delta, outside the hash), and 7.2 checks it against the supplier of the invoice when it is set (`MATCH.NO_RECEIPT`). A TWO_WAY line that is partly received is matched in two parts (7.2): the received part as a THREE_WAY line, the rest posted to GR/IR as a waiting part on the same main line.
+
 **Added 2026-10-14 (ADR-206, 19).** `ORDER.PARTIAL_DEDUCTION_NOT_SUPPORTED` on supplier invoice and credit note lines for stock and dropship items and LANDED_COST charges whose tax code has partial deduction, a key or a cap (7.2, 7.3). Entered in 06, 2.4. The derived `AP_INVOICE` journal of 7.2 gets `TAX_NONDEDUCTIBLE` lines on allowed expense lines through the finance pipeline (02, 5.1) and needs no change in the derivation table.
 
 **Added 2026-10-19 (ADR-226, 23).** The intercompany marker rule of 6.7: control lines and BASE lines of an IC invoice pair carry `ic_counterpart_company_id`, tax lines and the journals of IC deliveries do not.

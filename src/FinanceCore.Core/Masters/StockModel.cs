@@ -16,7 +16,7 @@ public sealed record StockLineInput(
 
 public sealed record PostStockDocumentRequest(
     Guid CompanyId, string DocumentType, DateOnly DocumentDate, DateOnly PostingDate, IReadOnlyList<StockLineInput> Lines, string? ReasonCode = null, string? HeaderText = null,
-    string? SourceDocumentRef = null);
+    string? SourceDocumentRef = null, Guid? SupplierPartnerId = null);
 
 public sealed record StockMovementResult(
     int LineNo, string? LineRef, string MovementType, string CostSource, Guid ItemId, Guid WarehouseId, decimal BaseQuantity, decimal ValueLc, decimal CostQtyAfter,
@@ -76,7 +76,7 @@ public static class StockValuation
             l.Tracking is { } k ? $"{k.TrackingNo}/{k.ExpiryDate:yyyy-MM-dd}/{k.ProductionDate:yyyy-MM-dd}/{k.SupplierRef}" : "-", l.StockStatus ?? "-", l.FromStatus ?? "-", l.ToStatus ?? "-",
             l.ToWarehouseId?.ToString("D") ?? "-", l.ToLocationId?.ToString("D") ?? "-", l.ReservationId?.ToString("D") ?? "-")));
         return MasterRules.Fingerprint("stock-documents:post",
-            $"{r.CompanyId:D}|{r.DocumentType}|{r.DocumentDate:yyyy-MM-dd}|{r.PostingDate:yyyy-MM-dd}|{r.ReasonCode}|{r.HeaderText}|{r.SourceDocumentRef}|{lines}");
+            $"{r.CompanyId:D}|{r.DocumentType}|{r.DocumentDate:yyyy-MM-dd}|{r.PostingDate:yyyy-MM-dd}|{r.ReasonCode}|{r.HeaderText}|{r.SourceDocumentRef}|{lines}" + (r.SupplierPartnerId is { } s ? $"|supplier={s:D}" : ""));
     }
 }
 

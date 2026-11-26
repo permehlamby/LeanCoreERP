@@ -994,6 +994,54 @@ public class FulfilmentTests
     }
 
     [Fact]
+    public async Task ATaxCodeWithPartialDeductionIsRejectedOnStockLinesAndLandedCostChargesAndAllowedOnServicesAndExpenseCharges()
+    {
+        var s = await SetupAsync();
+        var t = s.T;
+        var pur = await PurchaseSetupAsync(s);
+        // a second input code of the same registration that deducts half
+        Guid registration = await t.ScalarAsync<Guid>("select vat_registration_id from core.tax_code where tenant_id = @t limit 1");
+        var tax = new TaxCommands(t.App);
+        var half = await tax.CreateCodeAsync(t.TenantId, t.Context("h-c", "write.config"), new(D(("company_id", t.CompanyId), ("code", "I50"), ("description", "I50"), ("tax_type", "INPUT"), ("vat_registration_id", registration))));
+        Assert.True(half.Status == CommandStatus.Ok, Describe(half));
+        var hv = await tax.CreateVersionAsync(t.TenantId, t.Context("h-v", "write.config"), new(half.Value!.EntityId, D(("valid_from", "2026-01-01"), ("vat_account_id", pur.InputVat), ("rate", 25m), ("deductible_pct", 50m)), []));
+        Assert.True(hv.Status == CommandStatus.Ok, Describe(hv));
+        Guid code50 = half.Value.EntityId;
+        await t.ExecuteAsync($"insert into core.tax_determination_alternative (tenant_id, company_id, rule_id, valid_from, alt_tax_code_id) select tenant_id, company_id, rule_id, valid_from, '{code50}' from core.tax_determination_rule where tenant_id = @t and company_id = @c");
+
+        // a stock line with the half-deductible code is rejected, the same line with the full code is not
+        var po = await DomesticPurchaseOrderAsync(s, "po", 100, 10);
+        await ReceiveAsync(s, "r1", po, 100);
+        var rejected = await PostPurchaseInvoice(s, "i1", "SI-1", 125, new PurchaseInvoiceLineInput("L1", po.OrderId, 1, 10, 10, 100, code50, 25));
+        Assert.Equal(["ORDER.PARTIAL_DEDUCTION_NOT_SUPPORTED"], Codes(rejected));
+        Assert.Equal("/lines/0", rejected.Errors[0].Path);
+        var ok = await PostPurchaseInvoice(s, "i2", "SI-2", 125, new PurchaseInvoiceLineInput("L1", po.OrderId, 1, 10, 10, 100, pur.Code, 25));
+        Assert.True(ok.Status == CommandStatus.Ok, Describe(ok));
+
+        // a credit note on that stock line with the half-deductible code is rejected too
+        Assert.Equal(["ORDER.PARTIAL_DEDUCTION_NOT_SUPPORTED"], Codes(await PostCredit(s, "c1", "CN-1", ok.Value!.PurchaseInvoiceId, 12.5m, new PurchaseCreditLineInput("C1", 1, 10, 2.5m, code50))));
+
+        // charges: LANDED_COST is rejected, EXPENSE posts the non-deductible half as cost
+        Guid lcc = await AccountAsync(t, "PUR-LCC", "EXPENSE", "NONE");
+        await t.ExecuteAsync($"update core.gl_account set tax_code_rule = 'OPTIONAL' where tenant_id = @t and account_id = '{lcc}'");
+        Assert.Equal(CommandStatus.Ok, (await new AccountDeterminationCommands(t.App).CreateAsync(t.TenantId, t.Context("det-lcc", "write.config"),
+            new(t.CompanyId, D(("role_code", "LANDED_COST_CLEARING"), ("valid_from", "2026-01-01"), ("priority", 1), ("account_id", lcc))))).Status);
+        var commands = new PurchaseInvoiceCommands(t.App);
+        Task<CommandResult<PurchaseInvoiceResult>> Charge(string key, string number, string treatment) => commands.PostAsync(t.TenantId, Ctx(s, key, "purchase.invoice"),
+            new PostPurchaseInvoiceRequest(t.CompanyId, s.Supplier, number, new DateOnly(2026, 3, 20), "DKK", 125, [], Charges: [new PurchaseChargeInput("F1", "Freight", 100, code50, 25, treatment)]));
+        var landed = await Charge("ch1", "SI-3", "LANDED_COST");
+        Assert.Equal(["ORDER.PARTIAL_DEDUCTION_NOT_SUPPORTED"], Codes(landed));
+        var expense = await Charge("ch2", "SI-4", "EXPENSE");
+        Assert.True(expense.Status == CommandStatus.Ok, Describe(expense));
+        Assert.Equal(12.5m, await t.ScalarAsync<decimal>($"select amount_lc from core.journal_line where tenant_id = @t and document_id = '{expense.Value!.JournalDocumentId}' and line_type = 'TAX_NONDEDUCTIBLE'"));
+
+        // a service line is allowed
+        var svc = await DomesticPurchaseOrderAsync(s, "po2", 10, 500, s.Service, "HUR");
+        var service = await PostPurchaseInvoice(s, "i3", "SI-5", 625, new PurchaseInvoiceLineInput("L1", svc.OrderId, 1, 1, 500, 500, code50, 125));
+        Assert.True(service.Status == CommandStatus.Ok, Describe(service));
+    }
+
+    [Fact]
     public async Task APurchaseInvoiceForAServiceIsBookedToTheExpenseAccountWithinTheOrderQuantity()
     {
         var s = await SetupAsync();
@@ -1465,6 +1513,38 @@ public class FulfilmentTests
     }
 
     [Fact]
+    public async Task AReceiptWithoutAnOrderCanNameItsSupplierAndAnInvoiceOfAnotherSupplierDoesNotMatchIt()
+    {
+        var s = await SetupAsync();
+        var t = s.T;
+        var pur = await PurchaseSetupAsync(s);
+        var stock = new StockCommands(t.App);
+        StockLineInput Line() => new("D1", s.Item, s.Warehouse, 10, "C62", UnitPrice: 10m);
+        PostStockDocumentRequest Receipt(Guid? supplier, string type = "RECEIPT") => new(t.CompanyId, type, new DateOnly(2026, 3, 10), new DateOnly(2026, 3, 10), [Line()], SupplierPartnerId: supplier);
+
+        // the supplier is a supplier, a receipt is the only document with one
+        Assert.Equal(["CONFIG.INVALID_REFERENCE"], Codes(await stock.PostAsync(t.TenantId, Ctx(s, "sup1", "stock.post"), Receipt(s.Customer))));
+        Assert.Equal(["CONFIG.INVALID_REFERENCE"], Codes(await stock.PostAsync(t.TenantId, Ctx(s, "sup2", "stock.post"), Receipt(Guid.NewGuid()))));
+        Assert.Contains("/supplier_partner_id", (await stock.PostAsync(t.TenantId, Ctx(s, "sup3", "stock.post"), Receipt(s.Supplier, "ISSUE"))).Errors.Select(e => e.Path));
+
+        var named = await stock.PostAsync(t.TenantId, Ctx(s, "sup4", "stock.post"), Receipt(s.Supplier));
+        Assert.True(named.Status == CommandStatus.Ok, Describe(named));
+        Assert.Equal(s.Supplier, await t.ScalarAsync<Guid>($"select supplier_partner_id from core.stock_document where tenant_id = @t and stock_document_id = '{named.Value!.StockDocumentId}'"));
+        var unnamed = await stock.PostAsync(t.TenantId, Ctx(s, "sup5", "stock.post"), Receipt(null));
+        Assert.True(unnamed.Status == CommandStatus.Ok, Describe(unnamed));
+
+        // another supplier cannot invoice the receipt, the named one and the unnamed receipt are matched
+        Guid other = await PartnerAsync(t, "other-sup", "OTHER-SUP", false);
+        var wrong = await new PurchaseInvoiceCommands(t.App).PostAsync(t.TenantId, Ctx(s, "i1", "purchase.invoice"),
+            new(t.CompanyId, other, "OS-1", new DateOnly(2026, 3, 20), "DKK", 125, [DirectLine(named.Value.StockDocumentId, 10, 10, 100, pur.Code, 25)]));
+        Assert.Equal(["MATCH.NO_RECEIPT"], Codes(wrong));
+        var right = await PostPurchaseInvoice(s, "i2", "SI-1", 125, DirectLine(named.Value.StockDocumentId, 10, 10, 100, pur.Code, 25));
+        Assert.True(right.Status == CommandStatus.Ok, Describe(right));
+        var free = await PostPurchaseInvoice(s, "i3", "SI-2", 125, DirectLine(unnamed.Value!.StockDocumentId, 10, 10, 100, pur.Code, 25));
+        Assert.True(free.Status == CommandStatus.Ok, Describe(free));
+    }
+
+    [Fact]
     public async Task AnInvoiceBeforeReceiptWaitsInGrIrAndTheReceiptsCoverItAtTheInvoiceValue()
     {
         var s = await SetupAsync();
@@ -1519,6 +1599,46 @@ public class FulfilmentTests
             await t.ScalarAsync<decimal>("select coalesce(sum(covered_quantity), 0) from core.purchase_invoice_coverage where tenant_id = @t")));
         var again = await ReceiveAsync(s, "r3", po, 60, "2026-03-12");
         Assert.Equal((620m, "CLEARED"), (again.Lines[0].ValueLc ?? 0m, await ItemStatusAsync(s, inv.JournalDocumentId)));
+        foreach (string chain in new[] { "LEDGER", "CLEARING", "STOCK" })
+        {
+            var verify = await new ChainVerification(t.App).VerifyAsync(t.TenantId, t.Context("v" + chain, "chain.verify"), new(t.CompanyId, chain));
+            Assert.True(verify.Status == CommandStatus.Ok && verify.Value!.Ok, chain + " " + Describe(verify));
+        }
+    }
+
+    [Fact]
+    public async Task AMixedTwoWayLineMatchesWhatIsReceivedAndLeavesTheRestWaitingInGrIr()
+    {
+        var s = await SetupAsync();
+        var t = s.T;
+        var pur = await PurchaseSetupAsync(s);
+        await t.ExecuteAsync("insert into core.company_order_setting_version (tenant_id, company_id, effective_from, allow_invoice_before_receipt, created_by) values (@t, @c, date '2026-01-01', true, 'test')");
+        var created = await s.Orders.CreateAsync(OrderKind.Purchase, t.TenantId, Ctx(s, "po", "purchase.order"), new(
+            D(("company_id", t.CompanyId), ("order_date", "2026-03-01"), ("order_currency", "DKK"), ("supplier_partner_id", s.Supplier), ("ship_from_country", "DK")),
+            [D(("item_id", s.Item), ("quantity", 100), ("unit_code", "C62"), ("unit_price", 10), ("warehouse_id", s.Warehouse), ("match_mode", "TWO_WAY"))]));
+        Assert.True(created.Status == CommandStatus.Ok, Describe(created));
+        var po = created.Value!;
+        await ReceiveAsync(s, "r1", po, 40);   // 400 in stock and GR/IR
+        Assert.Equal((400m, -400m), (await BalanceAsync(s, s.Inventory), await BalanceAsync(s, s.GrIr)));
+
+        // 60 at 11 on one line: 40 are received (value 400, invoice value 440, difference 40 on hand), 20 are not (220 waits)
+        var r = await PostPurchaseInvoice(s, "i1", "SI-1", 825, new PurchaseInvoiceLineInput("L1", po.OrderId, 1, 60, 11, 660, pur.Code, 165));
+        Assert.True(r.Status == CommandStatus.Ok, Describe(r));
+        var inv = r.Value!;
+        Assert.Equal((440m, 220m, 2L), (await BalanceAsync(s, s.Inventory), await BalanceAsync(s, s.GrIr),
+            await t.ScalarAsync<long>($"select count(*) from core.purchase_invoice_line where tenant_id = @t and purchase_invoice_id = '{inv.PurchaseInvoiceId}'")));
+        Assert.Equal((40m, 440m, 20m, 220m), (
+            await t.ScalarAsync<decimal>($"select base_quantity from core.purchase_invoice_line where tenant_id = @t and purchase_invoice_id = '{inv.PurchaseInvoiceId}' and receipt_id is not null"),
+            await t.ScalarAsync<decimal>($"select net_amount from core.purchase_invoice_line where tenant_id = @t and purchase_invoice_id = '{inv.PurchaseInvoiceId}' and receipt_id is not null"),
+            await t.ScalarAsync<decimal>($"select base_quantity from core.purchase_invoice_line where tenant_id = @t and purchase_invoice_id = '{inv.PurchaseInvoiceId}' and receipt_id is null"),
+            await t.ScalarAsync<decimal>($"select unreceived_gr_ir_lc from core.purchase_invoice_line where tenant_id = @t and purchase_invoice_id = '{inv.PurchaseInvoiceId}' and receipt_id is null")));
+        Assert.Equal("PARTIAL", await ItemStatusAsync(s, inv.JournalDocumentId));
+        Assert.Equal(["MATCH.QUANTITY_EXCEEDS_ORDERED"], Codes(await PostPurchaseInvoice(s, "i2", "SI-2", 512.5m, new PurchaseInvoiceLineInput("L1", po.OrderId, 1, 41, 10, 410, pur.Code, 102.5m))));
+
+        // the next receipt of 20 covers the waiting part at the invoice value, and GR/IR is empty
+        var second = await ReceiveAsync(s, "r2", po, 20, "2026-03-11");
+        Assert.Equal((220m, 660m, 0m, "CLEARED"), (second.Lines[0].ValueLc ?? 0m, await BalanceAsync(s, s.Inventory), await BalanceAsync(s, s.GrIr), await ItemStatusAsync(s, inv.JournalDocumentId)));
+
         foreach (string chain in new[] { "LEDGER", "CLEARING", "STOCK" })
         {
             var verify = await new ChainVerification(t.App).VerifyAsync(t.TenantId, t.Context("v" + chain, "chain.verify"), new(t.CompanyId, chain));

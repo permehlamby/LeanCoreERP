@@ -805,6 +805,23 @@ For the resources `gl-accounts`, `business-partners` (with PII, company relation
 
 These deltas are applied in 02 and 06 with this spec.
 
+### 13.2bi Partial deduction on order-built purchase documents (F-IMPL-103, 2026-11-26)
+
+PROPOSED, written down so that spec and code agree. It builds on 11, 7.2, 7.3, 19, 10 and ADR-206. No migration.
+
+1. **Built.** `ORDER.PARTIAL_DEDUCTION_NOT_SUPPORTED` (P4, path `/lines/{index}`) in `purchase-invoices:post` and `purchase-credit-notes:post`: the tax plan of the document has a tax line with `deductible_pct` below 100, a deduction key or a cap, and one of its base lines is a stock line or a LANDED_COST charge.
+2. **Choices.** The check runs on the planned tax lines under the locks, so a determined code and a named code are treated alike. The pipeline's `LIMIT.PARTIAL_DEDUCTION_NOT_BUILT` on such a line is renamed to the order code. Service, non-stock and EXPENSE lines are not restricted.
+3. **Not built.** The non-deductible part in the cost layer (19, 10).
+
+### 13.2bh Order management, supplier of a direct receipt, mixed two-way line, chain range (F-IMPL-100 to 102, 2026-11-26)
+
+PROPOSED, written down so that spec and code agree. It builds on 11, 7.1, 7.2, 5.5 and on 13.2ae, 13.2ak, 13.2an and 02, 9.6.
+
+1. **Supplier of a direct receipt (F-IMPL-100).** Migration 0061: `stock_document.supplier_partner_id` (nullable, a reference outside the row hash like `header_text`, only on STOCK_RECEIPT, foreign key to the partner). `stock-documents:post` takes an optional `supplier_partner_id` on a RECEIPT: the partner must be a supplier (`CONFIG.INVALID_REFERENCE`), not restricted (`MASTER.PARTNER_RESTRICTED`), and a document of another type with a supplier is `SCHEMA.INVALID_VALUE`. `purchase-invoices:post` rejects a line with `receipt_ref` whose receipt names another supplier than the invoice with `MATCH.NO_RECEIPT` (reason "another supplier"). A receipt posted without a supplier cannot be checked and is matched as before.
+2. **Mixed TWO_WAY line (F-IMPL-101).** An order line with `match_mode` TWO_WAY that is partly received is no longer `LIMIT.INVOICE_TWO_WAY_MIXED_NOT_BUILT`. The quantity that is received and not invoiced (net of coverage) is matched to the oldest or the named receipt lines as a THREE_WAY line; the rest gets a link row of its own with no receipt and `unreceived_gr_ir_lc` set. The journal keeps one main line with the whole net value: the clearing against the GR/IR credits of the receipts clears the main item only by the value of the received part (status PARTIAL), so the part that waits stays an open GR/IR debit that a later receipt covers at the invoice value (7.1), exactly as for a line that is wholly waiting. THREE_WAY lines and direct receipts still reject a quantity beyond what is received (`MATCH.QUANTITY_EXCEEDS_RECEIVED`).
+3. **Range of `chains:verify` (F-IMPL-102).** `from_seq` and `to_seq` are accepted for all chain types. Deviation from 02, 9.6: the chain is recomputed from its start (the verifiers read a whole chain), and the answer keeps the breaks whose `chain_seq` lies in the range; a break without a sequence number (head, count) is kept only when the range runs to the end of the chain, and `checked` is the number of records of the range. `LIMIT.CHAIN_RANGE_NOT_BUILT` is gone. The cost of a range is that of a whole chain.
+4. **Not built from 11.** Foreign currency on supplier invoices, credit notes and receipts (`LIMIT.INVOICE_FOREIGN_CURRENCY_NOT_BUILT`, `LIMIT.STOCK_FOREIGN_CURRENCY_NOT_BUILT`), a credit note across several invoices (the header and `credits_invoice_id` name one invoice), partial deduction on order-built stock lines (`ORDER.PARTIAL_DEDUCTION_NOT_SUPPORTED`, ADR-206), dropship confirmations, address snapshots (`order_address_snapshot`) and reservations in the order flows (`auto_reserve`).
+
 ### 13.2bg Landed costs (F-IMPL-99, 2026-11-26)
 
 PROPOSED, written down so that spec and code agree. It builds on 10, 4.7, 6.6 and 6.8.

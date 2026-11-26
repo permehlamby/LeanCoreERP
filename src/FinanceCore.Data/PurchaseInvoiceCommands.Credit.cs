@@ -244,12 +244,14 @@ public sealed partial class PurchaseInvoiceCommands
 
         // the finance document: credit lines (negative) with the tax facts, the difference lines of a stock line, and the payable that the pipeline balances
         var lines = new List<RequestLine>();
+        var restricted = new HashSet<int>();   // the journal lines (0-based) of stock lines: no partial deduction (11, 7.3)
         foreach (CreditWork w in work)
         {
             PurchaseCreditLineInput l = w.Input;
             lines.Add(new RequestLine(l.LineRef, w.Account, -l.CreditAmountNet, TaxClassId: w.Line.TaxClassId, TaxDate: req.CreditDate, OriginCountry: w.Line.Origin, DestinationCountry: w.Line.Destination,
                 TaxCodeId: l.TaxCodeId ?? w.Row.TaxCodeId, TaxAmountTc: -l.TaxAmount, OpenItem: w.Stock ? new OpenItemRequest(null, req.CreditDate) : null));
             w.Main = lines.Count;
+            if (w.Stock) restricted.Add(lines.Count - 1);
             if (!w.Stock) continue;
             if (w.AdjustAmount != 0m)
             {
@@ -306,6 +308,7 @@ public sealed partial class PurchaseInvoiceCommands
         StockDraft? stockDraft = null;
         async Task<byte[]?> DetailAsync(JournalDocumentPoster.EmbeddedFacts facts)
         {
+            RejectPartialDeduction(facts, restricted);
             byte[] link = DigestOf(facts);
             if (stockId is null) return link;
             var adjustments = work.Where(w => w.OnHand != 0m).Select(w => new AdjItem(w.Line.ItemId, w.Warehouse!.Value, w.Location, -w.OnHand, w.Input.LineRef)).ToList();
@@ -346,7 +349,7 @@ public sealed partial class PurchaseInvoiceCommands
 
         var embedding = new JournalDocumentPoster.PostEmbedding(CreditCommandName, "ORDER", ApRef, null, WriteLog: false, Commit: false, AfterAsync, journalId, DetailAsync);
         var postedResult = await _poster.PostCoreAsync(tx, tenantId, ctx, journal, fingerprint, embedding, ct);
-        if (postedResult.Status != CommandStatus.Ok) return CommandResult<PurchaseCreditNoteResult>.Rejected(postedResult.Errors.ToList());
+        if (postedResult.Status != CommandStatus.Ok) return CommandResult<PurchaseCreditNoteResult>.Rejected(MapPartialDeduction(postedResult.Errors, restricted));
         PostedDocument doc = postedResult.Value!;
         var result = new PurchaseCreditNoteResult(creditId, doc.DocumentId, doc.DocumentNumber, req.CreditKind, work.Sum(w => w.Input.CreditAmountNet), taxTotal, gross, doc.RowHash,
             work.Select((w, k) => new PurchaseCreditLineResult(k + 1, w.Input.LineRef, w.Input.InvoiceLineNo, w.Input.CreditAmountNet, w.Input.TaxAmount!.Value, w.Main, w.OnHand, w.Consumed)).ToList(), stockId);

@@ -1,6 +1,6 @@
 namespace FinanceCore.Core.Chains;
 
-/// <summary>Payload of chains:verify (06, 7.4). The slice verifies the whole chain: <c>from_seq</c> and <c>to_seq</c> are refused (LIMIT.CHAIN_RANGE_NOT_BUILT).</summary>
+/// <summary>Payload of chains:verify (06, 7.4). <c>from_seq</c> and <c>to_seq</c> limit the answer to a range of sequence numbers.</summary>
 public sealed record VerifyChainRequest(Guid CompanyId, string ChainType, string? ScopeKey = null, long? FromSeq = null, long? ToSeq = null);
 
 /// <summary>One break found by the verification. The kind is one of 06, 7.4 (hash, link, gap, balance, number_continuity, s_column_mismatch, digest_mismatch)

@@ -7,7 +7,7 @@ namespace FinanceCore.Data;
 /// <summary>
 /// chains:verify (06, 7.4, permission chain.verify): read-only, it writes no event, no run record and no command_log entry. It recomputes the chain with the
 /// verifier of the library and answers OK or the breaks with the first broken sequence number. A chain with breaks is a successful command: the breaks
-/// are the result. The slice verifies LEDGER, CLEARING, PERIOD_EVENT and VAT_RETURN, whole chains only.
+/// are the result. All six chain types are verified. A range (from_seq, to_seq) is answered from the whole recomputation and keeps the breaks inside the range.
 /// </summary>
 public sealed class ChainVerification(NpgsqlDataSource source)
 {
@@ -27,8 +27,6 @@ public sealed class ChainVerification(NpgsqlDataSource source)
         if (req.ScopeKey is { Length: > 100 }) errors.Add(Invalid("scope_key", "at most 100 characters"));
         if (req.FromSeq is < 1 || req.ToSeq is < 1 || req is { FromSeq: { } f, ToSeq: { } t } && f > t) errors.Add(Invalid("from_seq", "a range of sequence numbers from 1, from not after to"));
         if (errors.Count > 0) return CommandResult<ChainVerificationResult>.Rejected(errors);
-        if (req.FromSeq is not null || req.ToSeq is not null)
-            return Reject(new CommandError("LIMIT.CHAIN_RANGE_NOT_BUILT", "P1", req.FromSeq is not null ? "from_seq" : "to_seq"));
         if (!ChainRules.BuiltChainTypes.Contains(req.ChainType))
             return Reject(new CommandError("LIMIT.CHAIN_TYPE_NOT_BUILT", "P1", "chain_type", new Dictionary<string, object?> { ["allowed_values"] = ChainRules.BuiltChainTypes }));
 
@@ -65,11 +63,21 @@ public sealed class ChainVerification(NpgsqlDataSource source)
             "FULFILMENT" => await verifier.VerifyFulfilmentAsync(tenantId, req.CompanyId, ct),
             _ => await verifier.VerifyPeriodEventsAsync(tenantId, req.CompanyId, ct)
         };
-        var breaks = result.Problems.Select(p => new ChainBreak(ChainRules.KindOf(p.Code), p.Code, p.ChainSeq, p.Detail)).ToList();
+        // a range (02, 9.6): the chain is recomputed from its start, so a break is found whatever the range, and the answer keeps what lies in the range. A break with no sequence
+        // number belongs to the chain as a whole (the head, the count) and is kept only when the range runs to the end of the chain.
+        long total = result.DocumentsChecked, checkedCount = total;
+        IEnumerable<VerificationProblem> problems = result.Problems;
+        if (req.FromSeq is not null || req.ToSeq is not null)
+        {
+            long from = req.FromSeq ?? 1, to = req.ToSeq ?? long.MaxValue;
+            problems = problems.Where(p => p.ChainSeq is { } s ? s >= from && s <= to : to >= total);
+            checkedCount = Math.Max(0, Math.Min(to, total) - from + 1);
+        }
+        var breaks = problems.Select(p => new ChainBreak(ChainRules.KindOf(p.Code), p.Code, p.ChainSeq, p.Detail)).ToList();
         long? first = breaks.Where(b => b.ChainSeq is not null).Select(b => b.ChainSeq).Min();
         // read-only: no command_log entry, so no id
         return new CommandResult<ChainVerificationResult>(CommandStatus.Ok,
-            new ChainVerificationResult(req.ChainType, ledgerId?.ToString("D") ?? "", breaks.Count == 0, result.DocumentsChecked, first, breaks), [], [], false, null);
+            new ChainVerificationResult(req.ChainType, ledgerId?.ToString("D") ?? "", breaks.Count == 0, checkedCount, first, breaks), [], [], false, null);
     }
 
     private static CommandError Invalid(string path, string reason) =>

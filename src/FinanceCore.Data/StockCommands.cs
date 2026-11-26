@@ -82,6 +82,7 @@ public sealed partial class StockCommands(NpgsqlDataSource source)
         if (req.CompanyId == Guid.Empty) Invalid("/company_id", "required");
         if (!StockValuation.DocumentTypes.Contains(req.DocumentType)) Invalid("/document_type", string.Join(", ", StockValuation.DocumentTypes));
         if (req.ReasonCode is { } rc && (rc.Length == 0 || rc.Length > 50)) Invalid("/reason_code", "1 to 50 characters");
+        if (req.SupplierPartnerId is { } sp && (sp == Guid.Empty || req.DocumentType != "RECEIPT")) Invalid("/supplier_partner_id", "the supplier of a receipt, only a receipt has one (11, 7.2)");
         if (req.Lines is null or { Count: 0 }) errors.Add(Error("SCHEMA.REQUIRED_FIELD_MISSING", "P1", "/lines"));
         for (int i = 0; i < (req.Lines?.Count ?? 0); i++)
         {
@@ -214,6 +215,14 @@ public sealed partial class StockCommands(NpgsqlDataSource source)
         if (company is null) return Reject(Error("CONFIG.INVALID_REFERENCE", "P2", "/company_id", ("company_id", companyId)));
         if (company.Status != "ACTIVE") return Reject(Error("COMPANY.NOT_ACTIVE", "P2", "/company_id", ("status", company.Status)));
         var errors = new List<CommandError>();
+        if (req.SupplierPartnerId is { } supplierId)
+        {
+            await using var cmd = tx.Command("select is_supplier, restriction_status from core.business_partner where tenant_id = @t and partner_id = @p");
+            cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("p", supplierId);
+            await using var r = await cmd.ExecuteReaderAsync(ct);
+            if (!await r.ReadAsync(ct) || !r.GetBoolean(0)) return Reject(Error("CONFIG.INVALID_REFERENCE", "P2", "/supplier_partner_id", ("partner_id", supplierId), ("reason", "not a supplier")));
+            if (r.GetString(1).Trim() == "RESTRICTED") return Reject(Error("MASTER.PARTNER_RESTRICTED", "P2", "/supplier_partner_id", ("partner_id", supplierId)));
+        }
 
         // P2: the items, warehouses, locations, tracking rows and units
         var items = new Dictionary<Guid, ItemRow>();
@@ -389,9 +398,10 @@ public sealed partial class StockCommands(NpgsqlDataSource source)
         await using (var cmd = tx.Command(
             "insert into core.stock_document (tenant_id, company_id, stock_document_id, document_type, number_series_id, fiscal_year, sequence_no, document_number, fiscal_period, document_date, " +
             "posting_date, posted_at, reason_code, journal_document_id, soft_close_override, currency_tc, source_system, source_document_ref, idempotency_key, command_name, posted_by, correlation_id, " +
-            "header_text, movement_count, detail_digest, movement_digest, chain_seq, prev_hash, row_hash, hash_version) values (@t, @c, @id, @type, @s, @fy, @seq, @num, @fp, @dd, @pd, @at, @reason, @j, @soft, @tc, " +
-            "@src, @ref, @key, @cmdname, @by, @corr, @text, @n, @dd2, @md, @cs, @prev, @row, 2)"))
+            "header_text, movement_count, detail_digest, movement_digest, chain_seq, prev_hash, row_hash, hash_version, supplier_partner_id) values (@t, @c, @id, @type, @s, @fy, @seq, @num, @fp, @dd, @pd, @at, @reason, @j, @soft, @tc, " +
+            "@src, @ref, @key, @cmdname, @by, @corr, @text, @n, @dd2, @md, @cs, @prev, @row, 2, @sup)"))
         {
+            cmd.Parameters.Add(new NpgsqlParameter("sup", NpgsqlDbType.Uuid) { Value = (object?)req.SupplierPartnerId ?? DBNull.Value });
             cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("c", companyId); cmd.Parameters.AddWithValue("id", stockId); cmd.Parameters.AddWithValue("type", stockType);
             cmd.Parameters.AddWithValue("s", docSeries.SeriesId); cmd.Parameters.AddWithValue("fy", fiscalYear); cmd.Parameters.AddWithValue("seq", sequenceNo); cmd.Parameters.AddWithValue("num", number);
             cmd.Parameters.AddWithValue("fp", periodNo); cmd.Parameters.AddWithValue("dd", req.DocumentDate); cmd.Parameters.AddWithValue("pd", req.PostingDate);
