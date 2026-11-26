@@ -150,7 +150,6 @@ public sealed partial class PurchaseInvoiceCommands
                 return Fail(Error("SCHEMA.INVALID_VALUE", "P2", "/lines", ("reason", "the invoices of one credit note have one supplier and one currency")));
             supplier = invoiceSupplier; currency = invoiceCurrency;
         }
-        if (currency != company.LocalCurrency) return Fail(Error("LIMIT.INVOICE_FOREIGN_CURRENCY_NOT_BUILT", "P2", "/purchase_invoice_id", ("currency", currency), ("local_currency", company.LocalCurrency)));
 
         // the rows of the invoices, then position 1 of the lock order: the order rows, sorted
         var rows = new Dictionary<(Guid, int), InvoiceRow>();
@@ -253,6 +252,8 @@ public sealed partial class PurchaseInvoiceCommands
             work.Add(w);
         }
         if (errors.Count > 0) return CommandResult<PurchaseCreditNoteResult>.Rejected(errors);
+        if (currency != company.LocalCurrency && work.Any(w => w.Stock))
+            return Fail(Error("LIMIT.INVOICE_FOREIGN_CURRENCY_NOT_BUILT", "P2", "/purchase_invoice_id", ("currency", currency), ("local_currency", company.LocalCurrency), ("reason", "a stock line in a foreign currency")));
 
         // the finance document: credit lines (negative) with the tax facts, the difference lines of a stock line, and the payable that the pipeline balances
         var lines = new List<RequestLine>();

@@ -805,6 +805,14 @@ For the resources `gl-accounts`, `business-partners` (with PII, company relation
 
 These deltas are applied in 02 and 06 with this spec.
 
+### 13.2bn Foreign currency on supplier invoices and credit notes, first slice (F-IMPL-108, 2026-11-26)
+
+PROPOSED, written down so that spec and code agree. It builds on 11, 7.2, 7.3, A2 and ADR-019. No migration.
+
+1. **Built.** Supplier invoices and credit notes in the currency of the order for lines without stock: service and non-stock lines, EXPENSE charges.
+2. **Choices.** The journal is in the invoice currency, the pipeline converts at the rate of the invoice date. The check of the currency of the matched orders stays.
+3. **Not built.** Stock lines, direct receipts and landed cost in a foreign currency, receipts of foreign-currency purchase orders, the realised exchange difference at the GR/IR clearing of the order commands.
+
 ### 13.2bm Reservations in the order flows (F-IMPL-107, 2026-11-26)
 
 PROPOSED, written down so that spec and code agree. It builds on 11, 3.1, 4.4, 6.2, 6.3, 10, 4.5 and 13.2bf.

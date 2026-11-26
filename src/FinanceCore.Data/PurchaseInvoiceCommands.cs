@@ -182,7 +182,6 @@ public sealed partial class PurchaseInvoiceCommands(NpgsqlDataSource source)
         // an invoice of direct receipts only has no order to take the currency and the terms from
         var (_, supplier, currency, terms) = orders.Count > 0 ? orders.Values.First() : ("", req.SupplierPartnerId, req.Currency, (Guid?)null);
         if (req.Currency != currency) return Reject(Error("SCHEMA.INVALID_VALUE", "P2", "/currency", ("reason", "the currency of the invoice equals the order currency of the matched lines (7.2)"), ("order_currency", currency)));
-        if (currency != company.LocalCurrency) return Reject(Error("LIMIT.INVOICE_FOREIGN_CURRENCY_NOT_BUILT", "P2", "/currency", ("currency", currency), ("local_currency", company.LocalCurrency)));
         await using (var cmd = tx.Command("select restriction_status from core.business_partner where tenant_id = @t and partner_id = @p"))
         {
             cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("p", supplier);
@@ -323,6 +322,10 @@ public sealed partial class PurchaseInvoiceCommands(NpgsqlDataSource source)
             work.Add(new Work(i, l, ol, mode, links, account.AccountId, stock));
         }
         if (errors.Count > 0) return CommandResult<PurchaseInvoiceResult>.Rejected(errors);
+        // 7.2, A2: an invoice is in the order currency and the rate of the invoice date applies through the pipeline. A stock line or a LANDED_COST charge needs the stock valuation in a foreign
+        // currency (10, 4.2: the receipt and the GR/IR item in the transaction currency, the realised difference at the clearing), which is not built.
+        if (currency != company.LocalCurrency && (work.Any(w => w.Stock) || (req.Charges ?? []).Any(c => c.Treatment == "LANDED_COST")))
+            return Reject(Error("LIMIT.INVOICE_FOREIGN_CURRENCY_NOT_BUILT", "P2", "/currency", ("currency", currency), ("local_currency", company.LocalCurrency), ("reason", "a stock line or a landed cost charge in a foreign currency")));
 
         // the receipt value R of every link, from the GR/IR items as they stand now (read again under the locks, in the callbacks below), and the difference to the invoice value (7.2)
         var plan = new MatchPlan();

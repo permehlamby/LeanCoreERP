@@ -1125,6 +1125,60 @@ public class FulfilmentTests
     }
 
     [Fact]
+    public async Task ASupplierInvoiceAndCreditNoteOfAServiceCanBeInAForeignCurrencyAndAStockLineOrLandedCostCannot()
+    {
+        var s = await SetupAsync();
+        var t = s.T;
+        await t.ExecuteAsync("insert into core.exchange_rate (tenant_id, rate_type, from_currency, to_currency, valid_from, rate) values (@t, 'SPOT', 'USD', 'DKK', date '2026-03-20', 7.0), (@t, 'SPOT', 'USD', 'EUR', date '2026-03-20', 0.9), (@t, 'SPOT', 'USD', 'DKK', date '2026-03-25', 7.0), (@t, 'SPOT', 'USD', 'EUR', date '2026-03-25', 0.9)");
+        var pur = await PurchaseSetupAsync(s);
+        var created = await s.Orders.CreateAsync(OrderKind.Purchase, t.TenantId, Ctx(s, "po-usd", "purchase.order"), new(
+            D(("company_id", t.CompanyId), ("order_date", "2026-03-01"), ("order_currency", "USD"), ("supplier_partner_id", s.Supplier), ("ship_from_country", "DK")),
+            [D(("item_id", s.Service), ("quantity", 10), ("unit_code", "HUR"), ("unit_price", 500), ("destination_country", "DK"))]));
+        Assert.True(created.Status == CommandStatus.Ok, Describe(created));
+        var po = created.Value!;
+        var commands = new PurchaseInvoiceCommands(t.App);
+        Task<CommandResult<PurchaseInvoiceResult>> Invoice(string key, string number, string currency, decimal gross, PurchaseInvoiceLineInput[] lines, params PurchaseChargeInput[] charges) =>
+            commands.PostAsync(t.TenantId, Ctx(s, key, "purchase.invoice"), new PostPurchaseInvoiceRequest(t.CompanyId, s.Supplier, number, new DateOnly(2026, 3, 20), currency, gross, lines, Charges: charges));
+
+        // the currency of the invoice is the currency of the order
+        Assert.Equal(["SCHEMA.INVALID_VALUE"], Codes(await Invoice("i0", "SI-0", "DKK", 8750, [new PurchaseInvoiceLineInput("L1", po.OrderId, 1, 2, 500, 1000, pur.Code, 250)])));
+
+        // 2 hours at 500 USD: 1000 net and 250 tax in USD, in local currency at 7.0 (the rate of the invoice date)
+        var r = await Invoice("i1", "SI-1", "USD", 1250, [new PurchaseInvoiceLineInput("L1", po.OrderId, 1, 2, 500, 1000, pur.Code, 250)]);
+        Assert.True(r.Status == CommandStatus.Ok, Describe(r));
+        var m = r.Value!;
+        Assert.Equal("USD", await t.ScalarAsync<string>($"select transaction_currency from core.journal_document where tenant_id = @t and document_id = '{m.JournalDocumentId}'"));
+        Assert.Equal((1000m, 7000m, -1250m, -8750m), (
+            await t.ScalarAsync<decimal>($"select amount_tc from core.journal_line where tenant_id = @t and document_id = '{m.JournalDocumentId}' and account_id = '{pur.Expense}'"),
+            await t.ScalarAsync<decimal>($"select amount_lc from core.journal_line where tenant_id = @t and document_id = '{m.JournalDocumentId}' and account_id = '{pur.Expense}'"),
+            await t.ScalarAsync<decimal>($"select amount_tc from core.journal_line where tenant_id = @t and document_id = '{m.JournalDocumentId}' and account_id = '{pur.Payable}'"),
+            await t.ScalarAsync<decimal>($"select amount_lc from core.journal_line where tenant_id = @t and document_id = '{m.JournalDocumentId}' and account_id = '{pur.Payable}'")));
+        Assert.Equal("USD", await t.ScalarAsync<string>($"select currency from core.purchase_invoice where tenant_id = @t and purchase_invoice_id = '{m.PurchaseInvoiceId}'"));
+
+        // a credit note takes the currency of the invoice
+        var credit = await PostCredit(s, "c1", "CN-1", m.PurchaseInvoiceId, 250, new PurchaseCreditLineInput("C1", 1, 200, 50));
+        Assert.True(credit.Status == CommandStatus.Ok, Describe(credit));
+        Assert.Equal((200m, 1400m), (
+            await t.ScalarAsync<decimal>($"select -amount_tc from core.journal_line where tenant_id = @t and document_id = '{credit.Value!.JournalDocumentId}' and account_id = '{pur.Expense}'"),
+            await t.ScalarAsync<decimal>($"select -amount_lc from core.journal_line where tenant_id = @t and document_id = '{credit.Value.JournalDocumentId}' and account_id = '{pur.Expense}'")));
+        Assert.Equal(["ORDER.CREDIT_EXCEEDS_INVOICED"], Codes(await PostCredit(s, "c2", "CN-2", m.PurchaseInvoiceId, 1125, new PurchaseCreditLineInput("C1", 1, 900, 225))));
+
+        // the reversals mirror the documents in their currency
+        Assert.Equal(CommandStatus.Ok, (await ReverseCredit(s, "rc", credit.Value.CreditNoteId)).Status);
+        var rev = await ReversePurchaseInvoice(s, "rv", m.PurchaseInvoiceId);
+        Assert.True(rev.Status == CommandStatus.Ok, Describe(rev));
+
+        // a charge for landed cost needs the stock valuation in the foreign currency
+        var landed = await Invoice("i2", "SI-2", "USD", 125, [], new PurchaseChargeInput("F1", "Freight", 100, pur.Code, 25, "LANDED_COST"));
+        Assert.Equal(["LIMIT.INVOICE_FOREIGN_CURRENCY_NOT_BUILT"], Codes(landed));
+        foreach (string chain in new[] { "LEDGER", "CLEARING" })
+        {
+            var verify = await new ChainVerification(t.App).VerifyAsync(t.TenantId, t.Context("v" + chain, "chain.verify"), new(t.CompanyId, chain));
+            Assert.True(verify.Status == CommandStatus.Ok && verify.Value!.Ok, chain + " " + Describe(verify));
+        }
+    }
+
+    [Fact]
     public async Task ACreditNoteCanCreditLinesOfSeveralInvoicesOfOneSupplier()
     {
         var s = await SetupAsync();
