@@ -83,7 +83,7 @@ public sealed record ReversedPurchaseInvoice(Guid PurchaseInvoiceId, Guid Revers
 // ---- purchase-credit-notes:post (11, 7.3, permission purchase.invoice), first slice: the amount credit (a price correction or goodwill, no quantity) against the lines of one invoice.
 /// <summary>One credit line: the invoice line it credits (a link row of the invoice), the net amount and the supplier's tax for it; the tax code defaults to that of the invoice line.</summary>
 /// <summary>For a return credit the line also names the purchase return line it credits and the quantity (base units) of the goods returned; the net amount and the tax are the supplier's.</summary>
-public sealed record PurchaseCreditLineInput(string LineRef, int InvoiceLineNo, decimal CreditAmountNet, decimal? TaxAmount, Guid? TaxCodeId = null, Guid? ReturnId = null, int? ReturnLineNo = null, decimal? Quantity = null);
+public sealed record PurchaseCreditLineInput(string LineRef, int InvoiceLineNo, decimal CreditAmountNet, decimal? TaxAmount, Guid? TaxCodeId = null, Guid? ReturnId = null, int? ReturnLineNo = null, decimal? Quantity = null, Guid? PurchaseInvoiceId = null);
 
 public sealed record PostPurchaseCreditNoteRequest(
     Guid CompanyId, Guid PurchaseInvoiceId, string CreditKind, string SupplierCreditNoteNumber, DateOnly CreditDate, decimal GrossAmount, string ReasonCode, IReadOnlyList<PurchaseCreditLineInput> Lines,
@@ -100,7 +100,7 @@ public static class PurchaseCreditRules
     public static readonly string[] Kinds = ["RETURN", "AMOUNT"];
 
     /// <summary>The L1 columns of a credit line: those of an invoice line and the credited invoice line and the return line (6.9).</summary>
-    public static readonly IReadOnlyList<FieldSpec> Line = [.. PurchaseInvoiceRules.Line, new("credits_invoice_line_no", FieldType.Int, true), new("return_id", FieldType.Id, true), new("return_line_no", FieldType.Int, true)];
+    public static readonly IReadOnlyList<FieldSpec> Line = [.. PurchaseInvoiceRules.Line, new("credits_invoice_line_no", FieldType.Int, true), new("return_id", FieldType.Id, true), new("return_line_no", FieldType.Int, true), new("credits_purchase_invoice_id", FieldType.Id, true)];
 
     public static byte[] Digest(IReadOnlyDictionary<string, object?> header, IReadOnlyList<IReadOnlyDictionary<string, object?>> linesInOrder)
     {
@@ -114,7 +114,7 @@ public static class PurchaseCreditRules
         MasterRules.Fingerprint("purchase-credit-notes:post", $"{r.CompanyId:D}|{r.PurchaseInvoiceId:D}|{r.CreditKind}|{r.SupplierCreditNoteNumber}|{r.CreditDate:yyyy-MM-dd}|{r.PostingDate:yyyy-MM-dd}|{r.DueDate:yyyy-MM-dd}|" +
             $"{r.GrossAmount.ToString(CultureInfo.InvariantCulture)}|{r.ReasonCode}|{r.SourceDocumentRef}|" + string.Join("#", r.Lines.Select(l =>
                 string.Join("|", l.LineRef, l.InvoiceLineNo, l.CreditAmountNet.ToString(CultureInfo.InvariantCulture), l.TaxAmount?.ToString(CultureInfo.InvariantCulture) ?? "-", l.TaxCodeId?.ToString("D") ?? "-", l.ReturnId?.ToString("D") ?? "-", l.ReturnLineNo?.ToString(CultureInfo.InvariantCulture) ?? "-",
-                l.Quantity?.ToString(CultureInfo.InvariantCulture) ?? "-"))));
+                l.Quantity?.ToString(CultureInfo.InvariantCulture) ?? "-", l.PurchaseInvoiceId?.ToString("D") ?? "-"))));
 }
 
 // ---- purchase-credit-notes:reverse (11, 7.3, permission purchase.invoice): the owning command of an order-built AP_CREDIT, its cost adjustment and the clearing of its GR/IR pair. posting_date defaults to the posting date of the credit note.

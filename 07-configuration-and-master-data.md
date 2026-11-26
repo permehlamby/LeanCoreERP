@@ -805,6 +805,13 @@ For the resources `gl-accounts`, `business-partners` (with PII, company relation
 
 These deltas are applied in 02 and 06 with this spec.
 
+### 13.2bj Credit note across several invoices (F-IMPL-104, 2026-11-26)
+
+PROPOSED, written down so that spec and code agree. It builds on 11, 7.3 and 13.2ah.
+
+1. **Built.** Migration 0062: `purchase_invoice_line.credits_purchase_invoice_id`. `PurchaseCreditLineInput.purchase_invoice_id` (optional, default the invoice of the command). One credit note credits lines of several invoices of one supplier and currency; caps per invoice line; the invoice reversal and the credit note reversal follow.
+2. **Choices.** The header `credits_invoice_id` stays the invoice named in the command. Rows before 0062 have no line value and count for the header's invoice.
+
 ### 13.2bi Partial deduction on order-built purchase documents (F-IMPL-103, 2026-11-26)
 
 PROPOSED, written down so that spec and code agree. It builds on 11, 7.2, 7.3, 19, 10 and ADR-206. No migration.

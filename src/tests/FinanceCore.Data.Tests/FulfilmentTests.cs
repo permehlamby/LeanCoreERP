@@ -994,6 +994,38 @@ public class FulfilmentTests
     }
 
     [Fact]
+    public async Task ACreditNoteCanCreditLinesOfSeveralInvoicesOfOneSupplier()
+    {
+        var s = await SetupAsync();
+        var t = s.T;
+        var pur = await PurchaseSetupAsync(s);
+        var po = await DomesticPurchaseOrderAsync(s, "po", 10, 500, s.Service, "HUR");
+        var a = await PostPurchaseInvoice(s, "i1", "SI-1", 1250, new PurchaseInvoiceLineInput("L1", po.OrderId, 1, 2, 500, 1000, pur.Code, 250));
+        var b = await PostPurchaseInvoice(s, "i2", "SI-2", 1250, new PurchaseInvoiceLineInput("L1", po.OrderId, 1, 2, 500, 1000, pur.Code, 250));
+        Assert.True(a.Status == CommandStatus.Ok && b.Status == CommandStatus.Ok, Describe(a) + Describe(b));
+        Guid idA = a.Value!.PurchaseInvoiceId, idB = b.Value!.PurchaseInvoiceId;
+
+        // 100 of invoice A and 200 of invoice B on one credit note; the header names A
+        var r = await PostCredit(s, "c1", "CN-1", idA, 375, new PurchaseCreditLineInput("C1", 1, 100, 25), new PurchaseCreditLineInput("C2", 1, 200, 50, PurchaseInvoiceId: idB));
+        Assert.True(r.Status == CommandStatus.Ok, Describe(r));
+        Assert.Equal((300m, -375m), (r.Value!.NetAmount, -await SumOfAsync(s, r.Value.JournalDocumentId, pur.Payable)));
+        Assert.Equal(new[] { idA, idB }, (await t.ScalarAsync<Guid[]>($"select array_agg(credits_purchase_invoice_id order by line_no) from core.purchase_invoice_line where tenant_id = @t and purchase_invoice_id = '{r.Value.CreditNoteId}'")));
+
+        // the caps are per invoice line: A has 900 left, B has 800
+        Assert.Equal(["ORDER.CREDIT_EXCEEDS_INVOICED"], Codes(await PostCredit(s, "c2", "CN-2", idA, 1125.01m, new PurchaseCreditLineInput("C1", 1, 900.01m, 225))));
+        Assert.Equal(CommandStatus.Ok, (await PostCredit(s, "c3", "CN-3", idA, 1000, new PurchaseCreditLineInput("C1", 1, 800, 200, PurchaseInvoiceId: idB))).Status);
+        Assert.Equal(["ORDER.CREDIT_EXCEEDS_INVOICED"], Codes(await PostCredit(s, "c4", "CN-4", idA, 125, new PurchaseCreditLineInput("C1", 1, 100, 25, PurchaseInvoiceId: idB))));
+
+        // an invoice named only on a line is protected by the credit note, and both invoices are reversed after it is
+        Assert.Equal(["ORDER.INVOICE_HAS_CREDIT_NOTES"], Codes(await ReversePurchaseInvoice(s, "rev1", idB)));
+        Assert.Equal(["CONFIG.INVALID_REFERENCE"], Codes(await PostCredit(s, "c5", "CN-5", idA, 125, new PurchaseCreditLineInput("C1", 1, 100, 25, PurchaseInvoiceId: Guid.NewGuid()))));
+        var rc = await ReverseCredit(s, "revc", r.Value.CreditNoteId);
+        Assert.True(rc.Status == CommandStatus.Ok, Describe(rc));
+        // the reversal gives the quantity back: 100 more of invoice A and 200 of B are creditable again
+        Assert.Equal(CommandStatus.Ok, (await PostCredit(s, "c6", "CN-6", idA, 125, new PurchaseCreditLineInput("C1", 1, 100, 25, PurchaseInvoiceId: idA))).Status);
+    }
+
+    [Fact]
     public async Task ATaxCodeWithPartialDeductionIsRejectedOnStockLinesAndLandedCostChargesAndAllowedOnServicesAndExpenseCharges()
     {
         var s = await SetupAsync();

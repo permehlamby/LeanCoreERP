@@ -23,7 +23,7 @@ public sealed partial class PurchaseInvoiceCommands
 
     private sealed record PurchaseLink(
         int LineNo, Guid? OrderId, int? OrderLineNo, Guid? ReceiptId, int? ReceiptLineNo, decimal BaseQuantity, decimal UnitPrice, decimal Net, decimal Tax, decimal? OrderUnitPrice, string? MatchMode,
-        decimal? Tolerance, decimal Diff, decimal OnHand, decimal Consumed, Guid? TaxCodeId, Guid? TaxCodeVersionId, DateOnly? TaxDate, int JournalLineNo, int? CreditsLineNo, Guid? StockDocId, int? StockLine, string LineKind, string? Description, string? Treatment, Guid? ReturnId, int? ReturnLine);
+        decimal? Tolerance, decimal Diff, decimal OnHand, decimal Consumed, Guid? TaxCodeId, Guid? TaxCodeVersionId, DateOnly? TaxDate, int JournalLineNo, int? CreditsLineNo, Guid? StockDocId, int? StockLine, string LineKind, string? Description, string? Treatment, Guid? ReturnId, int? ReturnLine, Guid? CreditsInvoiceId = null);
 
     /// <summary>What differs between the reversal of an invoice and that of a credit note: the kind of the original, the command, the type of the mirror journal document.</summary>
     private sealed record ReverseKind(string Expected, string Command, string MirrorType, bool Credit);
@@ -86,7 +86,7 @@ public sealed partial class PurchaseInvoiceCommands
                 var lines = new List<PurchaseLink>();
                 await using (var cmd = tx.Command(
                     "select line_no, purchase_order_id, purchase_order_line_no, receipt_id, receipt_line_no, base_quantity, unit_price, net_amount, tax_amount, order_unit_price, match_mode_used, tolerance_used, " +
-                    "price_difference_lc, on_hand_part_lc, consumed_part_lc, tax_code_id, tax_code_version_id, tax_date, journal_line_no, gr_ir_clearing_id, credits_invoice_line_no, stock_document_id, stock_document_line_no, line_kind, description, charge_treatment, return_id, return_line_no from core.purchase_invoice_line " +
+                    "price_difference_lc, on_hand_part_lc, consumed_part_lc, tax_code_id, tax_code_version_id, tax_date, journal_line_no, gr_ir_clearing_id, credits_invoice_line_no, stock_document_id, stock_document_line_no, line_kind, description, charge_treatment, return_id, return_line_no, credits_purchase_invoice_id from core.purchase_invoice_line " +
                     "where tenant_id = @t and company_id = @c and purchase_invoice_id = @i order by line_no"))
                 {
                     cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("c", req.CompanyId); cmd.Parameters.AddWithValue("i", req.PurchaseInvoiceId);
@@ -98,7 +98,7 @@ public sealed partial class PurchaseInvoiceCommands
                             r.GetDecimal(12), r.GetDecimal(13), r.GetDecimal(14), r.IsDBNull(15) ? null : r.GetGuid(15), r.IsDBNull(16) ? null : r.GetGuid(16),
                             r.IsDBNull(17) ? null : DateOnly.FromDateTime(r.GetDateTime(17)), r.GetInt32(18), r.IsDBNull(20) ? null : r.GetInt32(20), r.IsDBNull(21) ? null : r.GetGuid(21), r.IsDBNull(22) ? null : r.GetInt32(22),
                             r.GetString(23).Trim(), r.IsDBNull(24) ? null : r.GetString(24), r.IsDBNull(25) ? null : r.GetString(25),
-                            r.IsDBNull(26) ? null : r.GetGuid(26), r.IsDBNull(27) ? null : r.GetInt32(27)));
+                            r.IsDBNull(26) ? null : r.GetGuid(26), r.IsDBNull(27) ? null : r.GetInt32(27), r.IsDBNull(28) ? null : r.GetGuid(28)));
                         if (!r.IsDBNull(19) && !clearings.Contains(r.GetGuid(19))) clearings.Add(r.GetGuid(19));
                     }
                 }
@@ -114,7 +114,7 @@ public sealed partial class PurchaseInvoiceCommands
                 // a credit note of the invoice that is not reversed is reversed first (7.4, Q25)
                 if (!k.Credit)
                 await using (var cmd = tx.Command(
-                    "select exists (select 1 from core.purchase_invoice c where c.tenant_id = @t and c.company_id = @c and c.credits_invoice_id = @i and c.invoice_kind = 'CREDIT_NOTE' " +
+                    "select exists (select 1 from core.purchase_invoice c where c.tenant_id = @t and c.company_id = @c and (c.credits_invoice_id = @i or exists (select 1 from core.purchase_invoice_line cl where cl.tenant_id = c.tenant_id and cl.company_id = c.company_id and cl.purchase_invoice_id = c.purchase_invoice_id and cl.credits_purchase_invoice_id = @i)) and c.invoice_kind = 'CREDIT_NOTE' " +
                     "and not exists (select 1 from core.purchase_invoice m where m.tenant_id = c.tenant_id and m.company_id = c.company_id and m.reversal_of_purchase_invoice_id = c.purchase_invoice_id))"))
                 {
                     cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("c", req.CompanyId); cmd.Parameters.AddWithValue("i", req.PurchaseInvoiceId);
@@ -141,8 +141,9 @@ public sealed partial class PurchaseInvoiceCommands
                 {
                     await using var cmd = tx.Command(
                         "insert into core.purchase_invoice_line (tenant_id, company_id, purchase_invoice_id, line_no, line_kind, purchase_order_id, purchase_order_line_no, receipt_id, receipt_line_no, stock_document_id, stock_document_line_no, base_quantity, " +
-                        "unit_price, net_amount, tax_amount, order_unit_price, match_mode_used, tolerance_used, price_difference_lc, on_hand_part_lc, consumed_part_lc, tax_code_id, tax_code_version_id, tax_date, journal_line_no, credits_invoice_line_no, description, charge_treatment, return_id, return_line_no) " +
-                        "values (@t, @c, @id, @n, @lk, @o, @ol, @r, @rl, @sd, @sl, @bq, @up, @net, @tax, @oup, @mm, @tol, @pd, @oh, @co, @tc, @tv, @td, @jl, @cl, @ds, @ct, @rid, @rln)");
+                        "unit_price, net_amount, tax_amount, order_unit_price, match_mode_used, tolerance_used, price_difference_lc, on_hand_part_lc, consumed_part_lc, tax_code_id, tax_code_version_id, tax_date, journal_line_no, credits_invoice_line_no, description, charge_treatment, return_id, return_line_no, credits_purchase_invoice_id) " +
+                        "values (@t, @c, @id, @n, @lk, @o, @ol, @r, @rl, @sd, @sl, @bq, @up, @net, @tax, @oup, @mm, @tol, @pd, @oh, @co, @tc, @tv, @td, @jl, @cl, @ds, @ct, @rid, @rln, @cpi)");
+                    cmd.Parameters.Add(new NpgsqlParameter("cpi", NpgsqlDbType.Uuid) { Value = (object?)l.CreditsInvoiceId ?? DBNull.Value });
                     cmd.Parameters.Add(new NpgsqlParameter("rid", NpgsqlDbType.Uuid) { Value = (object?)l.ReturnId ?? DBNull.Value });
                     cmd.Parameters.Add(new NpgsqlParameter("rln", NpgsqlDbType.Integer) { Value = (object?)l.ReturnLine ?? DBNull.Value });
                     cmd.Parameters.AddWithValue("lk", l.LineKind);
@@ -204,7 +205,7 @@ public sealed partial class PurchaseInvoiceCommands
                     ["consumed_part_lc"] = l.Consumed, ["dropship_part_lc"] = 0m, ["unreceived_gr_ir_lc"] = 0m, ["gr_ir_clearing_id"] = null, ["tax_code_id"] = l.TaxCodeId,
                     ["tax_code_version_id"] = l.TaxCodeVersionId, ["tax_date"] = l.TaxDate, ["journal_line_no"] = l.JournalLineNo
                 };
-                    if (k.Credit) { d["credits_invoice_line_no"] = l.CreditsLineNo; d["return_id"] = l.ReturnId; d["return_line_no"] = l.ReturnLine; }
+                    if (k.Credit) { d["credits_invoice_line_no"] = l.CreditsLineNo; d["return_id"] = l.ReturnId; d["return_line_no"] = l.ReturnLine; d["credits_purchase_invoice_id"] = l.CreditsInvoiceId; }
                     return (IReadOnlyDictionary<string, object?>)d;
                 }).ToList();
                 byte[] link = k.Credit ? PurchaseCreditRules.Digest(header, rowsOf) : PurchaseInvoiceRules.Digest(header, rowsOf);
