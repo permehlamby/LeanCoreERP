@@ -40,7 +40,7 @@ public sealed partial class OrderCommands
     /// <summary>The delivered (sales) or received (purchase) base quantity of an order line, mirror rows included (11, 4.3). Read under the order lock.</summary>
     private static async Task<decimal> FulfilledBaseAsync(TenantTransaction tx, OrderKind kind, Guid tenantId, Guid companyId, Guid orderId, int lineNo, CancellationToken ct)
     {
-        string table = kind.Kind == "SALES" ? "sales_delivery_line" : "purchase_receipt_line", idColumn = kind.Kind == "SALES" ? "sales_order_id" : "purchase_order_id";
+        string table = kind.Kind == "SALES" ? "sales_fulfilment_line" : "purchase_fulfilment_line", idColumn = kind.Kind == "SALES" ? "sales_order_id" : "purchase_order_id";
         string lineColumn = kind.Kind == "SALES" ? "sales_order_line_no" : "purchase_order_line_no";
         await using var cmd = tx.Command($"select coalesce(sum(base_quantity), 0) from core.{table} where tenant_id = @t and company_id = @c and {idColumn} = @o and {lineColumn} = @n");
         cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("c", companyId); cmd.Parameters.AddWithValue("o", orderId); cmd.Parameters.AddWithValue("n", lineNo);

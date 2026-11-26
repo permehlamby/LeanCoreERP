@@ -9,6 +9,9 @@ public sealed partial class ChainVerifier
     // the four tables of the FULFILMENT chain: the columns that differ, and the command that wrote a document of the table
     private sealed record FulfilmentTable(string DocumentType, string Header, string Line, string Id, string Number, string Date, string Party, string Reversal, string Ref1, string Ref2, string PostCommand, string ReverseCommand, bool Return, string LineColumns);
 
+    private static readonly FulfilmentTable DropshipTable = new(FulfilmentHash2.DropshipConfirmation, "dropship_confirmation", "", "dropship_confirmation_id", "confirmation_number", "confirmation_date", "customer_partner_id", "reversal_of_confirmation_id", "supplier_shipment_reference", "carrier_reference",
+        "dropship-confirmations:post", "dropship-confirmations:reverse", false, "");
+
     private static readonly FulfilmentTable[] FulfilmentTables =
     [
         new(FulfilmentHash2.Delivery, "sales_delivery", "sales_delivery_line", "delivery_id", "delivery_number", "delivery_date", "customer_partner_id", "reversal_of_delivery_id", "carrier_reference", "tracking_reference",
@@ -103,6 +106,38 @@ public sealed partial class ChainVerifier
             }
             foreach (var h in headers) docs.Add((h.Seq, h.Prev, h.Row, h.Version, h.LineCount, h.Stock, h.Id, table, h.Body, linesOf.GetValueOrDefault(h.Id) ?? []));
         }
+        // the dropship confirmations (11, 5.3): one document each, its line is the confirmed line; the derived journal binds the row hash
+        var dropshipHeaders = new List<(long Seq, byte[] Prev, byte[] Row, int Version, Guid Id, Guid Journal, Dictionary<string, object?> Body, Dictionary<string, object?> Line)>();
+        await using (var cmd = tx.Command(
+            "select chain_seq, prev_hash, row_hash, hash_version, dropship_confirmation_id, confirmation_number, number_series_id, fiscal_year, sequence_no, confirmation_date, customer_partner_id, supplier_shipment_reference, carrier_reference, " +
+            "journal_document_id, reversal_of_confirmation_id, reason_code, origin, migration_batch_id, source_system, source_document_ref, posted_at, idempotency_key, posted_by, correlation_id, line_digest, " +
+            "sales_order_id, sales_order_line_no, item_id, quantity, unit_code, base_quantity, value_lc from core.dropship_confirmation where tenant_id = @t and company_id = @c"))
+        {
+            cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("c", companyId);
+            await using var r = await cmd.ExecuteReaderAsync(ct);
+            while (await r.ReadAsync(ct))
+            {
+                string? Str(int i) => r.IsDBNull(i) ? null : r.GetString(i).Trim();
+                Guid? reversalOf = r.IsDBNull(14) ? null : r.GetGuid(14);
+                var body = new Dictionary<string, object?>
+                {
+                    ["document_id"] = r.GetGuid(4), ["document_type"] = FulfilmentHash2.DropshipConfirmation, ["number_series_id"] = r.GetGuid(6), ["fiscal_year"] = (long)r.GetInt32(7), ["sequence_no"] = r.GetInt64(8),
+                    ["document_number"] = r.GetString(5), ["document_date"] = r.GetFieldValue<DateOnly>(9), ["partner_id"] = r.GetGuid(10), ["warehouse_id"] = null, ["reference_1"] = Str(11), ["reference_2"] = Str(12),
+                    ["stock_document_id"] = r.GetGuid(13), ["reversal_of_id"] = reversalOf, ["reason_code"] = Str(15), ["origin"] = r.GetString(16).Trim(), ["migration_batch_id"] = r.IsDBNull(17) ? null : r.GetGuid(17),
+                    ["source_system"] = r.GetString(18).Trim(), ["source_document_ref"] = Str(19), ["posted_at"] = DateTime.SpecifyKind(r.GetDateTime(20), DateTimeKind.Utc), ["idempotency_key"] = r.GetString(21),
+                    ["command_name"] = reversalOf is null ? "dropship-confirmations:post" : "dropship-confirmations:reverse", ["posted_by"] = r.GetString(22), ["correlation_id"] = r.GetString(23), ["line_count"] = 1L,
+                    ["line_digest"] = (byte[])r[24], ["hash_version"] = (long)r.GetInt16(3)
+                };
+                var line = new Dictionary<string, object?>
+                {
+                    ["tenant_id"] = tenantId, ["company_id"] = companyId, ["document_id"] = r.GetGuid(4), ["line_no"] = 1L, ["order_id"] = r.GetGuid(25), ["order_line_no"] = (long)r.GetInt32(26), ["item_id"] = r.GetGuid(27),
+                    ["quantity"] = r.GetDecimal(28), ["unit_code"] = r.GetString(29).Trim(), ["base_quantity"] = r.GetDecimal(30), ["warehouse_id"] = null, ["location_id"] = null, ["tracking_id"] = null, ["stock_status"] = "AVAILABLE",
+                    ["stock_document_line_no"] = null, ["stock_document_line_count"] = null, ["unit_price"] = null, ["currency"] = null, ["value_lc"] = r.GetDecimal(31)
+                };
+                dropshipHeaders.Add((r.GetInt64(0), (byte[])r[1], (byte[])r[2], r.GetInt16(3), r.GetGuid(4), r.GetGuid(13), body, line));
+            }
+        }
+        foreach (var h in dropshipHeaders) docs.Add((h.Seq, h.Prev, h.Row, h.Version, 1, h.Journal, h.Id, DropshipTable, h.Body, [h.Line]));
         docs.Sort((a, b) => a.Seq.CompareTo(b.Seq));
 
         var stockDigest = new Dictionary<Guid, byte[]?>();
@@ -112,6 +147,14 @@ public sealed partial class ChainVerifier
             await using var r = await cmd.ExecuteReaderAsync(ct);
             while (await r.ReadAsync(ct)) stockDigest[r.GetGuid(0)] = r.IsDBNull(1) ? null : (byte[])r[1];
         }
+
+        if (dropshipHeaders.Count > 0)
+            await using (var cmd = tx.Command("select document_id, detail_digest from core.journal_document where tenant_id = @t and company_id = @c and document_id = any(@ids)"))
+            {
+                cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("c", companyId); cmd.Parameters.AddWithValue("ids", dropshipHeaders.Select(h => h.Journal).ToArray());
+                await using var r = await cmd.ExecuteReaderAsync(ct);
+                while (await r.ReadAsync(ct)) stockDigest[r.GetGuid(0)] = r.IsDBNull(1) ? null : (byte[])r[1];
+            }
 
         byte[] prev = LedgerHash2.Genesis(tenantId, companyId, FulfilmentHash2.ChainType, "");
         long expected = 1;

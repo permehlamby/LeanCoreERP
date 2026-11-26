@@ -114,7 +114,7 @@ public class OrderTests
         Assert.Equal(["INVENTORY.QUANTITY_SCALE_EXCEEDED"], Codes(await Place("q1", SalesHeader(s), StockLine(s, 0.5m))));
         Assert.Equal(["INVENTORY.UNIT_CONVERSION_MISSING"], Codes(await Place("q2", SalesHeader(s), StockLine(s, 1, 1, "BX"))));
         Assert.Equal(["ORDER.CONFIRMED_DATE_ON_CREATE"], Codes(await Place("q3", SalesHeader(s), W(StockLine(s), "confirmed_date", "2026-04-01"))));
-        Assert.Equal(["LIMIT.ORDER_DROPSHIP_NOT_BUILT"], Codes(await Place("q4", SalesHeader(s), Wo(W(StockLine(s), "fulfilment_type", "DROPSHIP"), "warehouse_id"))));
+        Assert.Equal(["SCHEMA.REQUIRED_FIELD_MISSING"], Codes(await Place("q4", SalesHeader(s), Wo(W(StockLine(s), "fulfilment_type", "DROPSHIP"), "warehouse_id"))));   // a dropship line names its purchase line
         Assert.Equal(["SCHEMA.REQUIRED_FIELD_MISSING"], Codes(await Place("q5", SalesHeader(s), Wo(StockLine(s), "warehouse_id"))).Distinct().ToArray());   // a stock line needs a warehouse
         Assert.Equal(["SCHEMA.REQUIRED_FIELD_MISSING"], Codes(await Place("q6", SalesHeader(s), Wo(StockLine(s), "destination_country"))));
         Assert.Equal(["SCHEMA.REQUIRED_FIELD_MISSING"], Codes(await s.Orders.CreateAsync(OrderKind.Sales, t.TenantId, Sales(t, "q7"), new(SalesHeader(s), []))));

@@ -993,6 +993,83 @@ public class FulfilmentTests
         }
     }
 
+    private static async Task<(OrderResult Purchase, OrderResult Sales)> DropshipOrdersAsync(S s, decimal qty, decimal cost, decimal price)
+    {
+        var t = s.T;
+        var purchase = await s.Orders.CreateAsync(OrderKind.Purchase, t.TenantId, Ctx(s, "dpo", "purchase.order"), new(
+            D(("company_id", t.CompanyId), ("order_date", "2026-03-01"), ("order_currency", "DKK"), ("supplier_partner_id", s.Supplier), ("ship_from_country", "DK")),
+            [D(("item_id", s.Item), ("quantity", qty), ("unit_code", "C62"), ("unit_price", cost), ("destination_country", "DK"))]));
+        Assert.True(purchase.Status == CommandStatus.Ok, Describe(purchase));
+        var sales = await s.Orders.CreateAsync(OrderKind.Sales, t.TenantId, Ctx(s, "dso", "sales.order"), new(
+            D(("company_id", t.CompanyId), ("order_date", "2026-03-01"), ("order_currency", "DKK"), ("customer_partner_id", s.Customer)),
+            [D(("item_id", s.Item), ("quantity", qty), ("unit_code", "C62"), ("unit_price", price), ("destination_country", "DK"), ("fulfilment_type", "DROPSHIP"),
+                ("dropship_purchase_order_id", purchase.Value!.OrderId), ("dropship_purchase_line_no", (short)1))]));
+        Assert.True(sales.Status == CommandStatus.Ok, Describe(sales));
+        return (purchase.Value, sales.Value!);
+    }
+
+    [Fact]
+    public async Task ADropshipConfirmationCountsAsDeliveredAndReceivedAndPostsCogsAgainstTheClearingAccount()
+    {
+        var s = await SetupAsync();
+        var t = s.T;
+        await t.ExecuteAsync("""
+            insert into core.number_series_assignment (tenant_id, company_id, document_type, series_id, effective_from, created_by)
+              select @t, @c, m.ty, (select series_id from core.number_series where tenant_id = @t and series_code = m.sc), date '2026-01-01', 'test'
+                from (values ('DROPSHIP_CONFIRMATION', 'FUL'), ('DROPSHIP_COST', 'STJ')) m(ty, sc)
+            """);
+        var (po, so) = await DropshipOrdersAsync(s, 10, 30, 50);
+        var commands = new DropshipCommands(t.App);
+        CommandContext Dctx(string key) => Ctx(s, key, "dropship.confirm");
+        PostDropshipConfirmationRequest Confirm(decimal qty, string line = "D1") => new(t.CompanyId, new DateOnly(2026, 3, 12), [new(line, so.OrderId, 1, qty, "C62")], "SHIP-1", "CAR-1");
+        async Task<decimal> Done(bool sales) => await t.ScalarAsync<decimal>($"select coalesce(sum(base_quantity), 0) from core.{(sales ? "sales" : "purchase")}_fulfilment_line where tenant_id = @t and {(sales ? "sales" : "purchase")}_order_id = '{(sales ? so.OrderId : po.OrderId)}'");
+
+        // the purchase line shows the link; a delivery or a receipt of a dropship line is not the way
+        Assert.Equal(so.OrderId, await t.ScalarAsync<Guid>($"select dropship_sales_order_id from core.purchase_order_line where tenant_id = @t and purchase_order_id = '{po.OrderId}' and line_no = 1"));
+        Assert.Equal(["SCHEMA.INVALID_VALUE"], Codes(await s.Cmds.PostDeliveryAsync(t.TenantId, Ctx(s, "d0", "sales.deliver"), new(t.CompanyId, new DateOnly(2026, 3, 12), [new("L1", so.OrderId, 1, 1, "C62", s.Warehouse)]))));
+        Assert.Equal(["SCHEMA.INVALID_VALUE"], Codes(await s.Cmds.PostReceiptAsync(t.TenantId, Ctx(s, "r0", "purchase.receive"), new(t.CompanyId, new DateOnly(2026, 3, 12), [new("L1", po.OrderId, 1, 1, "C62", s.Warehouse)]))));
+        Assert.Equal(["AUTH.PERMISSION_MISSING"], Codes(await commands.PostAsync(t.TenantId, Ctx(s, "p0", "sales.deliver"), Confirm(1))));
+        Assert.Equal(["ORDER.OVER_DELIVERY"], Codes(await commands.PostAsync(t.TenantId, Dctx("p1"), Confirm(11))));
+
+        // 4 of 10 at the purchase value 4 x 30 = 120: Dr COGS, Cr the clearing account (GR/IR), no stock moves
+        var r = await commands.PostAsync(t.TenantId, Dctx("p2"), Confirm(4));
+        Assert.True(r.Status == CommandStatus.Ok, Describe(r));
+        var first = r.Value!.Confirmations.Single();
+        Assert.Equal(120m, first.ValueLc);
+        Assert.Equal((120m, -120m, 0m), (await BalanceAsync(s, s.Cogs), await BalanceAsync(s, s.GrIr), await BalanceAsync(s, s.Inventory)));
+        Assert.Equal(0L, await t.ScalarAsync<long>("select count(*) from core.stock_document where tenant_id = @t"));
+        Assert.Equal((4m, 4m), (await Done(true), await Done(false)));
+
+        // the replay answers with the same confirmation, the limit counts what is confirmed
+        var replay = await commands.PostAsync(t.TenantId, Dctx("p2"), Confirm(4));
+        Assert.True(replay.IdempotentReplay && replay.Value!.Confirmations.Single().ConfirmationId == first.ConfirmationId, Describe(replay));
+        Assert.Equal(["ORDER.OVER_DELIVERY"], Codes(await commands.PostAsync(t.TenantId, Dctx("p3"), Confirm(7))));
+        var second = await commands.PostAsync(t.TenantId, Dctx("p4"), Confirm(6));
+        Assert.True(second.Status == CommandStatus.Ok, Describe(second));
+        Assert.Equal((300m, 10m), (await BalanceAsync(s, s.Cogs), await Done(true)));
+        foreach (string chain in new[] { "LEDGER", "FULFILMENT" })
+        {
+            var verify = await new ChainVerification(t.App).VerifyAsync(t.TenantId, t.Context("v" + chain, "chain.verify"), new(t.CompanyId, chain));
+            Assert.True(verify.Status == CommandStatus.Ok && verify.Value!.Ok, chain + " " + Describe(verify) + string.Join(";", verify.Value?.Breaks.Select(b => b.Code + b.Detail) ?? []));
+        }
+
+        // the reversal: a mirror confirmation with negative quantity, the journal mirrored and its open item cleared against the original
+        Assert.Equal(["REVERSAL.REASON_REQUIRED"], Codes(await commands.ReverseAsync(t.TenantId, Dctx("x0"), new(t.CompanyId, first.ConfirmationId, ""))));
+        var rev = await commands.ReverseAsync(t.TenantId, Dctx("x1"), new(t.CompanyId, first.ConfirmationId, "CORRECTION"));
+        Assert.True(rev.Status == CommandStatus.Ok, Describe(rev));
+        Assert.Equal((180m, -180m, 6m), (await BalanceAsync(s, s.Cogs), await BalanceAsync(s, s.GrIr), await Done(true)));
+        Assert.Equal("reversed", await t.ScalarAsync<string>($"select status from core.dropship_confirmation where tenant_id = @t and dropship_confirmation_id = '{first.ConfirmationId}'"));
+        Assert.Equal(["REVERSAL.ALREADY_REVERSED"], Codes(await commands.ReverseAsync(t.TenantId, Dctx("x2"), new(t.CompanyId, first.ConfirmationId, "CORRECTION"))));
+        Assert.Equal(["REVERSAL.TYPE_NOT_REVERSIBLE"], Codes(await commands.ReverseAsync(t.TenantId, Dctx("x3"), new(t.CompanyId, rev.Value!.ReversalId, "CORRECTION"))));
+        // the quantity is free again
+        Assert.Equal(CommandStatus.Ok, (await commands.PostAsync(t.TenantId, Dctx("p5"), Confirm(4, "D2"))).Status);
+        foreach (string chain in new[] { "LEDGER", "FULFILMENT", "CLEARING" })
+        {
+            var verify = await new ChainVerification(t.App).VerifyAsync(t.TenantId, t.Context("w" + chain, "chain.verify"), new(t.CompanyId, chain));
+            Assert.True(verify.Status == CommandStatus.Ok && verify.Value!.Ok, chain + " " + Describe(verify) + string.Join(";", verify.Value?.Breaks.Select(b => b.Code + b.Detail) ?? []));
+        }
+    }
+
     [Fact]
     public async Task ACreditNoteCanCreditLinesOfSeveralInvoicesOfOneSupplier()
     {

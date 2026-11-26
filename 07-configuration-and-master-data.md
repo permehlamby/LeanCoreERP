@@ -805,6 +805,14 @@ For the resources `gl-accounts`, `business-partners` (with PII, company relation
 
 These deltas are applied in 02 and 06 with this spec.
 
+### 13.2bk Dropship, first slice (F-IMPL-105, 2026-11-26)
+
+PROPOSED, written down so that spec and code agree. It builds on 11, 4.2, 4.6, 5.3, 5.5, 6.6 and 13.2w, 13.2bf.
+
+1. **Built.** Migration 0063: `dropship_confirmation` (a node of the FULFILMENT chain, one row per confirmed line), the views `sales_fulfilment_line` and `purchase_fulfilment_line`. The link of a DROPSHIP sales line to a purchase line at placement, `dropship-confirmations:post` and `:reverse`, the DROPSHIP_COST journal, the chain verification of the confirmations.
+2. **Choices.** One confirmation per line of the command (the spec has one row with the sales line columns). The unit price of the purchase line is not in the hashed line. Deliveries and receipts of a linked line are rejected.
+3. **Not built.** The invoicing of a dropship line on either side, returns of a confirmation, foreign-currency purchase orders.
+
 ### 13.2bj Credit note across several invoices (F-IMPL-104, 2026-11-26)
 
 PROPOSED, written down so that spec and code agree. It builds on 11, 7.3 and 13.2ah.

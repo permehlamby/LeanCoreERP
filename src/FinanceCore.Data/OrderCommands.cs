@@ -156,7 +156,8 @@ public sealed partial class OrderCommands(NpgsqlDataSource source)
 
     private sealed record NewLine(
         string? LineRef, Guid ItemId, string? Description, decimal Quantity, string UnitCode, decimal BaseQuantity, decimal UnitPrice, decimal PriceUnitQuantity, decimal Discount, decimal Net,
-        Guid? TaxClass, Guid? Warehouse, string Origin, string Destination, decimal Over, decimal Under, DateOnly? RequestedDate, string? LineText, string Fulfilment, string? Policy, string? MatchMode);
+        Guid? TaxClass, Guid? Warehouse, string Origin, string Destination, decimal Over, decimal Under, DateOnly? RequestedDate, string? LineText, string Fulfilment, string? Policy, string? MatchMode,
+        Guid? DropshipOrder = null, int? DropshipLine = null);
 
     private sealed record HeaderContext(Guid CompanyId, string CompanyCountry, int CurrencyScale, OrderSettings Settings, DateOnly? DefaultDate, string? ShipFrom);
 
@@ -202,18 +203,41 @@ public sealed partial class OrderCommands(NpgsqlDataSource source)
         }
 
         string fulfilment = "STOCK"; string? policy = null, matchMode = null;
+        Guid? dsOrder = null; int? dsLine = null;
         if (kind.Kind == "SALES")
         {
             fulfilment = S("fulfilment_type") ?? (item.ItemType == "GOODS" ? "STOCK" : "SERVICE");
-            if (fulfilment == "DROPSHIP") { errors.Add(Error("LIMIT.ORDER_DROPSHIP_NOT_BUILT", "P2", $"{path}/fulfilment_type")); return null; }
+            if (fulfilment == "DROPSHIP")
+            {
+                // 6.6: the line is linked to a line of an existing purchase order of the company: same item and quantity, no receiving warehouse, not linked to another sales line
+                dsOrder = V<Guid>("dropship_purchase_order_id"); dsLine = V<short>("dropship_purchase_line_no");
+                if (item.ItemType != "GOODS") Bad("fulfilment_type", "SCHEMA.INVALID_VALUE", "a dropship line is a goods item");
+                if (warehouse is not null) Bad("warehouse_id", "SCHEMA.INVALID_VALUE", "a dropship line is delivered from no warehouse");
+                if (dsOrder is null || dsLine is null) Bad("dropship_purchase_order_id", "SCHEMA.REQUIRED_FIELD_MISSING", "a dropship line names its purchase order line");
+                else
+                {
+                    await using var cmd = tx.Command(
+                        "select l.item_id, l.base_quantity, l.warehouse_id, l.line_status, l.dropship_sales_order_id, o.lifecycle_status from core.purchase_order_line l join core.purchase_order o on o.tenant_id = l.tenant_id and o.company_id = l.company_id and o.purchase_order_id = l.purchase_order_id " +
+                        "where l.tenant_id = @t and l.company_id = @c and l.purchase_order_id = @o and l.line_no = @n for update of l");
+                    cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("c", h.CompanyId); cmd.Parameters.AddWithValue("o", dsOrder.Value); cmd.Parameters.AddWithValue("n", (int)dsLine.Value);
+                    await using var r = await cmd.ExecuteReaderAsync(ct);
+                    if (!await r.ReadAsync(ct)) Bad("dropship_purchase_order_id", "CONFIG.INVALID_REFERENCE", "no such purchase order line");
+                    else if (r.GetGuid(0) != itemId || r.GetDecimal(1) != baseQuantity) Bad("dropship_purchase_order_id", "SCHEMA.INVALID_VALUE", "the purchase line is for the same item and quantity");
+                    else if (!r.IsDBNull(2)) Bad("dropship_purchase_order_id", "SCHEMA.INVALID_VALUE", "the purchase line of a dropship has no receiving warehouse");
+                    else if (r.GetString(3).Trim() != "OPEN" || r.GetString(5).Trim() != "OPEN") Bad("dropship_purchase_order_id", "ORDER.LINE_NOT_OPEN", "the purchase line is not open");
+                    else if (!r.IsDBNull(4)) Bad("dropship_purchase_order_id", "SCHEMA.INVALID_VALUE", "the purchase line is linked to another sales line");
+                }
+            }
+            else if (V<Guid>("dropship_purchase_order_id") is not null || V<short>("dropship_purchase_line_no") is not null)
+                Bad("dropship_purchase_order_id", "SCHEMA.INVALID_VALUE", "only a dropship line names a purchase line");
             if (fulfilment == "STOCK" && item.ItemType != "GOODS") Bad("fulfilment_type", "SCHEMA.INVALID_VALUE", "a stock line is a goods item");
             if (fulfilment == "STOCK" && warehouse is null) Bad("warehouse_id", "SCHEMA.REQUIRED_FIELD_MISSING", "a stock line is delivered from a warehouse");
-            policy = S("invoice_policy") ?? (fulfilment == "STOCK" ? "DELIVERED" : "ORDERED");
+            policy = S("invoice_policy") ?? (fulfilment is "STOCK" or "DROPSHIP" ? "DELIVERED" : "ORDERED");
         }
         else
         {
             matchMode = S("match_mode") ?? h.Settings.MatchMode;
-            if (item.ItemType == "GOODS" && warehouse is null) Bad("warehouse_id", "SCHEMA.REQUIRED_FIELD_MISSING", "a stocked item is received in a warehouse");
+            if (item.ItemType == "GOODS" && warehouse is null && S("destination_country") is null) Bad("warehouse_id", "SCHEMA.REQUIRED_FIELD_MISSING", "a stocked item is received in a warehouse (a line for a dropship names the destination country of the customer instead, 4.6)");
             if (item.ItemType == "GOODS" && matchMode == "TWO_WAY" && !h.Settings.AllowBeforeReceipt)
                 Bad("match_mode", "SCHEMA.INVALID_VALUE", "a stock item is three-way matched unless the company allows invoicing before receipt");
         }
@@ -235,7 +259,7 @@ public sealed partial class OrderCommands(NpgsqlDataSource source)
         DateOnly? requested = V<DateOnly>("requested_date") ?? h.DefaultDate;
         if (errors.Count > 0 && errors.Any(e => e.Path.StartsWith(path + "/", StringComparison.Ordinal))) return null;
         return new NewLine(S("line_ref"), itemId, S("description"), quantity, unit, baseQuantity, unitPrice, puq, discount, net, taxClass, warehouse, origin!, destination!,
-            V<decimal>("over_tolerance_pct") ?? h.Settings.Over, V<decimal>("under_tolerance_pct") ?? h.Settings.Under, requested, S("line_text"), fulfilment, policy, matchMode);
+            V<decimal>("over_tolerance_pct") ?? h.Settings.Over, V<decimal>("under_tolerance_pct") ?? h.Settings.Under, requested, S("line_text"), fulfilment, policy, matchMode, dsOrder, dsLine);
     }
 
     private static async Task InsertLineAsync(TenantTransaction tx, OrderKind kind, Guid tenantId, Guid companyId, Guid orderId, int lineNo, NewLine l, CancellationToken ct)
@@ -244,8 +268,8 @@ public sealed partial class OrderCommands(NpgsqlDataSource source)
         await using var cmd = tx.Command(
             $"insert into core.{kind.LineTable} (tenant_id, company_id, {kind.IdColumn}, line_no, item_id, description, quantity, unit_code, base_quantity, unit_price, price_unit_quantity, discount_pct, " +
             "net_amount, tax_class_id, warehouse_id, origin_country, destination_country, over_tolerance_pct, under_tolerance_pct, requested_date, line_text" +
-            (sales ? ", invoice_policy, fulfilment_type) " : ", match_mode) ") +
-            "values (@t, @c, @o, @n, @i, @d, @q, @u, @bq, @p, @puq, @disc, @net, @tax, @w, @orig, @dest, @over, @under, @req, @text" + (sales ? ", @pol, @ful)" : ", @mm)"));
+            (sales ? ", invoice_policy, fulfilment_type, dropship_purchase_order_id, dropship_purchase_line_no) " : ", match_mode) ") +
+            "values (@t, @c, @o, @n, @i, @d, @q, @u, @bq, @p, @puq, @disc, @net, @tax, @w, @orig, @dest, @over, @under, @req, @text" + (sales ? ", @pol, @ful, @dso, @dsl)" : ", @mm)"));
         cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("c", companyId); cmd.Parameters.AddWithValue("o", orderId); cmd.Parameters.AddWithValue("n", lineNo);
         cmd.Parameters.AddWithValue("i", l.ItemId); cmd.Parameters.AddWithValue("q", l.Quantity); cmd.Parameters.AddWithValue("u", l.UnitCode); cmd.Parameters.AddWithValue("bq", l.BaseQuantity);
         cmd.Parameters.AddWithValue("p", l.UnitPrice); cmd.Parameters.AddWithValue("puq", l.PriceUnitQuantity); cmd.Parameters.AddWithValue("disc", l.Discount); cmd.Parameters.AddWithValue("net", l.Net);
@@ -255,9 +279,22 @@ public sealed partial class OrderCommands(NpgsqlDataSource source)
         cmd.Parameters.Add(new NpgsqlParameter("w", NpgsqlDbType.Uuid) { Value = (object?)l.Warehouse ?? DBNull.Value });
         cmd.Parameters.Add(new NpgsqlParameter("req", NpgsqlDbType.Date) { Value = (object?)l.RequestedDate ?? DBNull.Value });
         cmd.Parameters.Add(new NpgsqlParameter("text", NpgsqlDbType.Text) { Value = (object?)l.LineText ?? DBNull.Value });
-        if (sales) { cmd.Parameters.AddWithValue("pol", l.Policy!); cmd.Parameters.AddWithValue("ful", l.Fulfilment); }
+        if (sales)
+        {
+            cmd.Parameters.AddWithValue("pol", l.Policy!); cmd.Parameters.AddWithValue("ful", l.Fulfilment);
+            cmd.Parameters.Add(new NpgsqlParameter("dso", NpgsqlDbType.Uuid) { Value = (object?)l.DropshipOrder ?? DBNull.Value });
+            cmd.Parameters.Add(new NpgsqlParameter("dsl", NpgsqlDbType.Integer) { Value = (object?)l.DropshipLine ?? DBNull.Value });
+        }
         else cmd.Parameters.AddWithValue("mm", l.MatchMode!);
         await cmd.ExecuteNonQueryAsync(ct);
+        if (sales && l.DropshipOrder is { } dsOrder)
+        {
+            // the purchase line shows the link too (4.6, 6.6)
+            await using var back = tx.Command("update core.purchase_order_line set dropship_sales_order_id = @so, dropship_sales_line_no = @sl where tenant_id = @t and company_id = @c and purchase_order_id = @po and line_no = @pl");
+            back.Parameters.AddWithValue("so", orderId); back.Parameters.AddWithValue("sl", lineNo); back.Parameters.AddWithValue("t", tenantId); back.Parameters.AddWithValue("c", companyId);
+            back.Parameters.AddWithValue("po", dsOrder); back.Parameters.AddWithValue("pl", l.DropshipLine!.Value);
+            await back.ExecuteNonQueryAsync(ct);
+        }
     }
 
     // ---------------------------------------------------------------------------------------------------------

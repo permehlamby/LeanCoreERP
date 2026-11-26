@@ -163,7 +163,7 @@ public sealed class JournalDocumentPoster(NpgsqlDataSource source)
 
         // P2: company, ledger, type, currency, accounts, series
         // an order command that embeds the posting may also post the type of its own derived document (the write-off of GR/IR residuals, 11, 7.5)
-        if (!ExternalTypes.Contains(req.DocumentType) && !(embedding is not null && req.DocumentType == "GR_IR_WRITE_OFF"))
+        if (!ExternalTypes.Contains(req.DocumentType) && !(embedding is not null && req.DocumentType is "GR_IR_WRITE_OFF" or "DROPSHIP_COST"))
             errors.Add(Error("DOCUMENT.TYPE_NOT_ALLOWED", "P2", "document_type", ("allowed_values", ExternalTypes.Order().ToArray())));
         else if ((SalesTypes.Contains(req.DocumentType) || PurchaseTypes.Contains(req.DocumentType)) && req.PartnerId is null)
             errors.Add(Error("SCHEMA.REQUIRED_FIELD_MISSING", "P1", "partner_id", ("document_type", req.DocumentType)));

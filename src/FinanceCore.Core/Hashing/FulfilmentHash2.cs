@@ -13,7 +13,7 @@ public static class FulfilmentHash2
 {
     public const int Version = 2;
     public const string ChainType = "FULFILMENT";
-    public const string Delivery = "SALES_DELIVERY", Receipt = "PURCHASE_RECEIPT", SalesReturn = "SALES_RETURN", PurchaseReturn = "PURCHASE_RETURN";
+    public const string Delivery = "SALES_DELIVERY", Receipt = "PURCHASE_RECEIPT", SalesReturn = "SALES_RETURN", PurchaseReturn = "PURCHASE_RETURN", DropshipConfirmation = "DROPSHIP_CONFIRMATION";
 
     private static FieldSpec Id(string n, bool nullable = false) => new(n, FieldType.Id, nullable);
     private static FieldSpec Code(string n, bool nullable = false) => new(n, FieldType.Text, nullable);

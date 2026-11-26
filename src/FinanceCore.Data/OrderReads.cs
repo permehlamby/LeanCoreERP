@@ -54,7 +54,7 @@ public sealed class OrderReads(NpgsqlDataSource source)
         JsonElement? changes = include.Contains("changes")
             ? await Array("select coalesce(jsonb_agg(to_jsonb(x) - 'tenant_id' - 'company_id' order by changed_at, change_id), '[]'::jsonb)::text from core.order_change_log x where tenant_id = @t and company_id = @c and order_kind = @k and order_id = @o") : null;
         // 4.3: ordered, fulfilled (delivered or received, mirror rows included), the open quantity (over tolerance not counted, zero for a line that is not open) and the limit with the over tolerance
-        string fulfilTable = kind.Kind == "SALES" ? "sales_delivery_line" : "purchase_receipt_line", fulfilId = kind.Kind == "SALES" ? "sales_order_id" : "purchase_order_id", fulfilLine = kind.Kind == "SALES" ? "sales_order_line_no" : "purchase_order_line_no";
+        string fulfilTable = kind.Kind == "SALES" ? "sales_fulfilment_line" : "purchase_fulfilment_line", fulfilId = kind.Kind == "SALES" ? "sales_order_id" : "purchase_order_id", fulfilLine = kind.Kind == "SALES" ? "sales_order_line_no" : "purchase_order_line_no";
         string returnTable = kind.Kind == "SALES" ? "sales_return_line" : "purchase_return_line";
         JsonElement? progress = include.Contains("progress")
             ? await Array(

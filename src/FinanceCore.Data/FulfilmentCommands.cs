@@ -237,6 +237,8 @@ public sealed partial class FulfilmentCommands(NpgsqlDataSource source)
             }
             if (orderLine is not { } ol) { errors.Add(Error("CONFIG.INVALID_REFERENCE", "P2", p + "/order", ("line_no", l.OrderLineNo))); continue; }
             if (Str(ol, "line_status") != "OPEN") { errors.Add(Error("ORDER.LINE_NOT_OPEN", "P2", p + "/order", ("line_no", l.OrderLineNo), ("status", Str(ol, "line_status")))); continue; }
+            if ((kind.Order.Kind == "SALES" && Str(ol, "fulfilment_type") == "DROPSHIP") || (kind.Order.Kind == "PURCHASE" && Str(ol, "dropship_sales_order_id") is not null))
+            { errors.Add(Error("SCHEMA.INVALID_VALUE", "P2", p + "/order", ("reason", "a dropship line is confirmed with dropship-confirmations:post (11, 6.6)"), ("line_no", l.OrderLineNo))); continue; }
             Guid itemId = Guid.Parse(Str(ol, "item_id")!);
             string itemType = "", baseUnit = ""; int scale = 0;
             await using (var cmd = tx.Command("select item_type, base_unit, quantity_scale from core.item where tenant_id = @t and item_id = @i"))

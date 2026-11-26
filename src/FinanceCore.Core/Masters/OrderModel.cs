@@ -26,7 +26,7 @@ public sealed record OrderKind(
         new("over_tolerance_pct", MasterKind.Rate), new("under_tolerance_pct", MasterKind.Rate), new("requested_date", MasterKind.Date), new("confirmed_date", MasterKind.Date),
         new("line_text", MasterKind.Text, 200),
         .. sales
-            ? new[] { new MasterField("fulfilment_type", MasterKind.Code, 50, true, Fulfilment), new MasterField("invoice_policy", MasterKind.Code, 50, true, Policies) }
+            ? new[] { new MasterField("fulfilment_type", MasterKind.Code, 50, true, Fulfilment), new MasterField("invoice_policy", MasterKind.Code, 50, true, Policies), new MasterField("dropship_purchase_order_id", MasterKind.Id), new MasterField("dropship_purchase_line_no", MasterKind.SmallInt) }
             : [new MasterField("match_mode", MasterKind.Code, 50, true, MatchModes)]
     ];
 

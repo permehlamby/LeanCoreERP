@@ -45,7 +45,7 @@ public sealed class OrderQueries(NpgsqlDataSource source)
         if (Check(ctx, req.CompanyId, req.Kind, req.Limit, req.Cursor, "open-orders", filters, out int limit, out long offset) is { } denied) return Reject<OpenOrdersQueryResult>(denied);
         bool sales = req.Kind == "SALES";
         string header = sales ? "sales_order" : "purchase_order", line = sales ? "sales_order_line" : "purchase_order_line", id = sales ? "sales_order_id" : "purchase_order_id", party = sales ? "customer_partner_id" : "supplier_partner_id";
-        string fulfil = sales ? "sales_delivery_line" : "purchase_receipt_line", lineNo = sales ? "sales_order_line_no" : "purchase_order_line_no";
+        string fulfil = sales ? "sales_fulfilment_line" : "purchase_fulfilment_line", lineNo = sales ? "sales_order_line_no" : "purchase_order_line_no";
         await using TenantTransaction tx = await TenantTransaction.BeginAsync(source, tenantId, CommandRole.Read, ct: ct, snapshot: true);
         if (!await CompanyExistsAsync(tx, tenantId, req.CompanyId, ct)) return Reject<OpenOrdersQueryResult>(Error("READ.NOT_FOUND", "P2", "company_id"));
         var items = new List<OpenOrderLine>();
@@ -75,7 +75,7 @@ public sealed class OrderQueries(NpgsqlDataSource source)
         if (Check(ctx, req.CompanyId, req.Kind, req.Limit, req.Cursor, "uninvoiced", filters, out int limit, out long offset) is { } denied) return Reject<UninvoicedQueryResult>(denied);
         bool sales = req.Kind == "SALES";
         string header = sales ? "sales_order" : "purchase_order", line = sales ? "sales_order_line" : "purchase_order_line", id = sales ? "sales_order_id" : "purchase_order_id", party = sales ? "customer_partner_id" : "supplier_partner_id";
-        string fulfil = sales ? "sales_delivery_line" : "purchase_receipt_line", lineNo = sales ? "sales_order_line_no" : "purchase_order_line_no";
+        string fulfil = sales ? "sales_fulfilment_line" : "purchase_fulfilment_line", lineNo = sales ? "sales_order_line_no" : "purchase_order_line_no";
         string invoiceLine = sales ? "sales_invoice_line" : "purchase_invoice_line", invoiceHeader = sales ? "sales_invoice" : "purchase_invoice", invoiceId = sales ? "sales_invoice_id" : "purchase_invoice_id";
         string reversalOf = sales ? "reversal_of_sales_invoice_id" : "reversal_of_purchase_invoice_id";
         string returned = sales ? "0"
