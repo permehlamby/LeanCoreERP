@@ -24,7 +24,7 @@ public sealed class CompanyActivator(NpgsqlDataSource source)
     public static readonly string[] NotChecked =
     [
         "ORDER_SETTING_VERSION", "ACCOUNT_DETERMINATION", "VAT_REGISTRATION", "MIGRATION_ROLES",
-        "GR_IR_WRITE_OFF", "TAX_DETERMINATION", "DEDUCTION_KEY_RATES", "EINVOICE_RULE_SET", "CONSOLIDATION"
+        "GR_IR_WRITE_OFF", "TAX_DETERMINATION", "DEDUCTION_KEY_RATES", "EINVOICE_RULE_SET"
     ];
 
     public async Task<CommandResult<ReadinessReport>> CheckReadinessAsync(
@@ -197,8 +197,41 @@ public sealed class CompanyActivator(NpgsqlDataSource source)
         checks.Add(new("RETENTION_RULES", noRule.Count == 0, noRule.Count == 0 ? null : "no retention rule in force for: " + string.Join(", ", noRule)));
 
         checks.AddRange(await RoleChecksAsync(tx, tenantId, companyId, needed.Select(c => c!).ToArray(), ct));
+        checks.AddRange(await ConsolidationWarningsAsync(tx, tenantId, companyId, ct));
 
-        return new ReadinessReport(companyId, status, checks.All(c => c.Passed), checks);
+        return new ReadinessReport(companyId, status, checks.Where(c => !c.IsWarning).All(c => c.Passed), checks);
+    }
+
+    /// <summary>The three consolidation warnings of 11.3 (23, 9): never an error. Today is the reference date.</summary>
+    private static async Task<List<ReadinessCheck>> ConsolidationWarningsAsync(TenantTransaction tx, Guid tenantId, Guid companyId, CancellationToken ct)
+    {
+        async Task<T?> Scalar<T>(string sql)
+        {
+            await using var cmd = tx.Command(sql);
+            cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("c", companyId);
+            object? value = await cmd.ExecuteScalarAsync(ct);
+            return value is null or DBNull ? default : (T)value;
+        }
+
+        Guid? group = await Scalar<Guid?>("select group_id from core.group_membership where tenant_id = @t and company_id = @c and valid_from <= current_date and (valid_to is null or valid_to > current_date)");
+        string? method = await Scalar<string>(
+            "select consolidation_method from core.company_consolidation_setting_version where tenant_id = @t and company_id = @c and effective_from <= current_date order by effective_from desc limit 1");
+        var list = new List<ReadinessCheck>();
+
+        bool noMember = method is not null and not "NOT_CONSOLIDATED" && group is null;
+        list.Add(new("CONSOLIDATION_MEMBERSHIP", !noMember, noMember ? $"the consolidation method is {method} but the company is in no group today" : null, IsWarning: true));
+
+        bool hasMapping = await Scalar<int?>(
+            "select 1 from core.account_group_mapping where tenant_id = @t and company_id = @c and valid_from <= current_date and (valid_to is null or valid_to > current_date) limit 1") is not null;
+        bool groupHasAccounts = group is not null && await Scalar<int?>($"select 1 from core.group_chart_account where tenant_id = @t and group_id = '{group:D}' and active limit 1") is not null;
+        bool noMapping = groupHasAccounts && !hasMapping;
+        list.Add(new("GROUP_ACCOUNT_MAPPING", !noMapping, noMapping ? "the group has group accounts but no account of the company is mapped today" : null, IsWarning: true));
+
+        bool otherGroup = group is not null && await Scalar<int?>(
+            "select 1 from core.account_group_mapping m join core.group_chart_account a on a.tenant_id = m.tenant_id and a.group_account_id = m.group_account_id " +
+            $"where m.tenant_id = @t and m.company_id = @c and m.valid_from <= current_date and (m.valid_to is null or m.valid_to > current_date) and a.group_id <> '{group:D}' limit 1") is not null;
+        list.Add(new("GROUP_CHANGE_MAPPING", !otherGroup, otherGroup ? "an account is still mapped to a group account of another group than the current one" : null, IsWarning: true));
+        return list;
     }
 
     /// <summary>ROLES and ROLE_ACCOUNT_RULES of 11.3. A role is present when a row is effective now. A role that is per
@@ -255,13 +288,15 @@ public sealed class CompanyActivator(NpgsqlDataSource source)
     }
 
     private static List<CommandError> FailedChecks(ReadinessReport report) =>
-        report.Checks.Where(c => !c.Passed).Select(c => new CommandError("CONFIG.COMPANY_NOT_READY", "P4", "company_id",
+        report.Checks.Where(c => !c.Passed && !c.IsWarning).Select(c => new CommandError("CONFIG.COMPANY_NOT_READY", "P4", "company_id",
             new Dictionary<string, object?> { ["check"] = c.Check, ["detail"] = c.Detail })).ToList();
 
     private static List<CommandError> WarningsOf(ReadinessReport report) =>
     [
         new CommandError("LIMIT.READINESS_CHECKS_NOT_IMPLEMENTED", "P4", "company_id",
-            new Dictionary<string, object?> { ["checks"] = NotChecked }, false, "WARNING")
+            new Dictionary<string, object?> { ["checks"] = NotChecked }, false, "WARNING"),
+        .. report.Checks.Where(c => !c.Passed && c.IsWarning).Select(c => new CommandError("CONFIG.READINESS_WARNING", "P4", "company_id",
+            new Dictionary<string, object?> { ["check"] = c.Check, ["detail"] = c.Detail }, false, "WARNING"))
     ];
 
     private static CommandResult<ReadinessReport> ToResult(ReadinessReport report, Guid logId) =>

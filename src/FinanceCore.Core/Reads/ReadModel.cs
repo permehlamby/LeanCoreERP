@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using System.Text;
 
 namespace FinanceCore.Core.Reads;
@@ -19,8 +20,23 @@ public static class ReadRules
 {
     public const int DefaultLimit = 100, MaxLimit = 500, MaxGroups = 10_000;
 
-    public static string EncodeCursor(string kind, long value) =>
-        Convert.ToBase64String(Encoding.UTF8.GetBytes($"v1|{kind}|{value}"));
+    // The cursor is signed (20, 7): `v2|kind|value|signature`, the signature an HMAC-SHA256 of the text before it, so a caller cannot make up a position.
+    // The key is set once at the start of the host (UseCursorKey); without one the process has a random key, which is right for tests and a single instance.
+    private static byte[] cursorKey = RandomNumberGenerator.GetBytes(32);
+
+    public static void UseCursorKey(byte[] key)
+    {
+        if (key.Length < 32) throw new ArgumentException("The cursor key is at least 32 bytes.", nameof(key));
+        cursorKey = (byte[])key.Clone();
+    }
+
+    private static string Sign(string text) => Convert.ToHexString(HMACSHA256.HashData(cursorKey, Encoding.UTF8.GetBytes(text)));
+
+    public static string EncodeCursor(string kind, long value)
+    {
+        string text = $"v2|{kind}|{value}";
+        return Convert.ToBase64String(Encoding.UTF8.GetBytes($"{text}|{Sign(text)}"));
+    }
 
     public static bool TryDecodeCursor(string? cursor, string kind, out long value)
     {
@@ -29,9 +45,11 @@ public static class ReadRules
         try
         {
             string[] parts = Encoding.UTF8.GetString(Convert.FromBase64String(cursor)).Split('|');
-            return parts.Length == 3 && parts[0] == "v1" && parts[1] == kind && long.TryParse(parts[2], System.Globalization.CultureInfo.InvariantCulture, out value) && value >= 0;
+            return parts.Length == 4 && parts[0] == "v2" && parts[1] == kind
+                && CryptographicOperations.FixedTimeEquals(Encoding.ASCII.GetBytes(parts[3]), Encoding.ASCII.GetBytes(Sign($"{parts[0]}|{parts[1]}|{parts[2]}")))
+                && long.TryParse(parts[2], System.Globalization.CultureInfo.InvariantCulture, out value) && value >= 0;
         }
-        catch (FormatException)
+        catch (Exception e) when (e is FormatException or DecoderFallbackException)
         {
             return false;
         }
@@ -61,7 +79,7 @@ public sealed record JournalDocumentList(IReadOnlyList<JournalDocumentRead> Item
 public sealed record BalancesRequest(
     Guid CompanyId, string Mode, DateOnly? AsOfDate = null, DateOnly? FromDate = null, DateOnly? ToDate = null, string? Rule = null, IReadOnlyList<string>? GroupBy = null,
     Guid? AccountId = null, string? AccountType = null, string? DocumentType = null, string? LineType = null, IReadOnlyList<string>? ExcludeDocumentTypes = null,
-    long? MinLedgerSeq = null);
+    long? MinLedgerSeq = null, Guid? GroupAccountId = null, Guid? IcCounterpartCompanyId = null, bool? IsIntercompany = null);
 
 public sealed record BalanceRow(IReadOnlyDictionary<string, string?> Keys, Amounts Debit, Amounts Credit, Amounts Net, long LineCount);
 

@@ -6,6 +6,19 @@ using Npgsql;
 
 var builder = WebApplication.CreateBuilder(args);
 builder.AddApiAuthentication();
+builder.AddApiTransport();
+builder.AddApiRateLimit();
+// The key that signs the cursors of the list reads (20, 7): the same on every instance, or a cursor from one instance is refused by the next
+string? cursorKey = builder.Configuration["Api:CursorKey"];
+if (!string.IsNullOrWhiteSpace(cursorKey))
+{
+    byte[] keyBytes;
+    try { keyBytes = Convert.FromBase64String(cursorKey); } catch (FormatException) { keyBytes = []; }
+    if (keyBytes.Length < 32) throw new InvalidOperationException("Api:CursorKey is a base64 string of at least 32 bytes.");
+    FinanceCore.Core.Reads.ReadRules.UseCursorKey(keyBytes);
+}
+else if (builder.Environment.IsProduction())
+    throw new InvalidOperationException("Set Api:CursorKey (base64, at least 32 bytes) in Production: the cursors of the list reads are signed with it.");
 builder.WebHost.ConfigureKestrel(k => k.Limits.MaxRequestBodySize = CommandEndpoint.MaxBodyBytes);
 
 // The application connection (role core_app): the command handlers switch to their command role inside each transaction (20, 3).
@@ -26,10 +39,18 @@ builder.Services.AddSingleton(sp => new StockReads(sp.GetRequiredService<NpgsqlD
 builder.Services.AddSingleton(sp => new FulfilmentCommands(sp.GetRequiredService<NpgsqlDataSource>()));
 builder.Services.AddSingleton(sp => new ReturnCommands(sp.GetRequiredService<NpgsqlDataSource>()));
 builder.Services.AddSingleton(sp => new SalesInvoiceCommands(sp.GetRequiredService<NpgsqlDataSource>()));
+builder.Services.AddSingleton(sp => new IntercompanyCommands(sp.GetRequiredService<NpgsqlDataSource>()));
+builder.Services.AddSingleton(sp => new InvoiceIssueCommands(sp.GetRequiredService<NpgsqlDataSource>()));
 builder.Services.AddSingleton(sp => new SalesCreditNoteCommands(sp.GetRequiredService<NpgsqlDataSource>()));
 builder.Services.AddSingleton(sp => new PurchaseInvoiceCommands(sp.GetRequiredService<NpgsqlDataSource>()));
 builder.Services.AddSingleton(sp => new OrderCommands(sp.GetRequiredService<NpgsqlDataSource>()));
 builder.Services.AddSingleton(sp => new OrderSettingCommands(sp.GetRequiredService<NpgsqlDataSource>()));
+builder.Services.AddSingleton(sp => new IcOrderCommands(sp.GetRequiredService<NpgsqlDataSource>()));
+builder.Services.AddSingleton(sp => new IcInvoiceCommands(sp.GetRequiredService<NpgsqlDataSource>()));
+builder.Services.AddSingleton(sp => new ConsolidationSettingCommands(sp.GetRequiredService<NpgsqlDataSource>()));
+builder.Services.AddSingleton(sp => new RateUsageCommands(sp.GetRequiredService<NpgsqlDataSource>()));
+builder.Services.AddSingleton(sp => new GroupChartCommands(sp.GetRequiredService<NpgsqlDataSource>()));
+builder.Services.AddSingleton(sp => new AccountGroupMappingCommands(sp.GetRequiredService<NpgsqlDataSource>()));
 builder.Services.AddSingleton(sp => new OrderReads(sp.GetRequiredService<NpgsqlDataSource>()));
 builder.Services.AddSingleton(sp => new MasterReads(sp.GetRequiredService<NpgsqlDataSource>()));
 builder.Services.AddSingleton(sp => new TaxDeterminationCommands(sp.GetRequiredService<NpgsqlDataSource>()));
@@ -43,6 +64,7 @@ builder.Services.AddSingleton(sp => new PeriodStatusCommands(sp.GetRequiredServi
 builder.Services.AddSingleton(sp => new RevaluationCommands(sp.GetRequiredService<NpgsqlDataSource>()));
 builder.Services.AddSingleton(sp => new YearEndCommands(sp.GetRequiredService<NpgsqlDataSource>()));
 builder.Services.AddSingleton(sp => new LedgerReads(sp.GetRequiredService<NpgsqlDataSource>()));
+builder.Services.AddSingleton(sp => new IcReconciliationReads(sp.GetRequiredService<NpgsqlDataSource>()));
 builder.Services.AddSingleton(sp => new EventFeed(sp.GetRequiredService<NpgsqlDataSource>()));
 builder.Services.AddSingleton(sp => new AuditReads(sp.GetRequiredService<NpgsqlDataSource>()));
 builder.Services.AddSingleton(sp => new PartnerReads(sp.GetRequiredService<NpgsqlDataSource>()));
@@ -62,6 +84,7 @@ builder.Services.AddSingleton<ICommandModule, StockModule>();
 builder.Services.AddSingleton<ICommandModule, FulfilmentModule>();
 builder.Services.AddSingleton<ICommandModule, ReturnModule>();
 builder.Services.AddSingleton<ICommandModule, InvoiceModule>();
+builder.Services.AddSingleton<ICommandModule, GrIrReadModule>();
 builder.Services.AddSingleton<ICommandModule, ConfigModule>();
 builder.Services.AddSingleton<CommandCatalog>(sp =>
 {
@@ -71,7 +94,10 @@ builder.Services.AddSingleton<CommandCatalog>(sp =>
 });
 
 var app = builder.Build();
+app.UseSecurityHeaders();
 app.UseAuthentication();
+app.UseApiRateLimit();
+app.UseClientCertificateBinding();
 app.UseAuthorization();
 CommandEndpoint.Map(app);
 app.Run();

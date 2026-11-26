@@ -14,6 +14,10 @@ public sealed class PostingModule : ICommandModule
     {
         catalog.Add<PostJournalDocumentRequest, PostedDocument>("journal-documents:post", JournalDocumentPoster.PostPermission,
             (sp, tenant, ctx, req, ct) => sp.GetRequiredService<JournalDocumentPoster>().PostAsync(tenant, ctx, req, ct));
+        catalog.Add<PostIntercompanyDocumentRequest, IntercompanyPostResult>("intercompany-documents:post", IntercompanyRules.PostPermission,
+            (sp, tenant, ctx, req, ct) => sp.GetRequiredService<IntercompanyCommands>().PostAsync(tenant, ctx, req, ct));
+        catalog.Add<ReverseIntercompanyDocumentRequest, IntercompanyReversalResult>("intercompany-documents:reverse", IntercompanyRules.PostPermission,
+            (sp, tenant, ctx, req, ct) => sp.GetRequiredService<IntercompanyCommands>().ReverseAsync(tenant, ctx, req, ct));
         catalog.Add<ReverseDocumentRequest, PostedDocument>("journal-documents:reverse", DocumentReverser.Permission,
             (sp, tenant, ctx, req, ct) => sp.GetRequiredService<DocumentReverser>().ReverseAsync(tenant, ctx, req, ct));
         catalog.Add<ChangeOpenFieldsRequest, ChangedDocument>("journal-documents:change-open-fields", DocumentChanger.Permission,

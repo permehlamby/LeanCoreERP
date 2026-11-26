@@ -126,6 +126,14 @@ public sealed class DocumentReverser(NpgsqlDataSource source)
                 : CommandResult<PostedDocument>.Ok(replay, earlier.CommandLogId, replay: true);
         }
 
+        return await ReverseCoreAsync(tx, tenantId, ctx, req, fingerprint, ct, mode, owned: true);
+    }
+
+    /// <summary>The reversal in a transaction that the caller opened (an IC pair reverses both sides in one, 06, 5.5): with owned false there is no command log row and no commit, the caller writes and commits.</summary>
+    internal async Task<CommandResult<PostedDocument>> ReverseCoreAsync(
+        TenantTransaction tx, Guid tenantId, CommandContext ctx, ReverseDocumentRequest req, byte[] fingerprint, CancellationToken ct, ReverseMode? mode, bool owned)
+    {
+        string cmdName = mode?.CommandName ?? CommandName, mirrorType = mode?.MirrorType ?? MirrorType;
         // P2 and P6: the original
         var found = await LedgerReader.ReadDocumentsAsync(tx, tenantId, req.DocumentId, null, null, ct);
         if (found.Count == 0)
@@ -141,6 +149,9 @@ public sealed class DocumentReverser(NpgsqlDataSource source)
                 return Reject(JournalDocumentPoster.Error("REVERSAL.TYPE_NOT_REVERSIBLE", "P2", "document_id", ("document_type", type)));
             if (await mode.Precheck(tx, original, ct) is { } refused) return Reject(refused);
         }
+        else if (original.Header["ic_transaction_id"] is not null)
+            // one side of an intercompany pair is never reversed alone (06, 6.1, ADR-016): the owning command reverses both
+            return Reject(JournalDocumentPoster.Error("REVERSAL.TYPE_NOT_REVERSIBLE", "P2", "document_id", ("document_type", type), ("owning_command", "intercompany-documents:reverse")));
         else if (!ReversalRules.ReversibleTypes.Contains(type) || (string)original.Header["origin"]! != "EXTERNAL")
             return Reject(JournalDocumentPoster.Error("REVERSAL.TYPE_NOT_REVERSIBLE", "P2", "document_id",
                 ("document_type", type), ("owning_command", ReversalRules.OwningCommand(type))));
@@ -283,7 +294,7 @@ public sealed class DocumentReverser(NpgsqlDataSource source)
             ["soft_close_override"] = recheck.SoftCloseOverride, ["migration_batch_id"] = null, ["detail_digest"] = detailDigest,
             ["document_date"] = reversalDate, ["posting_date"] = reversalDate, ["posted_at"] = postedAt, ["transaction_currency"] = currency,
             ["reversal_of_document_id"] = req.DocumentId, ["reversal_reason_code"] = req.ReasonCode, ["auto_reversal_date"] = null,
-            ["ic_transaction_id"] = null, ["ic_counterpart_company_id"] = null, ["origin"] = mode?.Origin ?? "EXTERNAL",
+            ["ic_transaction_id"] = original.Header["ic_transaction_id"], ["ic_counterpart_company_id"] = original.Header["ic_counterpart_company_id"], ["origin"] = mode?.Origin ?? "EXTERNAL",
             ["source_system"] = ctx.SourceSystem, ["source_document_ref"] = null, ["idempotency_key"] = ctx.IdempotencyKey,
             ["command_name"] = cmdName, ["posted_by"] = ctx.Actor, ["correlation_id"] = ctx.CorrelationId,
             ["hash_version"] = (long)LedgerHash2.Version
@@ -322,7 +333,7 @@ public sealed class DocumentReverser(NpgsqlDataSource source)
         byte[] rowHash = LedgerHash2.RowHash(header, chainSeq, headHash, LedgerHash2.LineDigest(lineHashes));
 
         await InsertDocumentAsync(tx, tenantId, companyId, ctx, req, mirrorId, ledgerId, series.SeriesId, fiscalYear, periodNo, sequenceNo,
-            number, recheck.SoftCloseOverride, postedAt, currency, reversalDate, chainSeq, headHash, rowHash, mirrorType, mode is not null, mode?.Origin ?? "EXTERNAL", cmdName, detailDigest, ct);
+            number, recheck.SoftCloseOverride, postedAt, currency, reversalDate, chainSeq, headHash, rowHash, mirrorType, mode is not null, mode?.Origin ?? "EXTERNAL", cmdName, detailDigest, original.Header["ic_transaction_id"] as Guid?, original.Header["ic_counterpart_company_id"] as Guid?, ct);
         if (await LegalSnapshots.WriteAsync(tx, tenantId, companyId, mirrorId, fiscalYear, reversalDate, postedAt, ct, copyFromDocumentId: req.DocumentId) is { } noSnapshot)
             return Reject(noSnapshot);
         foreach (var m in mirrorLines) await InsertLineAsync(tx, m, req.DocumentId, ct);
@@ -379,7 +390,7 @@ public sealed class DocumentReverser(NpgsqlDataSource source)
 
         if (mode is not null) await mode.After(tx, mirrorId, ct);
 
-        Guid logId = await CommandSupport.WriteLogAsync(tx, tenantId, companyId, ctx, cmdName, fingerprint, "DOCUMENT", mirrorId, ct);
+        Guid logId = owned ? await CommandSupport.WriteLogAsync(tx, tenantId, companyId, ctx, cmdName, fingerprint, "DOCUMENT", mirrorId, ct) : Guid.Empty;
 
         string rowHashHex = Canonical.FormatHex32(rowHash);
         await CommandSupport.WriteOutboxAsync(tx, tenantId, companyId, ctx, "ledger.document_reversed", "DOCUMENT",
@@ -417,7 +428,7 @@ public sealed class DocumentReverser(NpgsqlDataSource source)
                     }), ct);
         }
 
-        await tx.CommitAsync(ct);   // runs the deferred checks: balance, lines present, chain link and head, outbox position
+        if (owned) await tx.CommitAsync(ct);   // runs the deferred checks: balance, lines present, chain link and head, outbox position
 
         var lines = mirrorLines.Select(m => new PostedLine(
             (int)m["line_no"]!, null, (Guid)m["account_id"]!, (string)m["line_type"]!,
@@ -501,15 +512,17 @@ public sealed class DocumentReverser(NpgsqlDataSource source)
     private static async Task InsertDocumentAsync(
         TenantTransaction tx, Guid tenantId, Guid companyId, CommandContext ctx, ReverseDocumentRequest req, Guid mirrorId, Guid ledgerId,
         Guid seriesId, int fiscalYear, int period, long sequenceNo, string number, bool softOverride, DateTime postedAt, string currency,
-        DateOnly reversalDate, long chainSeq, byte[] prevHash, byte[] rowHash, string mirrorType, bool system, string origin, string commandName, byte[]? detailDigest, CancellationToken ct)
+        DateOnly reversalDate, long chainSeq, byte[] prevHash, byte[] rowHash, string mirrorType, bool system, string origin, string commandName, byte[]? detailDigest, Guid? icTransaction, Guid? icCounterpart, CancellationToken ct)
     {
         await using var cmd = tx.Command(
             "insert into core.journal_document (tenant_id, company_id, document_id, ledger_id, document_type, is_system_generated, " +
             "number_series_id, fiscal_year, sequence_no, document_number, fiscal_period, soft_close_override, document_date, posting_date, " +
             "posted_at, transaction_currency, reversal_of_document_id, reversal_reason_code, origin, source_system, idempotency_key, " +
-            "command_name, posted_by, correlation_id, chain_seq, prev_hash, row_hash, hash_version, detail_digest) " +
+            "command_name, posted_by, correlation_id, chain_seq, prev_hash, row_hash, hash_version, detail_digest, ic_transaction_id, ic_counterpart_company_id) " +
             "values (@t, @c, @id, @l, @dt, @sys, @s, @fy, @seq, @num, @fp, @soft, @dd, @pd, @at, @tc, @orig, @reason, @origin, @src, @key, " +
-            "@cmd, @by, @corr, @cs, @prev, @row, @hv, @detail)");
+            "@cmd, @by, @corr, @cs, @prev, @row, @hv, @detail, @icx, @icc)");
+        cmd.Parameters.Add(new NpgsqlParameter("icx", NpgsqlDbType.Uuid) { Value = (object?)icTransaction ?? DBNull.Value });
+        cmd.Parameters.Add(new NpgsqlParameter("icc", NpgsqlDbType.Uuid) { Value = (object?)icCounterpart ?? DBNull.Value });
         cmd.Parameters.Add(new NpgsqlParameter("detail", NpgsqlDbType.Bytea) { Value = (object?)detailDigest ?? DBNull.Value });
         cmd.Parameters.AddWithValue("t", tenantId);
         cmd.Parameters.AddWithValue("c", companyId);

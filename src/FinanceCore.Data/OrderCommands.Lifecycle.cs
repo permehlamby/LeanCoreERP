@@ -87,8 +87,10 @@ public sealed partial class OrderCommands
     // ---------------------------------------------------------------------------------------------------------
     // :create
     // ---------------------------------------------------------------------------------------------------------
-    private async Task<CommandResult<OrderResult>> CreateCoreAsync(
-        TenantTransaction tx, OrderKind kind, Guid tenantId, CommandContext ctx, CreateOrderRequest req, Dictionary<string, Patch> header, List<List<Patch>> linePatches, byte[] fingerprint, CancellationToken ct)
+    /// <summary>owned false: the transaction is the caller's (an IC pair, 6.7): no log row and no commit. icTransactionId is the id of the pair, set on the order row.</summary>
+    internal async Task<CommandResult<OrderResult>> CreateCoreAsync(
+        TenantTransaction tx, OrderKind kind, Guid tenantId, CommandContext ctx, CreateOrderRequest req, Dictionary<string, Patch> header, List<List<Patch>> linePatches, byte[] fingerprint, CancellationToken ct,
+        bool owned = true, Guid? icTransactionId = null)
     {
         Guid companyId = (Guid)header["company_id"].Value!, party = (Guid)header[kind.PartyColumn].Value!;
         DateOnly orderDate = (DateOnly)header["order_date"].Value!;
@@ -150,6 +152,7 @@ public sealed partial class OrderCommands
         DateTime at = Now();
         var sets = header.Values.Select(p => (p.Field.Name, DbType(p.Field.Kind), p.Value)).ToList();
         if (!header.ContainsKey("payment_terms_id") && defaultTerms is { } dt) sets.Add(("payment_terms_id", NpgsqlDbType.Uuid, dt));
+        if (icTransactionId is { } icId) sets.Add(("ic_transaction_id", NpgsqlDbType.Uuid, icId));
         sets.AddRange([
             (kind.IdColumn, NpgsqlDbType.Uuid, orderId), ("order_number", NpgsqlDbType.Text, number), ("sequence_no", NpgsqlDbType.Bigint, sequenceNo), ("fiscal_year", NpgsqlDbType.Integer, fiscalYear),
             ("number_series_id", NpgsqlDbType.Uuid, series.SeriesId), ("source_system", NpgsqlDbType.Text, ctx.SourceSystem), ("placed_by", NpgsqlDbType.Text, ctx.Actor),
@@ -163,11 +166,11 @@ public sealed partial class OrderCommands
         for (int i = 0; i < lines.Count; i++) { await InsertLineAsync(tx, kind, tenantId, companyId, orderId, i + 1, lines[i], ct); refs[i + 1] = lines[i].LineRef; }
 
         await AddEventAsync(tx, kind, tenantId, companyId, orderId, "PLACED", null, ctx, null, at, ct);
-        Guid logId = await CommandSupport.WriteLogAsync(tx, tenantId, companyId, ctx, kind.Resource + ":create", fingerprint, kind.Kind + "_ORDER", orderId, ct);
+        Guid logId = owned ? await CommandSupport.WriteLogAsync(tx, tenantId, companyId, ctx, kind.Resource + ":create", fingerprint, kind.Kind + "_ORDER", orderId, ct) : Guid.Empty;
         await OutboxAsync(tx, kind, tenantId, companyId, orderId, ctx, "order.created", "CREATED", at,
             new() { ["order_number"] = number, ["partner_id"] = party, ["currency"] = currency, ["lines"] = lines.Count }, ct);
         OrderResult result = await ResultAsync(tx, kind, tenantId, orderId, [], refs, ct);
-        await tx.CommitAsync(ct);
+        if (owned) await tx.CommitAsync(ct);
         return CommandResult<OrderResult>.Ok(result, logId);
     }
 

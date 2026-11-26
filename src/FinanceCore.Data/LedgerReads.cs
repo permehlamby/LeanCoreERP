@@ -1,5 +1,6 @@
 using FinanceCore.Core.Commands;
 using FinanceCore.Core.Hashing;
+using FinanceCore.Core.Masters;
 using FinanceCore.Core.Reads;
 using Npgsql;
 using NpgsqlTypes;
@@ -206,8 +207,13 @@ public sealed partial class LedgerReads(NpgsqlDataSource source)
         ["account_id"] = "l.account_id::text", ["account_type"] = "a.account_type", ["account_group"] = "a.account_group", ["fiscal_year"] = "l.fiscal_year::text",
         ["fiscal_period"] = "l.fiscal_period::text", ["posting_date"] = "l.posting_date::text", ["cost_center_id"] = "l.cost_center_id::text", ["project_id"] = "l.project_id::text",
         ["profit_center_id"] = "l.profit_center_id::text", ["business_unit_id"] = "l.business_unit_id::text", ["transaction_currency"] = "d.transaction_currency::text",
-        ["document_type"] = "d.document_type", ["line_type"] = "l.line_type", ["ledger_id"] = "l.ledger_id::text"
+        ["document_type"] = "d.document_type", ["line_type"] = "l.line_type", ["ledger_id"] = "l.ledger_id::text",
+        // 23, 6 and 7.1: the counterpart of an intercompany line, and the group account that the mapping at the reporting date gives
+        ["ic_counterpart_company_id"] = "l.ic_counterpart_company_id::text", ["group_account_id"] = "m.group_account_id::text"
     };
+
+    /// <summary>What a row carries beside the key group_account_id (23, 7.1): code, name, account type and the translation rate basis of the group account.</summary>
+    private static readonly string[] GroupAccountExtras = ["group_account_code", "group_account_name", "group_account_type", "translation_rate_basis"];
 
     public async Task<CommandResult<BalancesResult>> BalancesAsync(Guid tenantId, CommandContext ctx, BalancesRequest req, CancellationToken ct = default)
     {
@@ -245,21 +251,33 @@ public sealed partial class LedgerReads(NpgsqlDataSource source)
 
         string[] keys = (req.GroupBy ?? []).Distinct().ToArray();
         var excluded = (req.ExcludeDocumentTypes ?? []).ToArray();
-        string keySql = string.Join(", ", keys.Select((k, i) => $"{GroupColumns[k]} as k{i}"));
+        // the mapping at the reporting date (23, 4, ADR-018): joined only when it is a key or a filter; an unmapped line has a null group account
+        bool byGroupAccount = keys.Contains("group_account_id");
+        bool mapped = byGroupAccount || req.GroupAccountId is not null;
+        string[] extras = byGroupAccount ? GroupAccountExtras : [];
+        string[] names = [.. keys, .. extras];
+        string keySql = string.Join(", ", keys.Select((k, i) => $"{GroupColumns[k]} as k{i}")
+            .Concat(extras.Select((_, i) => new[] { "g.code", "g.name", "g.account_type", "g.translation_rate_basis" }[i] + $" as x{i}")));
+        string mappingJoin = mapped
+            ? "left join core.account_group_mapping m on m.tenant_id = l.tenant_id and m.company_id = l.company_id and m.account_id = l.account_id and m.valid_from <= @to and (m.valid_to is null or m.valid_to > @to) " +
+              "left join core.group_chart_account g on g.tenant_id = m.tenant_id and g.group_account_id = m.group_account_id "
+            : "";
+        string mappingFilter = req.GroupAccountId is not null ? " and m.group_account_id = @gacc" : "";
         string dateRange = req.Mode == "CUMULATIVE" ? "l.posting_date <= @to" : "l.posting_date between @from and @to";
         string autoPl = req.Mode == "CUMULATIVE"
             ? "(a.account_type = any(@bs) or (l.fiscal_year = @fy and d.document_type <> all(@closing)))"
             : "(a.account_type = any(@bs) or d.document_type <> all(@closing))";
         string sql =
-            "select " + (keys.Length > 0 ? keySql + ", " : "") +
+            "select " + (names.Length > 0 ? keySql + ", " : "") +
             "coalesce(sum(greatest(l.amount_lc, 0)), 0), coalesce(sum(greatest(l.amount_gc, 0)), 0), coalesce(sum(greatest(l.amount_rc, 0)), 0), " +
             "coalesce(sum(least(l.amount_lc, 0)), 0), coalesce(sum(least(l.amount_gc, 0)), 0), coalesce(sum(least(l.amount_rc, 0)), 0), count(*) " +
             "from core.journal_line l join core.journal_document d on d.tenant_id = l.tenant_id and d.company_id = l.company_id and d.document_id = l.document_id " +
-            "join core.gl_account a on a.tenant_id = l.tenant_id and a.company_id = l.company_id and a.account_id = l.account_id " +
+            "join core.gl_account a on a.tenant_id = l.tenant_id and a.company_id = l.company_id and a.account_id = l.account_id " + mappingJoin +
             "where l.tenant_id = @t and l.company_id = @c and " + dateRange + (rule == "AUTO" ? " and " + autoPl : "") +
             " and (@acc::uuid is null or l.account_id = @acc) and (@atype::text is null or a.account_type = @atype) and (@dtype::text is null or d.document_type = @dtype) " +
             "and (@ltype::text is null or l.line_type = @ltype) and d.document_type <> all(@excl) " +
-            (keys.Length > 0 ? "group by " + string.Join(", ", Enumerable.Range(1, keys.Length)) + " order by " + string.Join(", ", Enumerable.Range(1, keys.Length)) : "");
+            "and (@ic::uuid is null or l.ic_counterpart_company_id = @ic) and (@isic::boolean is null or (l.ic_counterpart_company_id is not null) = @isic)" + mappingFilter + " " +
+            (names.Length > 0 ? "group by " + string.Join(", ", Enumerable.Range(1, names.Length)) + " order by " + string.Join(", ", Enumerable.Range(1, names.Length)) : "");
         var rows = new List<BalanceRow>();
         await using (var cmd = tx.Command(sql))
         {
@@ -275,13 +293,17 @@ public sealed partial class LedgerReads(NpgsqlDataSource source)
             cmd.Parameters.Add(new NpgsqlParameter("dtype", NpgsqlDbType.Text) { Value = (object?)req.DocumentType ?? DBNull.Value });
             cmd.Parameters.Add(new NpgsqlParameter("ltype", NpgsqlDbType.Text) { Value = (object?)req.LineType ?? DBNull.Value });
             cmd.Parameters.AddWithValue("excl", excluded);
+            cmd.Parameters.Add(new NpgsqlParameter("ic", NpgsqlDbType.Uuid) { Value = (object?)req.IcCounterpartCompanyId ?? DBNull.Value });
+            cmd.Parameters.Add(new NpgsqlParameter("isic", NpgsqlDbType.Boolean) { Value = (object?)req.IsIntercompany ?? DBNull.Value });
+            if (req.GroupAccountId is not null) cmd.Parameters.AddWithValue("gacc", req.GroupAccountId.Value);
             await using var r = await cmd.ExecuteReaderAsync(ct);
             while (await r.ReadAsync(ct))
             {
                 if (rows.Count >= ReadRules.MaxGroups) return Reject<BalancesResult>(Error("READ.RESULT_TOO_LARGE", "P2", "group_by", ("max", ReadRules.MaxGroups)));
                 var k = new Dictionary<string, string?>();
-                for (int i = 0; i < keys.Length; i++) k[keys[i]] = r.IsDBNull(i) ? null : r.GetString(i).Trim();
-                int o = keys.Length;
+                for (int i = 0; i < names.Length; i++) k[names[i]] = r.IsDBNull(i) ? null : r.GetString(i).Trim();
+                if (byGroupAccount && k["group_account_type"] is { } gt) k["translation_rate_basis"] = GroupChartFields.EffectiveBasis(gt, k["translation_rate_basis"]);
+                int o = names.Length;
                 var debit = Amt(r, o, hasRc); var credit = Amt(r, o + 3, hasRc);
                 rows.Add(new BalanceRow(k, debit, credit, Add(debit, credit), r.GetInt64(o + 6)));
             }

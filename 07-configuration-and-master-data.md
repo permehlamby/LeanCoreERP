@@ -805,6 +805,16 @@ For the resources `gl-accounts`, `business-partners` (with PII, company relation
 
 These deltas are applied in 02 and 06 with this spec.
 
+### 13.2ap The read gr-ir:query (F-IMPL-71, 2026-11-25)
+
+PROPOSED, written down so that spec and code agree. It builds on 11, 8 and 7.5.
+
+1. **Built.** `gr-ir:query` (`read.orders`): `company_id`, `state` (OPEN, WRITTEN_OFF, CLEARED or ALL, default OPEN), `purchase_order_id`, `supplier_partner_id`, `as_of`, `limit`.
+2. **Items.** The open items without partner on the GR/IR accounts of the company: the journal line, the document type and posting date, the age in days, the amount, the cleared amount and the residual, the state, the source (RECEIPT, DIRECT_RECEIPT, RETURN, INVOICE, CREDIT_NOTE, WRITE_OFF and its id), the supplier and the orders of the document.
+3. **State.** OPEN is open or partly cleared; WRITTEN_OFF is cleared by `gr-ir:write-off` and not reset; the lines of the write-off document itself are CLEARED.
+4. **Reconciliation.** `total_open_lc` (the residual of all open items) and `gl_balance_lc` (the balance of the GR/IR accounts) are unfiltered and equal.
+5. **Not built.** A cursor, past states, the order line of an item, `uninvoiced:query`, `open-orders:query` and the get and list of the documents.
+
 ### 13.2ao Return credit of a purchase credit note (F-IMPL-70, 2026-11-25)
 
 PROPOSED, written down so that spec and code agree. It builds on 11, 7.3 and 13.2ah to 13.2al.
@@ -857,6 +867,121 @@ PROPOSED, written down so that spec and code agree. It builds on 11, 7.2 (D3), 1
 5. **Reversal.** `purchase-invoices:reverse` mirrors the link rows with the stock document columns. `stock-documents:reverse` of the receipt is refused with ORDER.RECEIPT_INVOICED while an invoice that is not reversed is matched to it.
 6. **Write-off.** `gr-ir:write-off` takes `receipt_ref` as a selector for the residual of that movement.
 7. **Not built.** A credit note against a line of a direct receipt, the supplier check, returns of a direct receipt.
+
+### 13.2bb Intercompany invoices (F-IMPL-83, 2026-11-26)
+
+PROPOSED, written down so that spec and code agree. It builds on 11, 6.7, 6.4, 7.2 and on 13.2ax, 13.2ba. No migration.
+
+1. **Built (service lines).** `ic-invoices:create` (`ic.invoice`): `ic_transaction_id` (the pair of `ic-orders:create`), `invoice_date`, `lines[]` with `line_ref`, `order_line_no` (the same line number in both orders) and `quantity`, and optional `posting_date`, `due_date`, `supplier_invoice_number`, `source_document_ref`. The AR invoice of the seller is the path of `sales-invoices:create` (mode CORE_BUILDS; the service lines need the policy ORDERED), the AP invoice of the buyer the path of `purchase-invoices:post`: its lines take quantity, price and discount from the purchase order line and are matched against the ordered quantity; its gross is the sum of the net amounts. Without `supplier_invoice_number` the buyer's number is derived from the pair and the key.
+2. **Pair.** One transaction; both journals have origin ORDER, carry `ic_transaction_id` and the other company as counterpart, and both link rows carry the id. The marker is on every BASE line, the AR and AP control lines included, and on no tax line. The sides are posted in company order, with the keys `<key>#1` (AR) and `<key>#2` (AP); a failure of one side (an exceeded quantity, a closed period) keeps nothing of the other. The command log has the base key; the replay loads both invoices.
+3. **Progress.** The invoiced quantity of both order lines grows by the same amount; a quantity that one side cannot take rejects the pair.
+4. **Changes to the single-company commands.** `SalesInvoiceCommands.CreateCoreAsync` and `PurchaseInvoiceCommands.PostCoreAsync` take the pair id, the counterpart and `owned` (no log row, no commit); both header inserts write `ic_transaction_id`. `purchase-invoices:post` sends no tax amount to the journal for a line without tax code and with tax amount 0 (it was refused as `tax_amount_tc` without a code).
+5. **New codes.** `ORDER.IC_ORDER_PAIR_NOT_FOUND`; `LIMIT.IC_INVOICE_TAX_NOT_BUILT` (an invoice with tax on either side).
+6. **Not built.** Stock lines (they need `ic-deliveries:post` and the GR/IR clearing of 7.2), tax between the companies, foreign currency, a default quantity from what is open, `ic-invoices:reverse`, `ic-orders:change`.
+
+### 13.2ba Intercompany orders (F-IMPL-82, 2026-11-26)
+
+PROPOSED, written down so that spec and code agree. It builds on 11, 6.7, 13.2u and ADR-016. Migration 0054.
+
+1. **Built.** `ic-orders:create` (`ic.order`): `sales_company_id` (the seller), `purchase_company_id` (the buyer), `order_date`, `order_currency`, `customer_partner_id` (the buyer as customer of the seller), `supplier_partner_id` (the seller as supplier of the buyer), `lines[]` and optional `delivery_date`, `header_text`, `source_document_ref`, `ship_from_country`. A line is a line of a sales order (11, 6.1) with the optional `buyer_warehouse_id`, the warehouse of the buyer's line. Table `ic_order_link` (migration 0054, insert-only, one pair per order).
+2. **Rules.** The customer partner names the buyer as `ic_company_id` and the supplier partner names the seller, else `CONFIG.INVALID_REFERENCE` with the path of the partner. Each side is checked as a `sales-orders:create` and a `purchase-orders:create` (paths prefixed `sales_order` and `purchase_order`); a failure of one side keeps nothing of the other.
+3. **One transaction.** The two orders are created in company order (the number counters are locked in one order), both carry `ic_transaction_id`, the keys are the key of the command with #1 (sales) and #2 (purchase), the command log has the base key and replays both orders. The order events and outbox events of the single-company create are written for each order.
+4. **Refactor.** `OrderCommands.ValidateCreate` is the shape check of a create, and `CreateCoreAsync` takes the transaction of the caller (no log row, no commit) and the `ic_transaction_id`.
+5. **Deviations.** The purchase side needs a ship-from country for its lines (6.2); it is `ship_from_country` of the request and not derived from the seller's warehouse. `ic-orders:change` and the rule that either order is rejected for change while the pair exists are not built.
+6. **Not built.** `ic-orders:change`, `ic-deliveries:post`, `ic-invoices:create`, the reads of `ic_order_link` and the filter `ic_transaction_id` of the order reads.
+
+### 13.2az `ic-reconciliations:query` (F-IMPL-81, 2026-11-26)
+
+PROPOSED, written down so that spec and code agree. It builds on 23, 7.2 and on 13.2aw, 13.2ax, 13.2ay. Read-only, no migration.
+
+1. **Built.** `ic-reconciliations:query` (`read.ledger` and `read.cross_company`): `as_of_date`, exactly one of `company_ids` (at least two) and `group_id` (the members at `as_of_date`), `view` (`BALANCES` default, or `DOCUMENTS`), `tolerance_gc` (default 0). One snapshot; the result lists the companies and the LEDGER position of each.
+2. **BALANCES.** One row per unordered pair {A, B} with A the smaller id and at least one marked line: `a_to_b` and `b_to_a` (LC, GC, RC of the marked ASSET and LIABILITY lines to the date), `difference_gc`, `difference_tc` by transaction currency, `pnl_a_to_b_gc`, `pnl_b_to_a_gc` and `pnl_difference_gc` (marked BASE lines of REVENUE and EXPENSE accounts of the fiscal year of the date, YEAR_END and CLOSING left out) and the flags `BALANCE_DIFFERENCE` and `PNL_DIFFERENCE` when the absolute difference is above the tolerance.
+3. **DOCUMENTS.** Per `ic_transaction_id` (originals only): `ONE_SIDED` (fewer than two documents), `DATE_DIFFERENT`, `TC_DIFFERENT` (the marked BASE lines do not offset in one transaction currency), `GC_DIFFERENT` (the marked BASE lines do not offset in group amount) and `ONE_SIDE_REVERSED`. Each finding names the documents.
+4. **Not built.** `COUNTERPART_NOT_VISIBLE` (no company access exists), a finding for postings to IC accounts without marker (CT-08), the listing of a pair by document in the balance view, `read.cross_company` per company.
+
+### 13.2ay Reversal of intercompany pairs (F-IMPL-80, 2026-11-26)
+
+PROPOSED, written down so that spec and code agree. It builds on 13.2ax and 06, 5.5. No migration.
+
+1. **Built.** `intercompany-documents:reverse` (`intercompany.post`): `ic_transaction_id`, `reason_code` (CORRECTION or ERROR), optional `reversal_date` (default the posting date of each document) and `reason_text`. Both originals are reversed in one transaction; the result lists the two mirrors in company order.
+2. **Mirrors.** A mirror keeps the document type of its original and carries its `ic_transaction_id` and counterpart, so the pair and its mirrors are four documents under one id; the line marker is copied. The documents use the keys `<key>#1` and `<key>#2`, the command log has the base key. Replays answer with the mirrors; the replay of `intercompany-documents:post` looks only at documents that are not mirrors.
+3. **Refusals.** A reversed pair is `REVERSAL.ALREADY_REVERSED`, an unknown id `REVERSAL.NOT_FOUND`, a closed period in either company a `PERIOD.*` code, a cleared open item `REVERSAL.HAS_CLEARED_LINES`; any refusal leaves both sides posted (tested with a hard-closed period).
+4. **Change of the reverser.** `DocumentReverser.ReverseCoreAsync` runs the reversal in a transaction of the caller (no log row, no commit); the mirror of any document copies `ic_transaction_id` and the header counterpart of its original (null for the documents that are not IC documents). The role is the clearing role when either original has open items.
+5. **Not built.** The reversal of order-built IC pairs (`ic-deliveries:reverse`, `ic-invoices:reverse`), the check that both periods are open before any lock (the first refusal ends the command), `AUTH.COMPANY_NOT_ALLOWED`.
+
+### 13.2ax Intercompany documents (F-IMPL-79, 2026-11-25)
+
+PROPOSED, written down so that spec and code agree. It builds on 06, 5.5, ADR-016, ADR-226, 02, 5.4 and 13.2aw. No migration.
+
+1. **Built.** `intercompany-documents:post` (`intercompany.post`): `document_date`, `posting_date`, `transaction_currency`, `ic_reference` and exactly two `sides[]` of different companies, each with `document_type`, `lines[]` (as in 06, 5.2), optional `ledger_id`, `partner_id`, `header_text`, `external_reference`. The result lists both documents in the order of the sides and the `ic_transaction_id`.
+2. **Generated line.** Each side gets one line on the IC account of the counterpart: the role `IC_RECEIVABLE` when the base lines of the side leave a debit, `IC_PAYABLE` when they leave a credit (`CONFIG.ROLE_NOT_ASSIGNED` otherwise, path `sides[i]`). The line ref `IC` is reserved. The base lines of the two sides must offset in the transaction currency (`BALANCE.UNBALANCED_TC`).
+3. **Marker.** Both documents carry `ic_transaction_id` and the other company as `ic_counterpart_company_id`; the marker is set on every BASE line, including the generated one, and never on tax, rounding or derived lines. The marker is in the line hash and the LEDGER chain verifies.
+4. **Atomic.** One transaction; the sides are posted in company order, so the ledger heads are locked in the same order whatever the request order; a failure of one side rolls back the other. The documents use the keys `<key>#1` and `<key>#2` (position in the request), the command log has the base key and replays both documents. Origin EXTERNAL (06, 3).
+5. **Reversal.** `journal-documents:reverse` refuses a document with an `ic_transaction_id` (`REVERSAL.TYPE_NOT_REVERSIBLE`, owning command `intercompany-documents:reverse`). The group amount is the same on both sides because both documents take the rate of the same posting date.
+6. **Not built.** `intercompany-documents:reverse`, `AUTH.COMPANY_NOT_ALLOWED` (no company-level access exists), `ic-deliveries:*` and `ic-invoices:*` (11, 6.7), the group rate override for sides with different rates, the markers on the control line of an AR or AP side beyond what the generic posting gives.
+
+### 13.2aw Group keys of `balances:query` (F-IMPL-78, 2026-11-25)
+
+PROPOSED, written down so that spec and code agree. It builds on 23, 4 and 7.1, 09, 4.1 and 13.2au.
+
+1. **Built (one company).** `balances:query` takes the group keys `group_account_id` and `ic_counterpart_company_id`, and the filters `group_account_id`, `ic_counterpart_company_id` and `is_intercompany` (marker not null). No migration.
+2. **Group account.** The key resolves through `account_group_mapping` at the reporting date (`as_of_date`, or `to_date` of a movement). The row carries `group_account_code`, `group_account_name`, `group_account_type` and `translation_rate_basis` (the stored basis, or the default of the account type); an unmapped line forms the row with these keys null. The join is made only when the key or the filter is used.
+3. **Not built.** `group_id` in place of `company_ids` (the read takes one company), `read.cross_company`, the `ledger_seq` per company, `ic-reconciliations:query`. No IC command exists yet, so no line carries the marker (23, 6) and `ic_counterpart_company_id` is null in every row; the key and the filters are tested on that.
+
+### 13.2av Consolidation readiness warnings and the list of settings (F-IMPL-77, 2026-11-25)
+
+PROPOSED, written down so that spec and code agree. It builds on 11.3, 23, 9 and 13.2ar, 13.2au.
+
+1. **Built.** Three warnings in `companies:check-readiness` and `companies:activate`: `CONSOLIDATION_MEMBERSHIP` (the current method is not `NOT_CONSOLIDATED` and the company is in no group today), `GROUP_ACCOUNT_MAPPING` (the group has active group accounts and no account of the company is mapped today) and `GROUP_CHANGE_MAPPING` (a mapping valid today points to a group account of another group than the current one). The reference date is today.
+2. **Form.** `ReadinessCheck` gets `IsWarning`; a failed warning check is listed in the report, does not make the company not ready, and is returned as the warning `CONFIG.READINESS_WARNING` with `check` and `detail`. `CONSOLIDATION` leaves the list of checks that are not checked yet.
+3. **List.** `company-consolidation-settings:list` (`read.config`): every version, filters `company_id`, `parent_company_id`, `consolidation_method`, `translation_method`.
+4. **Not built.** The check of the second warning does not look at whether the company ever changed group: a missing mapping to the current group is reported by `GROUP_ACCOUNT_MAPPING`.
+
+### 13.2au Mapping of company accounts to group accounts (F-IMPL-76, 2026-11-25)
+
+PROPOSED, written down so that spec and code agree. It builds on 6.4, 23, 4 and ADR-227 and on 13.2at.
+
+1. **Built.** `account-group-mappings:create` (`write.config`): `company_id`, `account_id`, `group_account_id`, `valid_from`; and `account-group-mappings:list` (`read.config`, all versions, filters `company_id`, `account_id`, `group_account_id`). Table `account_group_mapping` (migration 0053), pattern V with an exclusion constraint against overlap.
+2. **Rules.** The account belongs to the company and the group account exists and is active (`CONFIG.INVALID_REFERENCE`); the company is a member of a group at `valid_from` (`CONFIG.NOT_A_GROUP_MEMBER`); the group account belongs to that group (`CONFIG.GROUP_ACCOUNT_OTHER_GROUP`); `valid_from` is later than the latest mapping of the account (`CONFIG.VALID_FROM_NOT_LATER`).
+3. **One at a time.** The open mapping of the account gets `valid_to` = the new `valid_from`; a trigger lets only that change through, every other update is refused. The result names the start of the row that was closed.
+4. **Deviation.** The spec has no command name for the mapping; the generic verb `create` of the resource is used, and there is no `deactivate`: a mapping ends by a later one. A mapping that should end without a successor is not possible yet.
+5. **Not built.** A closing command, the deactivation guard of group accounts that are mapped, the readiness warnings of 23, 9.
+
+### 13.2at Group chart of accounts (F-IMPL-75, 2026-11-25)
+
+PROPOSED, written down so that spec and code agree. It builds on 6.4, 23, 4 and ADR-227.
+
+1. **Built.** `group-chart-accounts:create`, `:update`, `:deactivate`, `:reactivate` (`write.config`) on the generic master commands and `group-chart-accounts:get`, `group-chart-accounts:list` (`read.config`). Table `group_chart_account` (migration 0052), pattern M. Fields: `group_id`, `code`, `name`, `account_type` and `translation_rate_basis` (null, `CLOSING`, `AVERAGE` or `HISTORICAL`). A row is addressed by `id` (`group_account_id`).
+2. **Rules.** The group must exist (`CONFIG.INVALID_REFERENCE`), the code is unique in the group (`CONFIG.DUPLICATE_CODE`). Group and account type are set at creation only (an update with them is `SCHEMA.UNKNOWN_FIELD`). `GroupChartFields.EffectiveBasis` gives the default of an account type for the consolidation app.
+3. **Deviation.** Unique key (`tenant_id`, `group_id`, `code`) and a unique (`tenant_id`, `group_id`, `group_account_id`), with `group_account_id` as the primary key beside `tenant_id`, because the generic commands address a row by one id.
+4. **Not built.** `account_group_mapping` and `CONFIG.GROUP_ACCOUNT_OTHER_GROUP`; nothing blocks a deactivation until the mapping exists.
+
+### 13.2as Usage lock of rates for apps (F-IMPL-74, 2026-11-25)
+
+PROPOSED, written down so that spec and code agree. It builds on 7.2, 7.3 and ADR-225.
+
+1. **Built.** `exchange-rates:mark-used` (`write.config`): `rate_ids[]` and `purpose_ref`. It sets `first_used_at` on the rows that have none, for any rate type; the guard trigger then refuses a change. Rows that are used stay as they are and are returned as `already_used`. An unknown id rejects the whole command with `SCHEMA.INVALID_VALUE`. One `master_change_log` row (entity `EXCHANGE_RATE`, field `first_used_at`) and one `master.changed` event per marked rate. Replay by key. No migration: the table already allows AVERAGE and HISTORICAL (0003) and the configuration role may set `first_used_at` (0006).
+2. **Deviations.** `master_batch_max_items` has no home in the settings yet, so the limit is a constant of 500 ids. `purpose_ref` is part of the request fingerprint and the answer, not of the log row.
+3. **Not built.** The generic list of rates with a `rate_type` filter (09, 3) and the loading of rates of the new types by a command.
+
+### 13.2ar Consolidation settings per company (F-IMPL-73, 2026-11-25)
+
+PROPOSED, written down so that spec and code agree. It builds on 23, 3.1 and ADR-224.
+
+1. **Built.** `company-consolidation-settings:create-version` (`write.config`): `fields` with `effective_from`, `parent_company_id`, `ownership_pct`, `consolidation_method` and `translation_method`. Table `company_consolidation_setting_version` (migration 0050), insert-only, a new version needs a later `effective_from`.
+2. **Rules at `effective_from`.** The company is a member of a group (`CONFIG.NOT_A_GROUP_MEMBER`); the parent is another member of the same group and the percentage is above 0 and present exactly with a parent (`CONFIG.OWNERSHIP_INVALID`); the parent chain, read from the versions in force at that date, does not return to the company (`CONFIG.OWNERSHIP_CYCLE`); `NONE` exactly when the local currency equals the group currency (`CONFIG.TRANSLATION_METHOD_INVALID`).
+3. **Deviations.** A percentage above 100 is `SCHEMA.INVALID_VALUE` (the rate type of the field registry), not `CONFIG.OWNERSHIP_INVALID`. The cycle is checked at `effective_from` only, not at every later date.
+4. **Not built.** The read of the versions, the three readiness warnings (23, 9), `translation_rate_basis`, the mapping rule `CONFIG.GROUP_ACCOUNT_OTHER_GROUP`, the rate types AVERAGE and HISTORICAL, `exchange-rates:mark-used`, the marker on base and control lines, the group keys of `balances:query` and `ic-reconciliations:query`.
+
+### 13.2aq Issue evidence of invoices (F-IMPL-72, 2026-11-25)
+
+PROPOSED, written down so that spec and code agree. It builds on 12, 11 and 22, delta 1.
+
+1. **Built.** `invoices:record-issue` (`sales.invoice`): `invoice_kind`, exactly one of `invoice_id` and `document_id`, `format`, `document_reference`, `document_sha256` (64 hexadecimal characters), `delivery_channel`, optional `issued_at`. Table `invoice_issue_record` (migration 0049), insert-only.
+2. **Targets.** A link record of the stated kind that is not a reversal, or a journal document of type `AR_INVOICE`, `AR_CREDIT`, `AP_INVOICE` or `AP_CREDIT` that is not an owned mirror; the kind follows from the document type. `ORDER.ISSUE_TARGET_INVALID`, `ORDER.ISSUE_TARGET_NOT_FOUND`, `ORDER.ISSUE_DOCUMENT_TYPE_INVALID`.
+3. **Event.** `invoice.issued` with references only.
+4. **Open point.** 22, 3 gives `purchase.invoice` to supplier documents, 12, 11 gives `sales.invoice` to both kinds. The code follows 12.
+5. **Not built.** The list `invoice-issue-records`, the `issue_state` filter, `einvoice-datasets:get`, `einvoice_rule_set`, the bank account columns of ADR-223, the retention class.
 
 ### 13.2aj Write-off of GR/IR residuals (F-IMPL-64, 2026-11-25)
 

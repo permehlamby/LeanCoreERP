@@ -96,7 +96,7 @@
             }
           },
           "401": {
-            "description": "No valid token (AUTH.TOKEN_INVALID)",
+            "description": "No valid token (AUTH.TOKEN_INVALID), or a token bound to a client certificate that the connection does not present (AUTH.CLIENT_CERTIFICATE_*)",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -137,6 +137,16 @@
           },
           "422": {
             "description": "The command refused the request: business rules (P2 to P6)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The tenant is over its rate limit (API.RATE_LIMITED); the header Retry-After says how many seconds to wait",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -258,7 +268,7 @@
             }
           },
           "401": {
-            "description": "No valid token (AUTH.TOKEN_INVALID)",
+            "description": "No valid token (AUTH.TOKEN_INVALID), or a token bound to a client certificate that the connection does not present (AUTH.CLIENT_CERTIFICATE_*)",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -299,6 +309,360 @@
           },
           "422": {
             "description": "The command refused the request: business rules (P2 to P6)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The tenant is over its rate limit (API.RATE_LIMITED); the header Retry-After says how many seconds to wait",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The command failed (SYSTEM.*)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The service is unavailable (SYSTEM.UNAVAILABLE)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/account-group-mappings:create": {
+      "post": {
+        "operationId": "accountGroupMappingsCreate",
+        "summary": "account-group-mappings:create",
+        "tags": [
+          "account-group-mappings"
+        ],
+        "x-permission": "write.config",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          },
+          {
+            "$ref": "#/components/parameters/CorrelationId"
+          },
+          {
+            "$ref": "#/components/parameters/SourceSystem"
+          },
+          {
+            "$ref": "#/components/parameters/TenantId"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateAccountGroupMappingRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The command succeeded (06, 2.2). A replay of an earlier identical command has idempotent_replay true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "status",
+                    "idempotent_replay",
+                    "command_log_id",
+                    "result",
+                    "warnings"
+                  ],
+                  "properties": {
+                    "status": {
+                      "const": "OK"
+                    },
+                    "idempotent_replay": {
+                      "type": "boolean"
+                    },
+                    "command_log_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "format": "uuid"
+                    },
+                    "result": {
+                      "$ref": "#/components/schemas/AccountGroupMappingResult"
+                    },
+                    "warnings": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Error"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The envelope or the payload does not fit the contract (P0, P1)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid token (AUTH.TOKEN_INVALID), or a token bound to a client certificate that the connection does not present (AUTH.CLIENT_CERTIFICATE_*)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "A permission or the tenant is missing (AUTH.*)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The command or something it names does not exist",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "An idempotency key was reused for another request, or a retryable conflict (SYSTEM.CONFLICT)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The command refused the request: business rules (P2 to P6)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The tenant is over its rate limit (API.RATE_LIMITED); the header Retry-After says how many seconds to wait",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The command failed (SYSTEM.*)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The service is unavailable (SYSTEM.UNAVAILABLE)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/account-group-mappings:list": {
+      "post": {
+        "operationId": "accountGroupMappingsList",
+        "summary": "account-group-mappings:list",
+        "tags": [
+          "account-group-mappings"
+        ],
+        "x-permission": "read.config",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          },
+          {
+            "$ref": "#/components/parameters/CorrelationId"
+          },
+          {
+            "$ref": "#/components/parameters/SourceSystem"
+          },
+          {
+            "$ref": "#/components/parameters/TenantId"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ListMasterRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The command succeeded (06, 2.2). A replay of an earlier identical command has idempotent_replay true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "status",
+                    "idempotent_replay",
+                    "command_log_id",
+                    "result",
+                    "warnings"
+                  ],
+                  "properties": {
+                    "status": {
+                      "const": "OK"
+                    },
+                    "idempotent_replay": {
+                      "type": "boolean"
+                    },
+                    "command_log_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "format": "uuid"
+                    },
+                    "result": {
+                      "$ref": "#/components/schemas/MasterRowList"
+                    },
+                    "warnings": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Error"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The envelope or the payload does not fit the contract (P0, P1)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid token (AUTH.TOKEN_INVALID), or a token bound to a client certificate that the connection does not present (AUTH.CLIENT_CERTIFICATE_*)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "A permission or the tenant is missing (AUTH.*)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The command or something it names does not exist",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "An idempotency key was reused for another request, or a retryable conflict (SYSTEM.CONFLICT)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The command refused the request: business rules (P2 to P6)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The tenant is over its rate limit (API.RATE_LIMITED); the header Retry-After says how many seconds to wait",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -420,7 +784,7 @@
             }
           },
           "401": {
-            "description": "No valid token (AUTH.TOKEN_INVALID)",
+            "description": "No valid token (AUTH.TOKEN_INVALID), or a token bound to a client certificate that the connection does not present (AUTH.CLIENT_CERTIFICATE_*)",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -461,6 +825,16 @@
           },
           "422": {
             "description": "The command refused the request: business rules (P2 to P6)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The tenant is over its rate limit (API.RATE_LIMITED); the header Retry-After says how many seconds to wait",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -582,7 +956,7 @@
             }
           },
           "401": {
-            "description": "No valid token (AUTH.TOKEN_INVALID)",
+            "description": "No valid token (AUTH.TOKEN_INVALID), or a token bound to a client certificate that the connection does not present (AUTH.CLIENT_CERTIFICATE_*)",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -623,6 +997,16 @@
           },
           "422": {
             "description": "The command refused the request: business rules (P2 to P6)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The tenant is over its rate limit (API.RATE_LIMITED); the header Retry-After says how many seconds to wait",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -744,7 +1128,7 @@
             }
           },
           "401": {
-            "description": "No valid token (AUTH.TOKEN_INVALID)",
+            "description": "No valid token (AUTH.TOKEN_INVALID), or a token bound to a client certificate that the connection does not present (AUTH.CLIENT_CERTIFICATE_*)",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -785,6 +1169,16 @@
           },
           "422": {
             "description": "The command refused the request: business rules (P2 to P6)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The tenant is over its rate limit (API.RATE_LIMITED); the header Retry-After says how many seconds to wait",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -906,7 +1300,7 @@
             }
           },
           "401": {
-            "description": "No valid token (AUTH.TOKEN_INVALID)",
+            "description": "No valid token (AUTH.TOKEN_INVALID), or a token bound to a client certificate that the connection does not present (AUTH.CLIENT_CERTIFICATE_*)",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -947,6 +1341,16 @@
           },
           "422": {
             "description": "The command refused the request: business rules (P2 to P6)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The tenant is over its rate limit (API.RATE_LIMITED); the header Retry-After says how many seconds to wait",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -1068,7 +1472,7 @@
             }
           },
           "401": {
-            "description": "No valid token (AUTH.TOKEN_INVALID)",
+            "description": "No valid token (AUTH.TOKEN_INVALID), or a token bound to a client certificate that the connection does not present (AUTH.CLIENT_CERTIFICATE_*)",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -1109,6 +1513,16 @@
           },
           "422": {
             "description": "The command refused the request: business rules (P2 to P6)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The tenant is over its rate limit (API.RATE_LIMITED); the header Retry-After says how many seconds to wait",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -1230,7 +1644,7 @@
             }
           },
           "401": {
-            "description": "No valid token (AUTH.TOKEN_INVALID)",
+            "description": "No valid token (AUTH.TOKEN_INVALID), or a token bound to a client certificate that the connection does not present (AUTH.CLIENT_CERTIFICATE_*)",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -1271,6 +1685,16 @@
           },
           "422": {
             "description": "The command refused the request: business rules (P2 to P6)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The tenant is over its rate limit (API.RATE_LIMITED); the header Retry-After says how many seconds to wait",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -1392,7 +1816,7 @@
             }
           },
           "401": {
-            "description": "No valid token (AUTH.TOKEN_INVALID)",
+            "description": "No valid token (AUTH.TOKEN_INVALID), or a token bound to a client certificate that the connection does not present (AUTH.CLIENT_CERTIFICATE_*)",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -1433,6 +1857,16 @@
           },
           "422": {
             "description": "The command refused the request: business rules (P2 to P6)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The tenant is over its rate limit (API.RATE_LIMITED); the header Retry-After says how many seconds to wait",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -1554,7 +1988,7 @@
             }
           },
           "401": {
-            "description": "No valid token (AUTH.TOKEN_INVALID)",
+            "description": "No valid token (AUTH.TOKEN_INVALID), or a token bound to a client certificate that the connection does not present (AUTH.CLIENT_CERTIFICATE_*)",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -1595,6 +2029,16 @@
           },
           "422": {
             "description": "The command refused the request: business rules (P2 to P6)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The tenant is over its rate limit (API.RATE_LIMITED); the header Retry-After says how many seconds to wait",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -1716,7 +2160,7 @@
             }
           },
           "401": {
-            "description": "No valid token (AUTH.TOKEN_INVALID)",
+            "description": "No valid token (AUTH.TOKEN_INVALID), or a token bound to a client certificate that the connection does not present (AUTH.CLIENT_CERTIFICATE_*)",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -1757,6 +2201,16 @@
           },
           "422": {
             "description": "The command refused the request: business rules (P2 to P6)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The tenant is over its rate limit (API.RATE_LIMITED); the header Retry-After says how many seconds to wait",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -1878,7 +2332,7 @@
             }
           },
           "401": {
-            "description": "No valid token (AUTH.TOKEN_INVALID)",
+            "description": "No valid token (AUTH.TOKEN_INVALID), or a token bound to a client certificate that the connection does not present (AUTH.CLIENT_CERTIFICATE_*)",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -1919,6 +2373,360 @@
           },
           "422": {
             "description": "The command refused the request: business rules (P2 to P6)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The tenant is over its rate limit (API.RATE_LIMITED); the header Retry-After says how many seconds to wait",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The command failed (SYSTEM.*)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The service is unavailable (SYSTEM.UNAVAILABLE)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/company-consolidation-settings:create-version": {
+      "post": {
+        "operationId": "companyConsolidationSettingsCreateVersion",
+        "summary": "company-consolidation-settings:create-version",
+        "tags": [
+          "company-consolidation-settings"
+        ],
+        "x-permission": "write.config",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          },
+          {
+            "$ref": "#/components/parameters/CorrelationId"
+          },
+          {
+            "$ref": "#/components/parameters/SourceSystem"
+          },
+          {
+            "$ref": "#/components/parameters/TenantId"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateConsolidationSettingVersionRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The command succeeded (06, 2.2). A replay of an earlier identical command has idempotent_replay true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "status",
+                    "idempotent_replay",
+                    "command_log_id",
+                    "result",
+                    "warnings"
+                  ],
+                  "properties": {
+                    "status": {
+                      "const": "OK"
+                    },
+                    "idempotent_replay": {
+                      "type": "boolean"
+                    },
+                    "command_log_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "format": "uuid"
+                    },
+                    "result": {
+                      "$ref": "#/components/schemas/ConsolidationSettingVersionResult"
+                    },
+                    "warnings": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Error"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The envelope or the payload does not fit the contract (P0, P1)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid token (AUTH.TOKEN_INVALID), or a token bound to a client certificate that the connection does not present (AUTH.CLIENT_CERTIFICATE_*)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "A permission or the tenant is missing (AUTH.*)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The command or something it names does not exist",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "An idempotency key was reused for another request, or a retryable conflict (SYSTEM.CONFLICT)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The command refused the request: business rules (P2 to P6)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The tenant is over its rate limit (API.RATE_LIMITED); the header Retry-After says how many seconds to wait",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The command failed (SYSTEM.*)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The service is unavailable (SYSTEM.UNAVAILABLE)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/company-consolidation-settings:list": {
+      "post": {
+        "operationId": "companyConsolidationSettingsList",
+        "summary": "company-consolidation-settings:list",
+        "tags": [
+          "company-consolidation-settings"
+        ],
+        "x-permission": "read.config",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          },
+          {
+            "$ref": "#/components/parameters/CorrelationId"
+          },
+          {
+            "$ref": "#/components/parameters/SourceSystem"
+          },
+          {
+            "$ref": "#/components/parameters/TenantId"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ListMasterRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The command succeeded (06, 2.2). A replay of an earlier identical command has idempotent_replay true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "status",
+                    "idempotent_replay",
+                    "command_log_id",
+                    "result",
+                    "warnings"
+                  ],
+                  "properties": {
+                    "status": {
+                      "const": "OK"
+                    },
+                    "idempotent_replay": {
+                      "type": "boolean"
+                    },
+                    "command_log_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "format": "uuid"
+                    },
+                    "result": {
+                      "$ref": "#/components/schemas/MasterRowList"
+                    },
+                    "warnings": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Error"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The envelope or the payload does not fit the contract (P0, P1)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid token (AUTH.TOKEN_INVALID), or a token bound to a client certificate that the connection does not present (AUTH.CLIENT_CERTIFICATE_*)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "A permission or the tenant is missing (AUTH.*)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The command or something it names does not exist",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "An idempotency key was reused for another request, or a retryable conflict (SYSTEM.CONFLICT)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The command refused the request: business rules (P2 to P6)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The tenant is over its rate limit (API.RATE_LIMITED); the header Retry-After says how many seconds to wait",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -2040,7 +2848,7 @@
             }
           },
           "401": {
-            "description": "No valid token (AUTH.TOKEN_INVALID)",
+            "description": "No valid token (AUTH.TOKEN_INVALID), or a token bound to a client certificate that the connection does not present (AUTH.CLIENT_CERTIFICATE_*)",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -2081,6 +2889,16 @@
           },
           "422": {
             "description": "The command refused the request: business rules (P2 to P6)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The tenant is over its rate limit (API.RATE_LIMITED); the header Retry-After says how many seconds to wait",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -2202,7 +3020,7 @@
             }
           },
           "401": {
-            "description": "No valid token (AUTH.TOKEN_INVALID)",
+            "description": "No valid token (AUTH.TOKEN_INVALID), or a token bound to a client certificate that the connection does not present (AUTH.CLIENT_CERTIFICATE_*)",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -2243,6 +3061,16 @@
           },
           "422": {
             "description": "The command refused the request: business rules (P2 to P6)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The tenant is over its rate limit (API.RATE_LIMITED); the header Retry-After says how many seconds to wait",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -2364,7 +3192,7 @@
             }
           },
           "401": {
-            "description": "No valid token (AUTH.TOKEN_INVALID)",
+            "description": "No valid token (AUTH.TOKEN_INVALID), or a token bound to a client certificate that the connection does not present (AUTH.CLIENT_CERTIFICATE_*)",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -2405,6 +3233,16 @@
           },
           "422": {
             "description": "The command refused the request: business rules (P2 to P6)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The tenant is over its rate limit (API.RATE_LIMITED); the header Retry-After says how many seconds to wait",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -2526,7 +3364,7 @@
             }
           },
           "401": {
-            "description": "No valid token (AUTH.TOKEN_INVALID)",
+            "description": "No valid token (AUTH.TOKEN_INVALID), or a token bound to a client certificate that the connection does not present (AUTH.CLIENT_CERTIFICATE_*)",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -2567,6 +3405,16 @@
           },
           "422": {
             "description": "The command refused the request: business rules (P2 to P6)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The tenant is over its rate limit (API.RATE_LIMITED); the header Retry-After says how many seconds to wait",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -2688,7 +3536,7 @@
             }
           },
           "401": {
-            "description": "No valid token (AUTH.TOKEN_INVALID)",
+            "description": "No valid token (AUTH.TOKEN_INVALID), or a token bound to a client certificate that the connection does not present (AUTH.CLIENT_CERTIFICATE_*)",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -2729,6 +3577,16 @@
           },
           "422": {
             "description": "The command refused the request: business rules (P2 to P6)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The tenant is over its rate limit (API.RATE_LIMITED); the header Retry-After says how many seconds to wait",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -2850,7 +3708,7 @@
             }
           },
           "401": {
-            "description": "No valid token (AUTH.TOKEN_INVALID)",
+            "description": "No valid token (AUTH.TOKEN_INVALID), or a token bound to a client certificate that the connection does not present (AUTH.CLIENT_CERTIFICATE_*)",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -2891,6 +3749,16 @@
           },
           "422": {
             "description": "The command refused the request: business rules (P2 to P6)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The tenant is over its rate limit (API.RATE_LIMITED); the header Retry-After says how many seconds to wait",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -3012,7 +3880,7 @@
             }
           },
           "401": {
-            "description": "No valid token (AUTH.TOKEN_INVALID)",
+            "description": "No valid token (AUTH.TOKEN_INVALID), or a token bound to a client certificate that the connection does not present (AUTH.CLIENT_CERTIFICATE_*)",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -3053,6 +3921,16 @@
           },
           "422": {
             "description": "The command refused the request: business rules (P2 to P6)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The tenant is over its rate limit (API.RATE_LIMITED); the header Retry-After says how many seconds to wait",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -3174,7 +4052,7 @@
             }
           },
           "401": {
-            "description": "No valid token (AUTH.TOKEN_INVALID)",
+            "description": "No valid token (AUTH.TOKEN_INVALID), or a token bound to a client certificate that the connection does not present (AUTH.CLIENT_CERTIFICATE_*)",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -3215,6 +4093,16 @@
           },
           "422": {
             "description": "The command refused the request: business rules (P2 to P6)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The tenant is over its rate limit (API.RATE_LIMITED); the header Retry-After says how many seconds to wait",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -3336,7 +4224,7 @@
             }
           },
           "401": {
-            "description": "No valid token (AUTH.TOKEN_INVALID)",
+            "description": "No valid token (AUTH.TOKEN_INVALID), or a token bound to a client certificate that the connection does not present (AUTH.CLIENT_CERTIFICATE_*)",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -3377,6 +4265,16 @@
           },
           "422": {
             "description": "The command refused the request: business rules (P2 to P6)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The tenant is over its rate limit (API.RATE_LIMITED); the header Retry-After says how many seconds to wait",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -3498,7 +4396,7 @@
             }
           },
           "401": {
-            "description": "No valid token (AUTH.TOKEN_INVALID)",
+            "description": "No valid token (AUTH.TOKEN_INVALID), or a token bound to a client certificate that the connection does not present (AUTH.CLIENT_CERTIFICATE_*)",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -3539,6 +4437,16 @@
           },
           "422": {
             "description": "The command refused the request: business rules (P2 to P6)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The tenant is over its rate limit (API.RATE_LIMITED); the header Retry-After says how many seconds to wait",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -3660,7 +4568,7 @@
             }
           },
           "401": {
-            "description": "No valid token (AUTH.TOKEN_INVALID)",
+            "description": "No valid token (AUTH.TOKEN_INVALID), or a token bound to a client certificate that the connection does not present (AUTH.CLIENT_CERTIFICATE_*)",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -3701,6 +4609,16 @@
           },
           "422": {
             "description": "The command refused the request: business rules (P2 to P6)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The tenant is over its rate limit (API.RATE_LIMITED); the header Retry-After says how many seconds to wait",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -3822,7 +4740,7 @@
             }
           },
           "401": {
-            "description": "No valid token (AUTH.TOKEN_INVALID)",
+            "description": "No valid token (AUTH.TOKEN_INVALID), or a token bound to a client certificate that the connection does not present (AUTH.CLIENT_CERTIFICATE_*)",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -3863,6 +4781,188 @@
           },
           "422": {
             "description": "The command refused the request: business rules (P2 to P6)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The tenant is over its rate limit (API.RATE_LIMITED); the header Retry-After says how many seconds to wait",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The command failed (SYSTEM.*)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The service is unavailable (SYSTEM.UNAVAILABLE)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/exchange-rates:mark-used": {
+      "post": {
+        "operationId": "exchangeRatesMarkUsed",
+        "summary": "exchange-rates:mark-used",
+        "tags": [
+          "exchange-rates"
+        ],
+        "x-permission": "write.config",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          },
+          {
+            "$ref": "#/components/parameters/CorrelationId"
+          },
+          {
+            "$ref": "#/components/parameters/SourceSystem"
+          },
+          {
+            "$ref": "#/components/parameters/TenantId"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MarkRatesUsedRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The command succeeded (06, 2.2). A replay of an earlier identical command has idempotent_replay true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "status",
+                    "idempotent_replay",
+                    "command_log_id",
+                    "result",
+                    "warnings"
+                  ],
+                  "properties": {
+                    "status": {
+                      "const": "OK"
+                    },
+                    "idempotent_replay": {
+                      "type": "boolean"
+                    },
+                    "command_log_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "format": "uuid"
+                    },
+                    "result": {
+                      "$ref": "#/components/schemas/MarkedRatesResult"
+                    },
+                    "warnings": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Error"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The envelope or the payload does not fit the contract (P0, P1)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid token (AUTH.TOKEN_INVALID), or a token bound to a client certificate that the connection does not present (AUTH.CLIENT_CERTIFICATE_*)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "A permission or the tenant is missing (AUTH.*)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The command or something it names does not exist",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "An idempotency key was reused for another request, or a retryable conflict (SYSTEM.CONFLICT)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The command refused the request: business rules (P2 to P6)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The tenant is over its rate limit (API.RATE_LIMITED); the header Retry-After says how many seconds to wait",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -3984,7 +5084,7 @@
             }
           },
           "401": {
-            "description": "No valid token (AUTH.TOKEN_INVALID)",
+            "description": "No valid token (AUTH.TOKEN_INVALID), or a token bound to a client certificate that the connection does not present (AUTH.CLIENT_CERTIFICATE_*)",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -4025,6 +5125,1392 @@
           },
           "422": {
             "description": "The command refused the request: business rules (P2 to P6)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The tenant is over its rate limit (API.RATE_LIMITED); the header Retry-After says how many seconds to wait",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The command failed (SYSTEM.*)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The service is unavailable (SYSTEM.UNAVAILABLE)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/group-chart-accounts:create": {
+      "post": {
+        "operationId": "groupChartAccountsCreate",
+        "summary": "group-chart-accounts:create",
+        "tags": [
+          "group-chart-accounts"
+        ],
+        "x-permission": "write.config",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          },
+          {
+            "$ref": "#/components/parameters/CorrelationId"
+          },
+          {
+            "$ref": "#/components/parameters/SourceSystem"
+          },
+          {
+            "$ref": "#/components/parameters/TenantId"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateInventoryMasterRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The command succeeded (06, 2.2). A replay of an earlier identical command has idempotent_replay true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "status",
+                    "idempotent_replay",
+                    "command_log_id",
+                    "result",
+                    "warnings"
+                  ],
+                  "properties": {
+                    "status": {
+                      "const": "OK"
+                    },
+                    "idempotent_replay": {
+                      "type": "boolean"
+                    },
+                    "command_log_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "format": "uuid"
+                    },
+                    "result": {
+                      "$ref": "#/components/schemas/MasterResult"
+                    },
+                    "warnings": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Error"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The envelope or the payload does not fit the contract (P0, P1)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid token (AUTH.TOKEN_INVALID), or a token bound to a client certificate that the connection does not present (AUTH.CLIENT_CERTIFICATE_*)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "A permission or the tenant is missing (AUTH.*)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The command or something it names does not exist",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "An idempotency key was reused for another request, or a retryable conflict (SYSTEM.CONFLICT)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The command refused the request: business rules (P2 to P6)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The tenant is over its rate limit (API.RATE_LIMITED); the header Retry-After says how many seconds to wait",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The command failed (SYSTEM.*)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The service is unavailable (SYSTEM.UNAVAILABLE)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/group-chart-accounts:deactivate": {
+      "post": {
+        "operationId": "groupChartAccountsDeactivate",
+        "summary": "group-chart-accounts:deactivate",
+        "tags": [
+          "group-chart-accounts"
+        ],
+        "x-permission": "write.config",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          },
+          {
+            "$ref": "#/components/parameters/CorrelationId"
+          },
+          {
+            "$ref": "#/components/parameters/SourceSystem"
+          },
+          {
+            "$ref": "#/components/parameters/TenantId"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MasterStatusRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The command succeeded (06, 2.2). A replay of an earlier identical command has idempotent_replay true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "status",
+                    "idempotent_replay",
+                    "command_log_id",
+                    "result",
+                    "warnings"
+                  ],
+                  "properties": {
+                    "status": {
+                      "const": "OK"
+                    },
+                    "idempotent_replay": {
+                      "type": "boolean"
+                    },
+                    "command_log_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "format": "uuid"
+                    },
+                    "result": {
+                      "$ref": "#/components/schemas/MasterResult"
+                    },
+                    "warnings": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Error"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The envelope or the payload does not fit the contract (P0, P1)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid token (AUTH.TOKEN_INVALID), or a token bound to a client certificate that the connection does not present (AUTH.CLIENT_CERTIFICATE_*)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "A permission or the tenant is missing (AUTH.*)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The command or something it names does not exist",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "An idempotency key was reused for another request, or a retryable conflict (SYSTEM.CONFLICT)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The command refused the request: business rules (P2 to P6)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The tenant is over its rate limit (API.RATE_LIMITED); the header Retry-After says how many seconds to wait",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The command failed (SYSTEM.*)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The service is unavailable (SYSTEM.UNAVAILABLE)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/group-chart-accounts:get": {
+      "post": {
+        "operationId": "groupChartAccountsGet",
+        "summary": "group-chart-accounts:get",
+        "tags": [
+          "group-chart-accounts"
+        ],
+        "x-permission": "read.config",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          },
+          {
+            "$ref": "#/components/parameters/CorrelationId"
+          },
+          {
+            "$ref": "#/components/parameters/SourceSystem"
+          },
+          {
+            "$ref": "#/components/parameters/TenantId"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GetMasterRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The command succeeded (06, 2.2). A replay of an earlier identical command has idempotent_replay true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "status",
+                    "idempotent_replay",
+                    "command_log_id",
+                    "result",
+                    "warnings"
+                  ],
+                  "properties": {
+                    "status": {
+                      "const": "OK"
+                    },
+                    "idempotent_replay": {
+                      "type": "boolean"
+                    },
+                    "command_log_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "format": "uuid"
+                    },
+                    "result": {
+                      "$ref": "#/components/schemas/MasterRowResult"
+                    },
+                    "warnings": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Error"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The envelope or the payload does not fit the contract (P0, P1)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid token (AUTH.TOKEN_INVALID), or a token bound to a client certificate that the connection does not present (AUTH.CLIENT_CERTIFICATE_*)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "A permission or the tenant is missing (AUTH.*)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The command or something it names does not exist",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "An idempotency key was reused for another request, or a retryable conflict (SYSTEM.CONFLICT)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The command refused the request: business rules (P2 to P6)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The tenant is over its rate limit (API.RATE_LIMITED); the header Retry-After says how many seconds to wait",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The command failed (SYSTEM.*)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The service is unavailable (SYSTEM.UNAVAILABLE)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/group-chart-accounts:list": {
+      "post": {
+        "operationId": "groupChartAccountsList",
+        "summary": "group-chart-accounts:list",
+        "tags": [
+          "group-chart-accounts"
+        ],
+        "x-permission": "read.config",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          },
+          {
+            "$ref": "#/components/parameters/CorrelationId"
+          },
+          {
+            "$ref": "#/components/parameters/SourceSystem"
+          },
+          {
+            "$ref": "#/components/parameters/TenantId"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ListMasterRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The command succeeded (06, 2.2). A replay of an earlier identical command has idempotent_replay true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "status",
+                    "idempotent_replay",
+                    "command_log_id",
+                    "result",
+                    "warnings"
+                  ],
+                  "properties": {
+                    "status": {
+                      "const": "OK"
+                    },
+                    "idempotent_replay": {
+                      "type": "boolean"
+                    },
+                    "command_log_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "format": "uuid"
+                    },
+                    "result": {
+                      "$ref": "#/components/schemas/MasterRowList"
+                    },
+                    "warnings": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Error"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The envelope or the payload does not fit the contract (P0, P1)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid token (AUTH.TOKEN_INVALID), or a token bound to a client certificate that the connection does not present (AUTH.CLIENT_CERTIFICATE_*)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "A permission or the tenant is missing (AUTH.*)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The command or something it names does not exist",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "An idempotency key was reused for another request, or a retryable conflict (SYSTEM.CONFLICT)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The command refused the request: business rules (P2 to P6)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The tenant is over its rate limit (API.RATE_LIMITED); the header Retry-After says how many seconds to wait",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The command failed (SYSTEM.*)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The service is unavailable (SYSTEM.UNAVAILABLE)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/group-chart-accounts:reactivate": {
+      "post": {
+        "operationId": "groupChartAccountsReactivate",
+        "summary": "group-chart-accounts:reactivate",
+        "tags": [
+          "group-chart-accounts"
+        ],
+        "x-permission": "write.config",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          },
+          {
+            "$ref": "#/components/parameters/CorrelationId"
+          },
+          {
+            "$ref": "#/components/parameters/SourceSystem"
+          },
+          {
+            "$ref": "#/components/parameters/TenantId"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MasterStatusRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The command succeeded (06, 2.2). A replay of an earlier identical command has idempotent_replay true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "status",
+                    "idempotent_replay",
+                    "command_log_id",
+                    "result",
+                    "warnings"
+                  ],
+                  "properties": {
+                    "status": {
+                      "const": "OK"
+                    },
+                    "idempotent_replay": {
+                      "type": "boolean"
+                    },
+                    "command_log_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "format": "uuid"
+                    },
+                    "result": {
+                      "$ref": "#/components/schemas/MasterResult"
+                    },
+                    "warnings": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Error"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The envelope or the payload does not fit the contract (P0, P1)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid token (AUTH.TOKEN_INVALID), or a token bound to a client certificate that the connection does not present (AUTH.CLIENT_CERTIFICATE_*)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "A permission or the tenant is missing (AUTH.*)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The command or something it names does not exist",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "An idempotency key was reused for another request, or a retryable conflict (SYSTEM.CONFLICT)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The command refused the request: business rules (P2 to P6)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The tenant is over its rate limit (API.RATE_LIMITED); the header Retry-After says how many seconds to wait",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The command failed (SYSTEM.*)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The service is unavailable (SYSTEM.UNAVAILABLE)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/group-chart-accounts:update": {
+      "post": {
+        "operationId": "groupChartAccountsUpdate",
+        "summary": "group-chart-accounts:update",
+        "tags": [
+          "group-chart-accounts"
+        ],
+        "x-permission": "write.config",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          },
+          {
+            "$ref": "#/components/parameters/CorrelationId"
+          },
+          {
+            "$ref": "#/components/parameters/SourceSystem"
+          },
+          {
+            "$ref": "#/components/parameters/TenantId"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateInventoryMasterRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The command succeeded (06, 2.2). A replay of an earlier identical command has idempotent_replay true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "status",
+                    "idempotent_replay",
+                    "command_log_id",
+                    "result",
+                    "warnings"
+                  ],
+                  "properties": {
+                    "status": {
+                      "const": "OK"
+                    },
+                    "idempotent_replay": {
+                      "type": "boolean"
+                    },
+                    "command_log_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "format": "uuid"
+                    },
+                    "result": {
+                      "$ref": "#/components/schemas/MasterResult"
+                    },
+                    "warnings": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Error"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The envelope or the payload does not fit the contract (P0, P1)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid token (AUTH.TOKEN_INVALID), or a token bound to a client certificate that the connection does not present (AUTH.CLIENT_CERTIFICATE_*)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "A permission or the tenant is missing (AUTH.*)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The command or something it names does not exist",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "An idempotency key was reused for another request, or a retryable conflict (SYSTEM.CONFLICT)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The command refused the request: business rules (P2 to P6)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The tenant is over its rate limit (API.RATE_LIMITED); the header Retry-After says how many seconds to wait",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The command failed (SYSTEM.*)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The service is unavailable (SYSTEM.UNAVAILABLE)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/intercompany-documents:post": {
+      "post": {
+        "operationId": "intercompanyDocumentsPost",
+        "summary": "intercompany-documents:post",
+        "tags": [
+          "intercompany-documents"
+        ],
+        "x-permission": "intercompany.post",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          },
+          {
+            "$ref": "#/components/parameters/CorrelationId"
+          },
+          {
+            "$ref": "#/components/parameters/SourceSystem"
+          },
+          {
+            "$ref": "#/components/parameters/TenantId"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PostIntercompanyDocumentRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The command succeeded (06, 2.2). A replay of an earlier identical command has idempotent_replay true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "status",
+                    "idempotent_replay",
+                    "command_log_id",
+                    "result",
+                    "warnings"
+                  ],
+                  "properties": {
+                    "status": {
+                      "const": "OK"
+                    },
+                    "idempotent_replay": {
+                      "type": "boolean"
+                    },
+                    "command_log_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "format": "uuid"
+                    },
+                    "result": {
+                      "$ref": "#/components/schemas/IntercompanyPostResult"
+                    },
+                    "warnings": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Error"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The envelope or the payload does not fit the contract (P0, P1)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid token (AUTH.TOKEN_INVALID), or a token bound to a client certificate that the connection does not present (AUTH.CLIENT_CERTIFICATE_*)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "A permission or the tenant is missing (AUTH.*)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The command or something it names does not exist",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "An idempotency key was reused for another request, or a retryable conflict (SYSTEM.CONFLICT)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The command refused the request: business rules (P2 to P6)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The tenant is over its rate limit (API.RATE_LIMITED); the header Retry-After says how many seconds to wait",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The command failed (SYSTEM.*)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The service is unavailable (SYSTEM.UNAVAILABLE)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/intercompany-documents:reverse": {
+      "post": {
+        "operationId": "intercompanyDocumentsReverse",
+        "summary": "intercompany-documents:reverse",
+        "tags": [
+          "intercompany-documents"
+        ],
+        "x-permission": "intercompany.post",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          },
+          {
+            "$ref": "#/components/parameters/CorrelationId"
+          },
+          {
+            "$ref": "#/components/parameters/SourceSystem"
+          },
+          {
+            "$ref": "#/components/parameters/TenantId"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReverseIntercompanyDocumentRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The command succeeded (06, 2.2). A replay of an earlier identical command has idempotent_replay true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "status",
+                    "idempotent_replay",
+                    "command_log_id",
+                    "result",
+                    "warnings"
+                  ],
+                  "properties": {
+                    "status": {
+                      "const": "OK"
+                    },
+                    "idempotent_replay": {
+                      "type": "boolean"
+                    },
+                    "command_log_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "format": "uuid"
+                    },
+                    "result": {
+                      "$ref": "#/components/schemas/IntercompanyReversalResult"
+                    },
+                    "warnings": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Error"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The envelope or the payload does not fit the contract (P0, P1)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid token (AUTH.TOKEN_INVALID), or a token bound to a client certificate that the connection does not present (AUTH.CLIENT_CERTIFICATE_*)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "A permission or the tenant is missing (AUTH.*)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The command or something it names does not exist",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "An idempotency key was reused for another request, or a retryable conflict (SYSTEM.CONFLICT)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The command refused the request: business rules (P2 to P6)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The tenant is over its rate limit (API.RATE_LIMITED); the header Retry-After says how many seconds to wait",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -4146,7 +6632,7 @@
             }
           },
           "401": {
-            "description": "No valid token (AUTH.TOKEN_INVALID)",
+            "description": "No valid token (AUTH.TOKEN_INVALID), or a token bound to a client certificate that the connection does not present (AUTH.CLIENT_CERTIFICATE_*)",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -4187,6 +6673,16 @@
           },
           "422": {
             "description": "The command refused the request: business rules (P2 to P6)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The tenant is over its rate limit (API.RATE_LIMITED); the header Retry-After says how many seconds to wait",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -4308,7 +6804,7 @@
             }
           },
           "401": {
-            "description": "No valid token (AUTH.TOKEN_INVALID)",
+            "description": "No valid token (AUTH.TOKEN_INVALID), or a token bound to a client certificate that the connection does not present (AUTH.CLIENT_CERTIFICATE_*)",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -4349,6 +6845,16 @@
           },
           "422": {
             "description": "The command refused the request: business rules (P2 to P6)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The tenant is over its rate limit (API.RATE_LIMITED); the header Retry-After says how many seconds to wait",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -4470,7 +6976,7 @@
             }
           },
           "401": {
-            "description": "No valid token (AUTH.TOKEN_INVALID)",
+            "description": "No valid token (AUTH.TOKEN_INVALID), or a token bound to a client certificate that the connection does not present (AUTH.CLIENT_CERTIFICATE_*)",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -4511,6 +7017,16 @@
           },
           "422": {
             "description": "The command refused the request: business rules (P2 to P6)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The tenant is over its rate limit (API.RATE_LIMITED); the header Retry-After says how many seconds to wait",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -4632,7 +7148,7 @@
             }
           },
           "401": {
-            "description": "No valid token (AUTH.TOKEN_INVALID)",
+            "description": "No valid token (AUTH.TOKEN_INVALID), or a token bound to a client certificate that the connection does not present (AUTH.CLIENT_CERTIFICATE_*)",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -4673,6 +7189,16 @@
           },
           "422": {
             "description": "The command refused the request: business rules (P2 to P6)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The tenant is over its rate limit (API.RATE_LIMITED); the header Retry-After says how many seconds to wait",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -4794,7 +7320,7 @@
             }
           },
           "401": {
-            "description": "No valid token (AUTH.TOKEN_INVALID)",
+            "description": "No valid token (AUTH.TOKEN_INVALID), or a token bound to a client certificate that the connection does not present (AUTH.CLIENT_CERTIFICATE_*)",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -4835,6 +7361,16 @@
           },
           "422": {
             "description": "The command refused the request: business rules (P2 to P6)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The tenant is over its rate limit (API.RATE_LIMITED); the header Retry-After says how many seconds to wait",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -4956,7 +7492,7 @@
             }
           },
           "401": {
-            "description": "No valid token (AUTH.TOKEN_INVALID)",
+            "description": "No valid token (AUTH.TOKEN_INVALID), or a token bound to a client certificate that the connection does not present (AUTH.CLIENT_CERTIFICATE_*)",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -4997,6 +7533,16 @@
           },
           "422": {
             "description": "The command refused the request: business rules (P2 to P6)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The tenant is over its rate limit (API.RATE_LIMITED); the header Retry-After says how many seconds to wait",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -5118,7 +7664,7 @@
             }
           },
           "401": {
-            "description": "No valid token (AUTH.TOKEN_INVALID)",
+            "description": "No valid token (AUTH.TOKEN_INVALID), or a token bound to a client certificate that the connection does not present (AUTH.CLIENT_CERTIFICATE_*)",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -5159,6 +7705,16 @@
           },
           "422": {
             "description": "The command refused the request: business rules (P2 to P6)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The tenant is over its rate limit (API.RATE_LIMITED); the header Retry-After says how many seconds to wait",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -5280,7 +7836,7 @@
             }
           },
           "401": {
-            "description": "No valid token (AUTH.TOKEN_INVALID)",
+            "description": "No valid token (AUTH.TOKEN_INVALID), or a token bound to a client certificate that the connection does not present (AUTH.CLIENT_CERTIFICATE_*)",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -5321,6 +7877,16 @@
           },
           "422": {
             "description": "The command refused the request: business rules (P2 to P6)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The tenant is over its rate limit (API.RATE_LIMITED); the header Retry-After says how many seconds to wait",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -5442,7 +8008,7 @@
             }
           },
           "401": {
-            "description": "No valid token (AUTH.TOKEN_INVALID)",
+            "description": "No valid token (AUTH.TOKEN_INVALID), or a token bound to a client certificate that the connection does not present (AUTH.CLIENT_CERTIFICATE_*)",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -5483,6 +8049,16 @@
           },
           "422": {
             "description": "The command refused the request: business rules (P2 to P6)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The tenant is over its rate limit (API.RATE_LIMITED); the header Retry-After says how many seconds to wait",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -5604,7 +8180,7 @@
             }
           },
           "401": {
-            "description": "No valid token (AUTH.TOKEN_INVALID)",
+            "description": "No valid token (AUTH.TOKEN_INVALID), or a token bound to a client certificate that the connection does not present (AUTH.CLIENT_CERTIFICATE_*)",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -5645,6 +8221,16 @@
           },
           "422": {
             "description": "The command refused the request: business rules (P2 to P6)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The tenant is over its rate limit (API.RATE_LIMITED); the header Retry-After says how many seconds to wait",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -5766,7 +8352,7 @@
             }
           },
           "401": {
-            "description": "No valid token (AUTH.TOKEN_INVALID)",
+            "description": "No valid token (AUTH.TOKEN_INVALID), or a token bound to a client certificate that the connection does not present (AUTH.CLIENT_CERTIFICATE_*)",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -5807,6 +8393,16 @@
           },
           "422": {
             "description": "The command refused the request: business rules (P2 to P6)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The tenant is over its rate limit (API.RATE_LIMITED); the header Retry-After says how many seconds to wait",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -5928,7 +8524,7 @@
             }
           },
           "401": {
-            "description": "No valid token (AUTH.TOKEN_INVALID)",
+            "description": "No valid token (AUTH.TOKEN_INVALID), or a token bound to a client certificate that the connection does not present (AUTH.CLIENT_CERTIFICATE_*)",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -5969,6 +8565,16 @@
           },
           "422": {
             "description": "The command refused the request: business rules (P2 to P6)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The tenant is over its rate limit (API.RATE_LIMITED); the header Retry-After says how many seconds to wait",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -6090,7 +8696,7 @@
             }
           },
           "401": {
-            "description": "No valid token (AUTH.TOKEN_INVALID)",
+            "description": "No valid token (AUTH.TOKEN_INVALID), or a token bound to a client certificate that the connection does not present (AUTH.CLIENT_CERTIFICATE_*)",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -6131,6 +8737,16 @@
           },
           "422": {
             "description": "The command refused the request: business rules (P2 to P6)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The tenant is over its rate limit (API.RATE_LIMITED); the header Retry-After says how many seconds to wait",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -6252,7 +8868,7 @@
             }
           },
           "401": {
-            "description": "No valid token (AUTH.TOKEN_INVALID)",
+            "description": "No valid token (AUTH.TOKEN_INVALID), or a token bound to a client certificate that the connection does not present (AUTH.CLIENT_CERTIFICATE_*)",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -6293,6 +8909,16 @@
           },
           "422": {
             "description": "The command refused the request: business rules (P2 to P6)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The tenant is over its rate limit (API.RATE_LIMITED); the header Retry-After says how many seconds to wait",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -6414,7 +9040,7 @@
             }
           },
           "401": {
-            "description": "No valid token (AUTH.TOKEN_INVALID)",
+            "description": "No valid token (AUTH.TOKEN_INVALID), or a token bound to a client certificate that the connection does not present (AUTH.CLIENT_CERTIFICATE_*)",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -6455,6 +9081,16 @@
           },
           "422": {
             "description": "The command refused the request: business rules (P2 to P6)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The tenant is over its rate limit (API.RATE_LIMITED); the header Retry-After says how many seconds to wait",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -6576,7 +9212,7 @@
             }
           },
           "401": {
-            "description": "No valid token (AUTH.TOKEN_INVALID)",
+            "description": "No valid token (AUTH.TOKEN_INVALID), or a token bound to a client certificate that the connection does not present (AUTH.CLIENT_CERTIFICATE_*)",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -6617,6 +9253,16 @@
           },
           "422": {
             "description": "The command refused the request: business rules (P2 to P6)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The tenant is over its rate limit (API.RATE_LIMITED); the header Retry-After says how many seconds to wait",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -6738,7 +9384,7 @@
             }
           },
           "401": {
-            "description": "No valid token (AUTH.TOKEN_INVALID)",
+            "description": "No valid token (AUTH.TOKEN_INVALID), or a token bound to a client certificate that the connection does not present (AUTH.CLIENT_CERTIFICATE_*)",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -6779,6 +9425,16 @@
           },
           "422": {
             "description": "The command refused the request: business rules (P2 to P6)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The tenant is over its rate limit (API.RATE_LIMITED); the header Retry-After says how many seconds to wait",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -6900,7 +9556,7 @@
             }
           },
           "401": {
-            "description": "No valid token (AUTH.TOKEN_INVALID)",
+            "description": "No valid token (AUTH.TOKEN_INVALID), or a token bound to a client certificate that the connection does not present (AUTH.CLIENT_CERTIFICATE_*)",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -6941,6 +9597,16 @@
           },
           "422": {
             "description": "The command refused the request: business rules (P2 to P6)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The tenant is over its rate limit (API.RATE_LIMITED); the header Retry-After says how many seconds to wait",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -7062,7 +9728,7 @@
             }
           },
           "401": {
-            "description": "No valid token (AUTH.TOKEN_INVALID)",
+            "description": "No valid token (AUTH.TOKEN_INVALID), or a token bound to a client certificate that the connection does not present (AUTH.CLIENT_CERTIFICATE_*)",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -7103,6 +9769,16 @@
           },
           "422": {
             "description": "The command refused the request: business rules (P2 to P6)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The tenant is over its rate limit (API.RATE_LIMITED); the header Retry-After says how many seconds to wait",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -7224,7 +9900,7 @@
             }
           },
           "401": {
-            "description": "No valid token (AUTH.TOKEN_INVALID)",
+            "description": "No valid token (AUTH.TOKEN_INVALID), or a token bound to a client certificate that the connection does not present (AUTH.CLIENT_CERTIFICATE_*)",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -7265,6 +9941,16 @@
           },
           "422": {
             "description": "The command refused the request: business rules (P2 to P6)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The tenant is over its rate limit (API.RATE_LIMITED); the header Retry-After says how many seconds to wait",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -7386,7 +10072,7 @@
             }
           },
           "401": {
-            "description": "No valid token (AUTH.TOKEN_INVALID)",
+            "description": "No valid token (AUTH.TOKEN_INVALID), or a token bound to a client certificate that the connection does not present (AUTH.CLIENT_CERTIFICATE_*)",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -7427,6 +10113,16 @@
           },
           "422": {
             "description": "The command refused the request: business rules (P2 to P6)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The tenant is over its rate limit (API.RATE_LIMITED); the header Retry-After says how many seconds to wait",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -7548,7 +10244,7 @@
             }
           },
           "401": {
-            "description": "No valid token (AUTH.TOKEN_INVALID)",
+            "description": "No valid token (AUTH.TOKEN_INVALID), or a token bound to a client certificate that the connection does not present (AUTH.CLIENT_CERTIFICATE_*)",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -7589,6 +10285,16 @@
           },
           "422": {
             "description": "The command refused the request: business rules (P2 to P6)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The tenant is over its rate limit (API.RATE_LIMITED); the header Retry-After says how many seconds to wait",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -7710,7 +10416,7 @@
             }
           },
           "401": {
-            "description": "No valid token (AUTH.TOKEN_INVALID)",
+            "description": "No valid token (AUTH.TOKEN_INVALID), or a token bound to a client certificate that the connection does not present (AUTH.CLIENT_CERTIFICATE_*)",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -7751,6 +10457,16 @@
           },
           "422": {
             "description": "The command refused the request: business rules (P2 to P6)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The tenant is over its rate limit (API.RATE_LIMITED); the header Retry-After says how many seconds to wait",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -7872,7 +10588,7 @@
             }
           },
           "401": {
-            "description": "No valid token (AUTH.TOKEN_INVALID)",
+            "description": "No valid token (AUTH.TOKEN_INVALID), or a token bound to a client certificate that the connection does not present (AUTH.CLIENT_CERTIFICATE_*)",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -7913,6 +10629,16 @@
           },
           "422": {
             "description": "The command refused the request: business rules (P2 to P6)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The tenant is over its rate limit (API.RATE_LIMITED); the header Retry-After says how many seconds to wait",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -8034,7 +10760,7 @@
             }
           },
           "401": {
-            "description": "No valid token (AUTH.TOKEN_INVALID)",
+            "description": "No valid token (AUTH.TOKEN_INVALID), or a token bound to a client certificate that the connection does not present (AUTH.CLIENT_CERTIFICATE_*)",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -8075,6 +10801,16 @@
           },
           "422": {
             "description": "The command refused the request: business rules (P2 to P6)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The tenant is over its rate limit (API.RATE_LIMITED); the header Retry-After says how many seconds to wait",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -8196,7 +10932,7 @@
             }
           },
           "401": {
-            "description": "No valid token (AUTH.TOKEN_INVALID)",
+            "description": "No valid token (AUTH.TOKEN_INVALID), or a token bound to a client certificate that the connection does not present (AUTH.CLIENT_CERTIFICATE_*)",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -8237,6 +10973,16 @@
           },
           "422": {
             "description": "The command refused the request: business rules (P2 to P6)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The tenant is over its rate limit (API.RATE_LIMITED); the header Retry-After says how many seconds to wait",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -8358,7 +11104,7 @@
             }
           },
           "401": {
-            "description": "No valid token (AUTH.TOKEN_INVALID)",
+            "description": "No valid token (AUTH.TOKEN_INVALID), or a token bound to a client certificate that the connection does not present (AUTH.CLIENT_CERTIFICATE_*)",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -8399,6 +11145,16 @@
           },
           "422": {
             "description": "The command refused the request: business rules (P2 to P6)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The tenant is over its rate limit (API.RATE_LIMITED); the header Retry-After says how many seconds to wait",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -8520,7 +11276,7 @@
             }
           },
           "401": {
-            "description": "No valid token (AUTH.TOKEN_INVALID)",
+            "description": "No valid token (AUTH.TOKEN_INVALID), or a token bound to a client certificate that the connection does not present (AUTH.CLIENT_CERTIFICATE_*)",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -8561,6 +11317,16 @@
           },
           "422": {
             "description": "The command refused the request: business rules (P2 to P6)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The tenant is over its rate limit (API.RATE_LIMITED); the header Retry-After says how many seconds to wait",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -8682,7 +11448,7 @@
             }
           },
           "401": {
-            "description": "No valid token (AUTH.TOKEN_INVALID)",
+            "description": "No valid token (AUTH.TOKEN_INVALID), or a token bound to a client certificate that the connection does not present (AUTH.CLIENT_CERTIFICATE_*)",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -8723,6 +11489,16 @@
           },
           "422": {
             "description": "The command refused the request: business rules (P2 to P6)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The tenant is over its rate limit (API.RATE_LIMITED); the header Retry-After says how many seconds to wait",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -8844,7 +11620,7 @@
             }
           },
           "401": {
-            "description": "No valid token (AUTH.TOKEN_INVALID)",
+            "description": "No valid token (AUTH.TOKEN_INVALID), or a token bound to a client certificate that the connection does not present (AUTH.CLIENT_CERTIFICATE_*)",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -8885,6 +11661,16 @@
           },
           "422": {
             "description": "The command refused the request: business rules (P2 to P6)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The tenant is over its rate limit (API.RATE_LIMITED); the header Retry-After says how many seconds to wait",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -9006,7 +11792,7 @@
             }
           },
           "401": {
-            "description": "No valid token (AUTH.TOKEN_INVALID)",
+            "description": "No valid token (AUTH.TOKEN_INVALID), or a token bound to a client certificate that the connection does not present (AUTH.CLIENT_CERTIFICATE_*)",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -9047,6 +11833,16 @@
           },
           "422": {
             "description": "The command refused the request: business rules (P2 to P6)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The tenant is over its rate limit (API.RATE_LIMITED); the header Retry-After says how many seconds to wait",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -9168,7 +11964,7 @@
             }
           },
           "401": {
-            "description": "No valid token (AUTH.TOKEN_INVALID)",
+            "description": "No valid token (AUTH.TOKEN_INVALID), or a token bound to a client certificate that the connection does not present (AUTH.CLIENT_CERTIFICATE_*)",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -9209,6 +12005,16 @@
           },
           "422": {
             "description": "The command refused the request: business rules (P2 to P6)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The tenant is over its rate limit (API.RATE_LIMITED); the header Retry-After says how many seconds to wait",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -9330,7 +12136,7 @@
             }
           },
           "401": {
-            "description": "No valid token (AUTH.TOKEN_INVALID)",
+            "description": "No valid token (AUTH.TOKEN_INVALID), or a token bound to a client certificate that the connection does not present (AUTH.CLIENT_CERTIFICATE_*)",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -9371,6 +12177,16 @@
           },
           "422": {
             "description": "The command refused the request: business rules (P2 to P6)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The tenant is over its rate limit (API.RATE_LIMITED); the header Retry-After says how many seconds to wait",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -9492,7 +12308,7 @@
             }
           },
           "401": {
-            "description": "No valid token (AUTH.TOKEN_INVALID)",
+            "description": "No valid token (AUTH.TOKEN_INVALID), or a token bound to a client certificate that the connection does not present (AUTH.CLIENT_CERTIFICATE_*)",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -9533,6 +12349,16 @@
           },
           "422": {
             "description": "The command refused the request: business rules (P2 to P6)",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The tenant is over its rate limit (API.RATE_LIMITED); the header Retry-After says how many seconds to wait",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -9654,7 +12480,7 @@
             }
           },
           "401": {
-            "description": "No valid token (AUTH.TOKEN_INVALID)",
+            "description": "No valid token (AUTH.TOKEN_INVALID), or a token bound to a client certificate that the connection does not present (AUTH.CLIENT_CERTIFICATE_*)",
             "content": {
               "application/problem\u002Bjson": {
                 "schema": {
@@ -9703,6 +12529,16 @@
               }
             }
           },
+          "429": {
+            "description": "The tenant is over its rate limit (API.RATE_LIMITED); the header Retry-After says how many seconds to wait",
+            "content": {
+              "application/problem\u002Bjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "500": {
             "description": "The command failed (SYSTEM.*)",
             "content": {
@@ -9729,6 +12565,41 @@
   },
   "components": {
     "schemas": {
+      "AccountGroupMappingResult": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "company_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "account_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "valid_from": {
+            "type": "string",
+            "format": "date"
+          },
+          "group_account_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "closed_previous_from": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date"
+          }
+        },
+        "required": [
+          "company_id",
+          "account_id",
+          "valid_from",
+          "group_account_id"
+        ]
+      },
       "ActivatedCompany": {
         "type": "object",
         "additionalProperties": false,
@@ -10116,6 +12987,24 @@
           "company_id"
         ]
       },
+      "ConsolidationSettingVersionResult": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "company_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "effective_from": {
+            "type": "string",
+            "format": "date"
+          }
+        },
+        "required": [
+          "company_id",
+          "effective_from"
+        ]
+      },
       "CreateAccountDimensionRuleRequest": {
         "type": "object",
         "additionalProperties": false,
@@ -10141,6 +13030,53 @@
           "account_id",
           "dimension_type_id",
           "rule"
+        ]
+      },
+      "CreateAccountGroupMappingRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "company_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "account_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "group_account_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "valid_from": {
+            "type": "string",
+            "format": "date"
+          }
+        },
+        "required": [
+          "company_id",
+          "account_id",
+          "group_account_id",
+          "valid_from"
+        ]
+      },
+      "CreateConsolidationSettingVersionRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "company_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "fields": {
+            "type": "object",
+            "additionalProperties": true,
+            "description": "A set of named fields. The fields the command knows are typed by their kind (07, 11.1)"
+          }
+        },
+        "required": [
+          "company_id",
+          "fields"
         ]
       },
       "CreateDeductionKeyRequest": {
@@ -10191,6 +13127,20 @@
         ]
       },
       "CreateDimensionValueRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "fields": {
+            "type": "object",
+            "additionalProperties": true,
+            "description": "A set of named fields. The fields the command knows are typed by their kind (07, 11.1)"
+          }
+        },
+        "required": [
+          "fields"
+        ]
+      },
+      "CreateInventoryMasterRequest": {
         "type": "object",
         "additionalProperties": false,
         "properties": {
@@ -10519,9 +13469,12 @@
               "ACCOUNT_RULE.PARTNER_REQUIRED",
               "ACCOUNT_RULE.TAX_ACCOUNT_DIRECT_POSTING",
               "API.COMMAND_NOT_FOUND",
+              "API.RATE_LIMITED",
               "APP.INACTIVE",
               "APP.NOT_INACTIVE",
               "APP.NOT_REGISTERED",
+              "AUTH.CLIENT_CERTIFICATE_MISMATCH",
+              "AUTH.CLIENT_CERTIFICATE_REQUIRED",
               "AUTH.PERMISSION_MISSING",
               "AUTH.TENANT_MISMATCH",
               "AUTH.TENANT_MISSING",
@@ -10569,16 +13522,22 @@
               "CONFIG.DEDUCTION_ON_NON_INPUT_CODE",
               "CONFIG.DIMENSION_COMPANY_MISMATCH",
               "CONFIG.DUPLICATE_CODE",
+              "CONFIG.GROUP_ACCOUNT_OTHER_GROUP",
               "CONFIG.GROUP_MEMBERSHIP_MISSING",
               "CONFIG.HIERARCHY_CYCLE",
               "CONFIG.IMMUTABLE_AFTER_POSTING",
               "CONFIG.INVALID_REFERENCE",
+              "CONFIG.NOT_A_GROUP_MEMBER",
               "CONFIG.OVERLAPPING_RULE",
+              "CONFIG.OWNERSHIP_CYCLE",
+              "CONFIG.OWNERSHIP_INVALID",
+              "CONFIG.READINESS_WARNING",
               "CONFIG.REFERENCED",
               "CONFIG.REVALUE_FLAG_ON_RETAINED_EARNINGS",
               "CONFIG.ROLE_ACCOUNT_RULE_VIOLATED",
               "CONFIG.ROLE_NOT_ASSIGNED",
               "CONFIG.ROW_VERSION_MISMATCH",
+              "CONFIG.TRANSLATION_METHOD_INVALID",
               "CONFIG.VALID_FROM_NOT_LATER",
               "CONFLICT.EXPECTED_VALUE_MISMATCH",
               "CONFLICT.ITEM_ALREADY_CLEARED",
@@ -10615,6 +13574,7 @@
               "LIMIT.CREDIT_UNRECEIVED_NOT_BUILT",
               "LIMIT.ENTITY_TYPE_NOT_BUILT",
               "LIMIT.FIELD_NOT_BUILT",
+              "LIMIT.IC_INVOICE_TAX_NOT_BUILT",
               "LIMIT.INVOICE_AFTER_RETURN_NOT_BUILT",
               "LIMIT.INVOICE_DROPSHIP_NOT_BUILT",
               "LIMIT.INVOICE_FOREIGN_CURRENCY_NOT_BUILT",
@@ -10679,10 +13639,14 @@
               "ORDER.GRIR_RESIDUAL_CHANGED",
               "ORDER.GRIR_WRITE_OFF_NOT_FOUND",
               "ORDER.GRIR_WRITE_OFF_REVERSED",
+              "ORDER.IC_ORDER_PAIR_NOT_FOUND",
               "ORDER.INVOICE_EXCEEDS_OPEN",
               "ORDER.INVOICE_HAS_CREDIT_NOTES",
               "ORDER.INVOICE_LINE_REFERENCE_MISSING",
               "ORDER.INVOICE_REVERSED",
+              "ORDER.ISSUE_DOCUMENT_TYPE_INVALID",
+              "ORDER.ISSUE_TARGET_INVALID",
+              "ORDER.ISSUE_TARGET_NOT_FOUND",
               "ORDER.LINE_HAS_PROGRESS",
               "ORDER.LINE_NOT_OPEN",
               "ORDER.ORDER_NOT_OPEN",
@@ -10874,6 +13838,109 @@
           "dimension_value_id"
         ]
       },
+      "GetMasterRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "IntercompanyPostResult": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "ic_transaction_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "documents": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PostedDocument"
+            }
+          }
+        },
+        "required": [
+          "ic_transaction_id",
+          "documents"
+        ]
+      },
+      "IntercompanyReversalResult": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "ic_transaction_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "documents": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PostedDocument"
+            }
+          }
+        },
+        "required": [
+          "ic_transaction_id",
+          "documents"
+        ]
+      },
+      "IntercompanySide": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "company_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "document_type": {
+            "type": "string"
+          },
+          "lines": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RequestLine"
+            }
+          },
+          "ledger_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "partner_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "header_text": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "external_reference": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "company_id",
+          "document_type",
+          "lines"
+        ]
+      },
       "LineDimensions": {
         "type": "object",
         "additionalProperties": false,
@@ -10917,6 +13984,87 @@
           }
         }
       },
+      "ListMasterRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "filter": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "additionalProperties": true,
+            "description": "A set of named fields. The fields the command knows are typed by their kind (07, 11.1)"
+          },
+          "include_inactive": {
+            "type": "boolean"
+          },
+          "limit": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "include_inactive"
+        ]
+      },
+      "MarkRatesUsedRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "rate_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "purpose_ref": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "rate_ids",
+          "purpose_ref"
+        ]
+      },
+      "MarkedRatesResult": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "purpose_ref": {
+            "type": "string"
+          },
+          "marked": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "already_used": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        },
+        "required": [
+          "purpose_ref",
+          "marked",
+          "already_used"
+        ]
+      },
       "MasterResult": {
         "type": "object",
         "additionalProperties": false,
@@ -10945,6 +14093,37 @@
           "row_version",
           "change_set_id",
           "changed_fields"
+        ]
+      },
+      "MasterRowList": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "description": "Any JSON value: the payload of a staged legacy record, a row of a master table"
+            }
+          },
+          "page": {
+            "$ref": "#/components/schemas/ReadPage"
+          }
+        },
+        "required": [
+          "items",
+          "page"
+        ]
+      },
+      "MasterRowResult": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "row": {
+            "description": "Any JSON value: the payload of a staged legacy record, a row of a master table"
+          }
+        },
+        "required": [
+          "row"
         ]
       },
       "MasterStatusRequest": {
@@ -11320,6 +14499,39 @@
           "clearing_date",
           "clearing_method",
           "items"
+        ]
+      },
+      "PostIntercompanyDocumentRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "document_date": {
+            "type": "string",
+            "format": "date"
+          },
+          "posting_date": {
+            "type": "string",
+            "format": "date"
+          },
+          "transaction_currency": {
+            "type": "string"
+          },
+          "ic_reference": {
+            "type": "string"
+          },
+          "sides": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/IntercompanySide"
+            }
+          }
+        },
+        "required": [
+          "document_date",
+          "posting_date",
+          "transaction_currency",
+          "ic_reference",
+          "sides"
         ]
       },
       "PostJournalDocumentRequest": {
@@ -11725,6 +14937,25 @@
           }
         }
       },
+      "ReadPage": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "limit": {
+            "type": "integer",
+            "format": "int32"
+          }
+        },
+        "required": [
+          "limit"
+        ]
+      },
       "ReadinessCheck": {
         "type": "object",
         "additionalProperties": false,
@@ -11740,11 +14971,15 @@
               "string",
               "null"
             ]
+          },
+          "is_warning": {
+            "type": "boolean"
           }
         },
         "required": [
           "check",
-          "passed"
+          "passed",
+          "is_warning"
         ]
       },
       "ReadinessReport": {
@@ -11960,6 +15195,36 @@
           "reason_code"
         ]
       },
+      "ReverseIntercompanyDocumentRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "ic_transaction_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "reason_code": {
+            "type": "string"
+          },
+          "reversal_date": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date"
+          },
+          "reason_text": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "ic_transaction_id",
+          "reason_code"
+        ]
+      },
       "TaxBoxMapping": {
         "type": "object",
         "additionalProperties": false,
@@ -12169,6 +15434,30 @@
         },
         "required": [
           "dimension_value_id",
+          "expected_version",
+          "fields"
+        ]
+      },
+      "UpdateInventoryMasterRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "expected_version": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "fields": {
+            "type": "object",
+            "additionalProperties": true,
+            "description": "A set of named fields. The fields the command knows are typed by their kind (07, 11.1)"
+          }
+        },
+        "required": [
+          "id",
           "expected_version",
           "fields"
         ]

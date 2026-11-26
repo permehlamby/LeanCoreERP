@@ -87,8 +87,9 @@ public sealed partial class SalesInvoiceCommands(NpgsqlDataSource source)
         }
     }
 
-    private async Task<CommandResult<SalesInvoiceResult>> CreateCoreAsync(
-        TenantTransaction tx, Guid tenantId, CommandContext ctx, CreateSalesInvoiceRequest req, byte[] fingerprint, CancellationToken ct)
+    /// <summary>icId and icCounterpart make it the AR side of an IC pair (11, 6.7): the ids and the marker go to the journal document and the link row. owned false: the transaction is the caller's, no log row and no commit.</summary>
+    internal async Task<CommandResult<SalesInvoiceResult>> CreateCoreAsync(
+        TenantTransaction tx, Guid tenantId, CommandContext ctx, CreateSalesInvoiceRequest req, byte[] fingerprint, CancellationToken ct, Guid? icId = null, Guid? icCounterpart = null, bool owned = true)
     {
         Guid companyId = req.CompanyId;
         var company = await JournalDocumentPoster.ReadCompanyAsync(tx, tenantId, companyId, ct);
@@ -285,8 +286,9 @@ public sealed partial class SalesInvoiceCommands(NpgsqlDataSource source)
             gross = facts.Request.Lines.Single(x => x.LineRef == ArRef).AmountTc;
             await using (var cmd = t.Command(
                 "insert into core.sales_invoice (tenant_id, company_id, sales_invoice_id, invoice_kind, customer_partner_id, invoice_date, due_date, payment_terms_id, order_currency, journal_document_id, invoice_mode, " +
-                "source_system, source_document_ref, created_by, correlation_id, idempotency_key) values (@t, @c, @id, 'INVOICE', @cust, @d, @due, @terms, @cur, @j, @mode, @src, @ref, @by, @corr, @key)"))
+                "source_system, source_document_ref, created_by, correlation_id, idempotency_key, ic_transaction_id) values (@t, @c, @id, 'INVOICE', @cust, @d, @due, @terms, @cur, @j, @mode, @src, @ref, @by, @corr, @key, @icx)"))
             {
+                cmd.Parameters.Add(new NpgsqlParameter("icx", NpgsqlDbType.Uuid) { Value = (object?)icId ?? DBNull.Value });
                 cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("c", companyId); cmd.Parameters.AddWithValue("id", invoiceId); cmd.Parameters.AddWithValue("cust", customer);
                 cmd.Parameters.AddWithValue("d", req.InvoiceDate); cmd.Parameters.AddWithValue("cur", currency); cmd.Parameters.AddWithValue("j", posted.DocumentId); cmd.Parameters.AddWithValue("mode", mode);
                 cmd.Parameters.AddWithValue("src", ctx.SourceSystem); cmd.Parameters.AddWithValue("by", ctx.Actor); cmd.Parameters.AddWithValue("corr", ctx.CorrelationId); cmd.Parameters.AddWithValue("key", ctx.IdempotencyKey);
@@ -314,13 +316,13 @@ public sealed partial class SalesInvoiceCommands(NpgsqlDataSource source)
                 cmd.Parameters.Add(new NpgsqlParameter("td", NpgsqlDbType.Date) { Value = row["tax_date"] ?? DBNull.Value });
                 await cmd.ExecuteNonQueryAsync(ct);
             }
-            logId = await CommandSupport.WriteLogAsync(t, tenantId, companyId, ctx, CommandName, fingerprint, "SALES_INVOICE", invoiceId, ct);
+            if (owned) logId = await CommandSupport.WriteLogAsync(t, tenantId, companyId, ctx, CommandName, fingerprint, "SALES_INVOICE", invoiceId, ct);
             await CommandSupport.WriteOutboxAsync(t, tenantId, companyId, ctx, "invoice.posted", "SALES_INVOICE", $"{companyId:D}/{invoiceId:D}", "POSTED", DateTime.UtcNow, isAudit: true,
                 JsonSerializer.Serialize(new Dictionary<string, object?> { ["chain_type"] = "LEDGER", ["row_hash"] = posted.RowHash, ["chain_seq"] = posted.ChainSeq }),
                 JsonSerializer.Serialize(new Dictionary<string, object?> { ["document_number"] = posted.DocumentNumber, ["customer_partner_id"] = customer, ["lines"] = linkRows.Count, ["journal_document_id"] = posted.DocumentId }), ct);
         }
 
-        var embedding = new JournalDocumentPoster.PostEmbedding(CommandName, "ORDER", ArRef, DigestOf, WriteLog: false, Commit: false, AfterAsync);
+        var embedding = new JournalDocumentPoster.PostEmbedding(CommandName, "ORDER", ArRef, DigestOf, WriteLog: false, Commit: false, AfterAsync, IcTransactionId: icId, IcCounterpartCompanyId: icCounterpart);
         var posted = await _poster.PostCoreAsync(tx, tenantId, ctx, journal, fingerprint, embedding, ct);
         if (posted.Status != CommandStatus.Ok) return CommandResult<SalesInvoiceResult>.Rejected(posted.Errors.ToList());
         PostedDocument doc = posted.Value!;
@@ -328,7 +330,7 @@ public sealed partial class SalesInvoiceCommands(NpgsqlDataSource source)
         var result = new SalesInvoiceResult(invoiceId, doc.DocumentId, doc.DocumentNumber, mode, netTotal, -taxTotal, gross, doc.RowHash,
             linkRows.Select(r => new SalesInvoiceLineResult((int)r["line_no"]!, (string)r["line_ref"]!, (Guid)r["sales_order_id"]!, (int)r["sales_order_line_no"]!, (Guid?)r["delivery_id"], (int?)r["delivery_line_no"],
                 (decimal)r["base_quantity"]!, (decimal)r["net_amount"]!, (int)r["journal_line_no"]!, (Guid?)r["tax_code_id"])).ToList());
-        await tx.CommitAsync(ct);   // the deferred checks of the journal document, the outbox position
+        if (owned) await tx.CommitAsync(ct);   // the deferred checks of the journal document, the outbox position
         return CommandResult<SalesInvoiceResult>.Ok(result, logId, posted.Warnings);
     }
 
@@ -372,7 +374,7 @@ public sealed partial class SalesInvoiceCommands(NpgsqlDataSource source)
         return (decimal)(await cmd.ExecuteScalarAsync(ct))!;
     }
 
-    private static async Task<SalesInvoiceResult> LoadAsync(TenantTransaction tx, Guid tenantId, Guid companyId, Guid id, CancellationToken ct)
+    internal static async Task<SalesInvoiceResult> LoadAsync(TenantTransaction tx, Guid tenantId, Guid companyId, Guid id, CancellationToken ct)
     {
         Guid journal; string mode;
         await using (var cmd = tx.Command("select journal_document_id, invoice_mode from core.sales_invoice where tenant_id = @t and company_id = @c and sales_invoice_id = @i"))

@@ -13,10 +13,12 @@ public sealed class InvoiceModule : ICommandModule
         catalog.Add<ReverseSalesInvoiceRequest, ReversedSalesInvoice>("sales-invoices:reverse", InvoiceRules.SalesPermission, (sp, t, c, r, ct) => sp.GetRequiredService<SalesInvoiceCommands>().ReverseAsync(t, c, r, ct));
         catalog.Add<CreateSalesCreditNoteRequest, SalesCreditNoteResult>("sales-credit-notes:create", InvoiceRules.SalesPermission, (sp, t, c, r, ct) => sp.GetRequiredService<SalesCreditNoteCommands>().CreateAsync(t, c, r, ct));
         catalog.Add<ReverseSalesCreditNoteRequest, ReversedSalesCreditNote>("sales-credit-notes:reverse", InvoiceRules.SalesPermission, (sp, t, c, r, ct) => sp.GetRequiredService<SalesCreditNoteCommands>().ReverseAsync(t, c, r, ct));
+        catalog.Add<CreateIcInvoiceRequest, IcInvoiceResult>("ic-invoices:create", IcInvoiceRules.Permission, (sp, t, c, r, ct) => sp.GetRequiredService<IcInvoiceCommands>().CreateAsync(t, c, r, ct));
         catalog.Add<PostPurchaseInvoiceRequest, PurchaseInvoiceResult>("purchase-invoices:post", PurchaseInvoiceRules.Permission, (sp, t, c, r, ct) => sp.GetRequiredService<PurchaseInvoiceCommands>().PostAsync(t, c, r, ct));
         catalog.Add<ReversePurchaseInvoiceRequest, ReversedPurchaseInvoice>("purchase-invoices:reverse", PurchaseInvoiceRules.Permission, (sp, t, c, r, ct) => sp.GetRequiredService<PurchaseInvoiceCommands>().ReverseAsync(t, c, r, ct));
         catalog.Add<PostPurchaseCreditNoteRequest, PurchaseCreditNoteResult>("purchase-credit-notes:post", PurchaseInvoiceRules.Permission, (sp, t, c, r, ct) => sp.GetRequiredService<PurchaseInvoiceCommands>().PostCreditNoteAsync(t, c, r, ct));
         catalog.Add<ReversePurchaseCreditNoteRequest, ReversedPurchaseCreditNote>("purchase-credit-notes:reverse", PurchaseInvoiceRules.Permission, (sp, t, c, r, ct) => sp.GetRequiredService<PurchaseInvoiceCommands>().ReverseCreditNoteAsync(t, c, r, ct));
+        catalog.Add<RecordInvoiceIssueRequest, InvoiceIssueResult>("invoices:record-issue", InvoiceIssueRules.Permission, (sp, t, c, r, ct) => sp.GetRequiredService<InvoiceIssueCommands>().RecordAsync(t, c, r, ct));
         catalog.Add<GrIrWriteOffRequest, GrIrWriteOffResult>("gr-ir:write-off", GrIrRules.Permission, (sp, t, c, r, ct) => sp.GetRequiredService<PurchaseInvoiceCommands>().WriteOffAsync(t, c, r, ct));
         catalog.Add<ReverseGrIrWriteOffRequest, ReversedGrIrWriteOff>("gr-ir:reverse-write-off", GrIrRules.Permission, (sp, t, c, r, ct) => sp.GetRequiredService<PurchaseInvoiceCommands>().ReverseWriteOffAsync(t, c, r, ct));
     }

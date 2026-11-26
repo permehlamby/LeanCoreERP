@@ -144,8 +144,9 @@ public sealed partial class PurchaseInvoiceCommands(NpgsqlDataSource source)
         }
     }
 
-    private async Task<CommandResult<PurchaseInvoiceResult>> PostCoreAsync(
-        TenantTransaction tx, Guid tenantId, CommandContext ctx, PostPurchaseInvoiceRequest req, byte[] fingerprint, CancellationToken ct)
+    /// <summary>icId and icCounterpart make it the AP side of an IC pair (11, 6.7). owned false: the transaction is the caller's, no log row and no commit.</summary>
+    internal async Task<CommandResult<PurchaseInvoiceResult>> PostCoreAsync(
+        TenantTransaction tx, Guid tenantId, CommandContext ctx, PostPurchaseInvoiceRequest req, byte[] fingerprint, CancellationToken ct, Guid? icId = null, Guid? icCounterpart = null, bool owned = true)
     {
         Guid companyId = req.CompanyId;
         var company = await JournalDocumentPoster.ReadCompanyAsync(tx, tenantId, companyId, ct);
@@ -351,7 +352,7 @@ public sealed partial class PurchaseInvoiceCommands(NpgsqlDataSource source)
         foreach (Work w in work)
         {
             lines.Add(new RequestLine(w.Input.LineRef, w.Account, w.Input.NetAmount, TaxClassId: w.Line.TaxClassId, TaxDate: req.InvoiceDate, OriginCountry: w.Line.Origin, DestinationCountry: w.Line.Destination,
-                TaxCodeId: w.Input.TaxCodeId, TaxAmountTc: w.Input.TaxAmount, OpenItem: w.Stock ? new OpenItemRequest(null, req.InvoiceDate) : null));
+                TaxCodeId: w.Input.TaxCodeId, TaxAmountTc: w.Input.TaxCodeId is null && w.Input.TaxAmount == 0m ? null : w.Input.TaxAmount, OpenItem: w.Stock ? new OpenItemRequest(null, req.InvoiceDate) : null));
             var nos = new LineNos { Main = lines.Count };
             lineNos[w.Index] = nos;
             decimal diff = w.Links.Sum(k => k.Diff), onHand = w.Links.Sum(k => k.OnHand), consumed = w.Links.Sum(k => k.Consumed);
@@ -455,18 +456,18 @@ public sealed partial class PurchaseInvoiceCommands(NpgsqlDataSource source)
         {
             taxTotal = facts.Tax.Lines.Sum(x => x.TaxTc);
             gross = -facts.Request.Lines.Single(x => x.LineRef == ApRef).AmountTc;
-            await InsertHeaderAsync(t, tenantId, companyId, ctx, req, supplier, currency, invoiceId, posted.DocumentId, stockId, ct);
+            await InsertHeaderAsync(t, tenantId, companyId, ctx, req, supplier, currency, invoiceId, posted.DocumentId, stockId, icId, ct);
             // the clearing first: what the invoices took of a receipt line before this one is read from the link rows, which this invoice has not inserted yet
             if (clearingIds.Count > 0) await ClearGrIrAsync(t, tenantId, companyId, ctx, work, posted, clearingIds, invoiceId, postingDate, lineNos, ct);
             foreach (var row in linkRows) await (row["line_kind"] as string == "CHARGE" ? InsertChargeLineAsync(t, tenantId, companyId, invoiceId, row, ct) : InsertLineAsync(t, tenantId, companyId, invoiceId, row, ct));
             if (stockDraft is not null) await InsertStockAsync(t, tenantId, companyId, ctx, stockDraft, req.InvoiceDate, postingDate, currency, ct);
-            logId = await CommandSupport.WriteLogAsync(t, tenantId, companyId, ctx, CommandName, fingerprint, "PURCHASE_INVOICE", invoiceId, ct);
+            if (owned) logId = await CommandSupport.WriteLogAsync(t, tenantId, companyId, ctx, CommandName, fingerprint, "PURCHASE_INVOICE", invoiceId, ct);
             await CommandSupport.WriteOutboxAsync(t, tenantId, companyId, ctx, "invoice.posted", "PURCHASE_INVOICE", $"{companyId:D}/{invoiceId:D}", "POSTED", DateTime.UtcNow, isAudit: true,
                 JsonSerializer.Serialize(new Dictionary<string, object?> { ["chain_type"] = "LEDGER", ["row_hash"] = posted.RowHash, ["chain_seq"] = posted.ChainSeq }),
                 JsonSerializer.Serialize(new Dictionary<string, object?> { ["document_number"] = posted.DocumentNumber, ["supplier_partner_id"] = supplier, ["lines"] = linkRows.Count, ["journal_document_id"] = posted.DocumentId }), ct);
         }
 
-        var embedding = new JournalDocumentPoster.PostEmbedding(CommandName, "ORDER", ApRef, null, WriteLog: false, Commit: false, AfterAsync, journalId, DetailAsync);
+        var embedding = new JournalDocumentPoster.PostEmbedding(CommandName, "ORDER", ApRef, null, WriteLog: false, Commit: false, AfterAsync, journalId, DetailAsync, IcTransactionId: icId, IcCounterpartCompanyId: icCounterpart);
         var postedResult = await _poster.PostCoreAsync(tx, tenantId, ctx, journal, fingerprint, embedding, ct);
         if (postedResult.Status != CommandStatus.Ok) return CommandResult<PurchaseInvoiceResult>.Rejected(postedResult.Errors.ToList());
         PostedDocument doc = postedResult.Value!;
@@ -474,7 +475,7 @@ public sealed partial class PurchaseInvoiceCommands(NpgsqlDataSource source)
             linkRows.Select(r => new PurchaseInvoiceLineResult((int)r["line_no"]!, (string)r["line_ref"]!, (Guid?)r["purchase_order_id"] ?? Guid.Empty, (int?)r["purchase_order_line_no"] ?? 0, (Guid?)r["receipt_id"], (int?)r["receipt_line_no"],
                 (decimal)r["base_quantity"]!, (decimal)r["net_amount"]!, (decimal)r["tax_amount"]!, (string?)r["match_mode_used"] ?? "", (int)r["journal_line_no"]!, (Guid?)r["gr_ir_clearing_id"])).ToList(),
             clearingIds.Values.Cast<Guid?>().FirstOrDefault(), stockId);
-        await tx.CommitAsync(ct);   // the deferred checks of the journal document and of the clearing, the chain of the stock document, the outbox position
+        if (owned) await tx.CommitAsync(ct);   // the deferred checks of the journal document and of the clearing, the chain of the stock document, the outbox position
         return CommandResult<PurchaseInvoiceResult>.Ok(result, logId, postedResult.Warnings);
     }
 
@@ -786,11 +787,12 @@ public sealed partial class PurchaseInvoiceCommands(NpgsqlDataSource source)
     }
 
     private static async Task InsertHeaderAsync(
-        TenantTransaction t, Guid tenantId, Guid companyId, CommandContext ctx, PostPurchaseInvoiceRequest req, Guid supplier, string currency, Guid invoiceId, Guid journalId, Guid? stockId, CancellationToken ct)
+        TenantTransaction t, Guid tenantId, Guid companyId, CommandContext ctx, PostPurchaseInvoiceRequest req, Guid supplier, string currency, Guid invoiceId, Guid journalId, Guid? stockId, Guid? icId, CancellationToken ct)
     {
         await using var cmd = t.Command(
             "insert into core.purchase_invoice (tenant_id, company_id, purchase_invoice_id, invoice_kind, supplier_partner_id, supplier_invoice_number, invoice_date, due_date, currency, gross_amount, journal_document_id, " +
-            "stock_document_id, source_system, source_document_ref, created_by, correlation_id, idempotency_key) values (@t, @c, @id, 'INVOICE', @s, @num, @d, @due, @cur, @g, @j, @sd, @src, @ref, @by, @corr, @key)");
+            "stock_document_id, source_system, source_document_ref, created_by, correlation_id, idempotency_key, ic_transaction_id) values (@t, @c, @id, 'INVOICE', @s, @num, @d, @due, @cur, @g, @j, @sd, @src, @ref, @by, @corr, @key, @icx)");
+        cmd.Parameters.Add(new NpgsqlParameter("icx", NpgsqlDbType.Uuid) { Value = (object?)icId ?? DBNull.Value });
         cmd.Parameters.Add(new NpgsqlParameter("sd", NpgsqlDbType.Uuid) { Value = (object?)stockId ?? DBNull.Value });
         cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("c", companyId); cmd.Parameters.AddWithValue("id", invoiceId); cmd.Parameters.AddWithValue("s", supplier);
         cmd.Parameters.AddWithValue("num", req.SupplierInvoiceNumber); cmd.Parameters.AddWithValue("d", req.InvoiceDate); cmd.Parameters.AddWithValue("cur", currency); cmd.Parameters.AddWithValue("g", req.GrossAmount);
@@ -839,7 +841,7 @@ public sealed partial class PurchaseInvoiceCommands(NpgsqlDataSource source)
         await cmd.ExecuteNonQueryAsync(ct);
     }
 
-    private static async Task<PurchaseInvoiceResult> LoadAsync(TenantTransaction tx, Guid tenantId, Guid companyId, Guid id, CancellationToken ct)
+    internal static async Task<PurchaseInvoiceResult> LoadAsync(TenantTransaction tx, Guid tenantId, Guid companyId, Guid id, CancellationToken ct)
     {
         Guid journal; decimal grossAmount; Guid? stock;
         await using (var cmd = tx.Command("select journal_document_id, gross_amount, stock_document_id from core.purchase_invoice where tenant_id = @t and company_id = @c and purchase_invoice_id = @i"))

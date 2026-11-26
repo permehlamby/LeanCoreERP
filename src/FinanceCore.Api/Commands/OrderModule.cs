@@ -22,6 +22,7 @@ public sealed class OrderModule : ICommandModule
             catalog.Add<GetOrderRequest, OrderDetail>(r + ":get", OrderKind.ReadPermission, (sp, t, c, req, ct) => sp.GetRequiredService<OrderReads>().GetAsync(k, t, c, req, ct));
             catalog.Add<ListOrdersRequest, OrderList>(r + ":list", OrderKind.ReadPermission, (sp, t, c, req, ct) => sp.GetRequiredService<OrderReads>().ListAsync(k, t, c, req, ct));
         }
+        catalog.Add<CreateIcOrderRequest, IcOrderResult>("ic-orders:create", IcOrderRules.Permission, (sp, t, c, req, ct) => sp.GetRequiredService<IcOrderCommands>().CreateAsync(t, c, req, ct));
         catalog.Add<CreateOrderSettingVersionRequest, OrderSettingVersionResult>("company-order-settings:create-version", OrderSettingCommands.Permission,
             (sp, t, c, req, ct) => sp.GetRequiredService<OrderSettingCommands>().CreateVersionAsync(t, c, req, ct));
     }

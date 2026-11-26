@@ -13,7 +13,7 @@ namespace FinanceCore.Api.Http;
 /// </summary>
 public static class OpenApiBuilder
 {
-    private static readonly string[] ProblemStatuses = ["400", "401", "403", "404", "409", "422", "500", "503"];
+    private static readonly string[] ProblemStatuses = ["400", "401", "403", "404", "409", "422", "429", "500", "503"];
 
     public static JsonObject Build(CommandCatalog catalog, string version = "v1")
     {
@@ -145,11 +145,12 @@ public static class OpenApiBuilder
     private static string Describe(string status) => status switch
     {
         "400" => "The envelope or the payload does not fit the contract (P0, P1)",
-        "401" => "No valid token (AUTH.TOKEN_INVALID)",
+        "401" => "No valid token (AUTH.TOKEN_INVALID), or a token bound to a client certificate that the connection does not present (AUTH.CLIENT_CERTIFICATE_*)",
         "403" => "A permission or the tenant is missing (AUTH.*)",
         "404" => "The command or something it names does not exist",
         "409" => "An idempotency key was reused for another request, or a retryable conflict (SYSTEM.CONFLICT)",
         "422" => "The command refused the request: business rules (P2 to P6)",
+        "429" => "The tenant is over its rate limit (API.RATE_LIMITED); the header Retry-After says how many seconds to wait",
         "500" => "The command failed (SYSTEM.*)",
         _ => "The service is unavailable (SYSTEM.UNAVAILABLE)"
     };
@@ -197,11 +198,12 @@ public static class OpenApiBuilder
         if (t == typeof(long)) return new JsonObject { ["type"] = "integer", ["format"] = "int64" };
         if (t == typeof(Guid)) return new JsonObject { ["type"] = "string", ["format"] = "uuid" };
         if (t == typeof(DateOnly)) return new JsonObject { ["type"] = "string", ["format"] = "date" };
-        if (t == typeof(DateTime)) return new JsonObject { ["type"] = "string", ["format"] = "date-time" };
+        if (t == typeof(DateTime) || t == typeof(DateTimeOffset)) return new JsonObject { ["type"] = "string", ["format"] = "date-time" };
         if (t == typeof(decimal))
             return new JsonObject { ["type"] = "string", ["pattern"] = "^-?[0-9]+(\\.[0-9]+)?$", ["description"] = "An exact decimal as a string of digits. A JSON number is accepted on input" };
         if (t == typeof(byte[])) return new JsonObject { ["type"] = "string", ["pattern"] = "^[0-9a-f]*$", ["description"] = "Lower-case hex" };
         if (t == typeof(object)) return new JsonObject();
+        if (t == typeof(JsonElement)) return new JsonObject { ["description"] = "Any JSON value: the payload of a staged legacy record, a row of a master table" };
         if (t.IsGenericType && t.GetGenericTypeDefinition() is var g && (g == typeof(IReadOnlyDictionary<,>) || g == typeof(Dictionary<,>)))
             return new JsonObject { ["type"] = "object", ["additionalProperties"] = true, ["description"] = "A set of named fields. The fields the command knows are typed by their kind (07, 11.1)" };
         if (t.IsArray || (t.IsGenericType && typeof(IEnumerable).IsAssignableFrom(t)))

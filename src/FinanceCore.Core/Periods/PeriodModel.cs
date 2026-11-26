@@ -14,7 +14,7 @@ public sealed record OpenedFiscalYear(
     Guid EventId, long EventSeq, string RowHash, string PrevHash);
 
 /// <summary>One check of the readiness list of 07, 11.3 and whether it passed.</summary>
-public sealed record ReadinessCheck(string Check, bool Passed, string? Detail = null);
+public sealed record ReadinessCheck(string Check, bool Passed, string? Detail = null, bool IsWarning = false);
 
 public sealed record ReadinessReport(Guid CompanyId, string Status, bool Ready, IReadOnlyList<ReadinessCheck> Checks);
 

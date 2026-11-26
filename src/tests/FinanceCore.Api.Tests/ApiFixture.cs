@@ -51,9 +51,10 @@ public sealed class ApiFixture : WebApplicationFactory<Program>
     }
 
     public static string Token(Guid? tenant = null, string subject = "alice", string[]? permissions = null, string? scope = null, string? appCode = null,
-        string issuer = AuthOptions.DevIssuer, string audience = "financecore-api", string? key = null, TimeSpan? lifetime = null, bool withTenant = true)
+        string issuer = AuthOptions.DevIssuer, string audience = "financecore-api", string? key = null, TimeSpan? lifetime = null, bool withTenant = true, string? certificateThumbprint = null)
     {
         var claims = new Dictionary<string, object> { ["sub"] = subject };
+        if (certificateThumbprint is not null) claims["cnf"] = new Dictionary<string, object> { ["x5t#S256"] = certificateThumbprint };
         if (withTenant) claims["tenant_id"] = (tenant ?? Tenant).ToString("D");
         if (permissions is not null) claims["permissions"] = permissions;
         if (scope is not null) claims["scope"] = scope;

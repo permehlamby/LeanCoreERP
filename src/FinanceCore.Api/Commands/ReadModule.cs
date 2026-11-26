@@ -17,6 +17,7 @@ public sealed class ReadModule : ICommandModule
         catalog.Add<AccountLedgerRequest, AccountLedgerResult>("account-ledgers:query", p, (sp, t, c, r, ct) => sp.GetRequiredService<LedgerReads>().AccountLedgerAsync(t, c, r, ct));
         catalog.Add<OpenItemsRequest, OpenItemsResult>("open-items:query", p, (sp, t, c, r, ct) => sp.GetRequiredService<LedgerReads>().OpenItemsAsync(t, c, r, ct));
         catalog.Add<PartnerBalancesRequest, PartnerBalancesResult>("partner-balances:query", p, (sp, t, c, r, ct) => sp.GetRequiredService<LedgerReads>().PartnerBalancesAsync(t, c, r, ct));
+        catalog.Add<IcReconciliationRequest, IcReconciliationResult>("ic-reconciliations:query", p, (sp, t, c, r, ct) => sp.GetRequiredService<IcReconciliationReads>().QueryAsync(t, c, r, ct));
         catalog.Add<AgingRequest, AgingResult>("aging:query", p, (sp, t, c, r, ct) => sp.GetRequiredService<LedgerReads>().AgingAsync(t, c, r, ct));
         catalog.Add<DocumentContextRequest, DocumentContextResult>("documents:get-context", p, (sp, t, c, r, ct) => sp.GetRequiredService<LedgerReads>().GetDocumentContextAsync(t, c, r, ct));
 

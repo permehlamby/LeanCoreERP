@@ -83,6 +83,10 @@ public sealed partial class OrderCommands(NpgsqlDataSource source)
         return new OrderResult(id, h.Number, h.RowVersion, h.Status, results.Where(l => l.LineStatus != "CANCELLED").Sum(l => l.NetAmount), results, changed);
     }
 
+    /// <summary>The result of an order as the commands answer it (for the replay of an IC pair).</summary>
+    internal static Task<OrderResult> ResultOfAsync(TenantTransaction tx, OrderKind kind, Guid tenantId, Guid id, CancellationToken ct) =>
+        ResultAsync(tx, kind, tenantId, id, [], null, ct);
+
     private async Task<CommandResult<OrderResult>?> ReplayAsync(
         TenantTransaction tx, OrderKind kind, Guid tenantId, CommandContext ctx, byte[] fingerprint, CancellationToken ct)
     {
@@ -330,9 +334,9 @@ public sealed partial class OrderCommands(NpgsqlDataSource source)
     // ---------------------------------------------------------------------------------------------------------
     // :create
     // ---------------------------------------------------------------------------------------------------------
-    public async Task<CommandResult<OrderResult>> CreateAsync(OrderKind kind, Guid tenantId, CommandContext ctx, CreateOrderRequest req, CancellationToken ct = default)
+    /// <summary>The shape of a create request against the registries of the kind (also the shape of each side of an intercompany pair, 6.7).</summary>
+    internal static (List<CommandError> Errors, Dictionary<string, Patch> Header, List<List<Patch>> Lines) ValidateCreate(OrderKind kind, CommandContext ctx, CreateOrderRequest req)
     {
-        if (Denied(ctx, kind.OrderPermission) is { } denied) return Reject(denied);
         var errors = ValidateContext(ctx);
         Require(req.Fields, "/fields", errors, "company_id", "order_date", "order_currency", kind.PartyColumn);
         var patches = Validate(req.Fields, kind.HeaderCreate, "/fields", errors);
@@ -346,6 +350,13 @@ public sealed partial class OrderCommands(NpgsqlDataSource source)
         var header = patches.ToDictionary(p => p.Field.Name);
         foreach (string d in new[] { "order_date", "requested_delivery_date", "expected_receipt_date" })
             if (header.TryGetValue(d, out Patch? dp) && dp.Value is DateOnly date && !OrderKind.DateInRange(date)) errors.Add(Error("ORDER.DATE_INVALID", "P1", "/fields/" + d));
+        return (errors, header, linePatches);
+    }
+
+    public async Task<CommandResult<OrderResult>> CreateAsync(OrderKind kind, Guid tenantId, CommandContext ctx, CreateOrderRequest req, CancellationToken ct = default)
+    {
+        if (Denied(ctx, kind.OrderPermission) is { } denied) return Reject(denied);
+        var (errors, header, linePatches) = ValidateCreate(kind, ctx, req);
         if (errors.Count > 0) return CommandResult<OrderResult>.Rejected(errors);
         byte[] fingerprint = OrderRules.Fingerprint(kind.Resource + ":create", req);
 

@@ -82,6 +82,17 @@ public sealed class ConfigModule : ICommandModule
 
         catalog.Add<VerifyChainRequest, ChainVerificationResult>("chains:verify", ChainVerification.Permission, (sp, t, c, r, ct) => sp.GetRequiredService<ChainVerification>().VerifyAsync(t, c, r, ct));
         catalog.Add<CompanyRequest, ReadinessReport>("companies:check-readiness", CompanyActivator.ReadPermission, (sp, t, c, r, ct) => sp.GetRequiredService<CompanyActivator>().CheckReadinessAsync(t, c, r.CompanyId, ct));
+        catalog.Add<CreateConsolidationSettingVersionRequest, ConsolidationSettingVersionResult>("company-consolidation-settings:create-version", ConsolidationSettingCommands.Permission, (sp, t, c, r, ct) => sp.GetRequiredService<ConsolidationSettingCommands>().CreateVersionAsync(t, c, r, ct));
+        catalog.Add<CreateInventoryMasterRequest, MasterResult>(GroupChartCommands.Resource + ":create", GroupChartCommands.Permission, (sp, t, c, r, ct) => sp.GetRequiredService<GroupChartCommands>().CreateAsync(t, c, r, ct));
+        catalog.Add<UpdateInventoryMasterRequest, MasterResult>(GroupChartCommands.Resource + ":update", GroupChartCommands.Permission, (sp, t, c, r, ct) => sp.GetRequiredService<GroupChartCommands>().UpdateAsync(t, c, r, ct));
+        catalog.Add<MasterStatusRequest, MasterResult>(GroupChartCommands.Resource + ":deactivate", GroupChartCommands.Permission, (sp, t, c, r, ct) => sp.GetRequiredService<GroupChartCommands>().DeactivateAsync(t, c, r, ct));
+        catalog.Add<MasterStatusRequest, MasterResult>(GroupChartCommands.Resource + ":reactivate", GroupChartCommands.Permission, (sp, t, c, r, ct) => sp.GetRequiredService<GroupChartCommands>().ReactivateAsync(t, c, r, ct));
+        catalog.Add<GetMasterRequest, MasterRowResult>(GroupChartCommands.Resource + ":get", MasterReads.Permission, (sp, t, c, r, ct) => sp.GetRequiredService<MasterReads>().GetAsync(t, c, GroupChartCommands.ReadSpec, r, ct));
+        catalog.Add<ListMasterRequest, MasterRowList>(GroupChartCommands.Resource + ":list", MasterReads.Permission, (sp, t, c, r, ct) => sp.GetRequiredService<MasterReads>().ListAsync(t, c, GroupChartCommands.ReadSpec, r, ct));
+        catalog.Add<CreateAccountGroupMappingRequest, AccountGroupMappingResult>(AccountGroupMappingCommands.Resource + ":create", AccountGroupMappingCommands.Permission, (sp, t, c, r, ct) => sp.GetRequiredService<AccountGroupMappingCommands>().CreateAsync(t, c, r, ct));
+        catalog.Add<ListMasterRequest, MasterRowList>(AccountGroupMappingCommands.Resource + ":list", MasterReads.Permission, (sp, t, c, r, ct) => sp.GetRequiredService<MasterReads>().ListAsync(t, c, AccountGroupMappingCommands.ReadSpec, r, ct));
+        catalog.Add<ListMasterRequest, MasterRowList>("company-consolidation-settings:list", MasterReads.Permission, (sp, t, c, r, ct) => sp.GetRequiredService<MasterReads>().ListAsync(t, c, ConsolidationSettingCommands.ReadSpec, r, ct));
+        catalog.Add<MarkRatesUsedRequest, MarkedRatesResult>("exchange-rates:mark-used", RateUsageCommands.Permission, (sp, t, c, r, ct) => sp.GetRequiredService<RateUsageCommands>().MarkUsedAsync(t, c, r, ct));
         catalog.Add<CompanyRequest, ActivatedCompany>("companies:activate", CompanyActivator.ActivatePermission, (sp, t, c, r, ct) => sp.GetRequiredService<CompanyActivator>().ActivateAsync(t, c, r.CompanyId, ct));
     }
 }

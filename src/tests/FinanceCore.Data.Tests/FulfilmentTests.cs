@@ -1591,4 +1591,56 @@ public class FulfilmentTests
             Assert.True(verify.Status == CommandStatus.Ok && verify.Value!.Ok, chain + " " + Describe(verify));
         }
     }
+
+    [Fact]
+    public async Task TheGrIrQueryListsTheItemsWithSourceAgeAndStateAndReconcilesToTheLedger()
+    {
+        var s = await SetupAsync();
+        var t = s.T;
+        var pur = await PurchaseSetupAsync(s);
+        await WriteOffSetupAsync(s);
+        var po = await DomesticPurchaseOrderAsync(s, "po", 100, 10);
+        var receipt = await ReceiveAsync(s, "r1", po, 100);
+        var direct = await DirectReceiptAsync(s, "sr1", 10, 5);
+        var inv = (await PostPurchaseInvoice(s, "i1", "SI-1", 750, new PurchaseInvoiceLineInput("L1", po.OrderId, 1, 60, 10, 600, pur.Code, 150))).Value!;
+        var commands = new PurchaseInvoiceCommands(t.App);
+        Task<CommandResult<GrIrQueryResult>> Query(GrIrQueryRequest req, string permission = "read.orders") => commands.QueryGrIrAsync(t.TenantId, Ctx(s, "q" + Guid.NewGuid().ToString("N")[..8], permission), req);
+
+        // open: the receipt (400 left of 1000) and the receipt without an order (50), with their sources; the invoice item is cleared and is not listed
+        var open = await Query(new(t.CompanyId, AsOf: new DateOnly(2026, 3, 20)));
+        Assert.True(open.Status == CommandStatus.Ok, Describe(open));
+        var o = open.Value!;
+        Assert.Equal((-450m, -450m, true, 2), (o.TotalOpenLc, o.GlBalanceLc, o.Reconciles, o.Items.Count));
+        var viaReceipt = o.Items.Single(i => i.SourceKind == "RECEIPT");
+        Assert.Equal((receipt.DocumentId, -400m, "OPEN", 10, s.Supplier), (viaReceipt.SourceId, viaReceipt.ResidualLc, viaReceipt.State, viaReceipt.AgeDays, viaReceipt.SupplierPartnerId));
+        Assert.Equal([po.OrderId], viaReceipt.OrderIds);
+        var viaDirect = o.Items.Single(i => i.SourceKind == "DIRECT_RECEIPT");
+        Assert.Equal((direct.StockDocumentId, -50m, null), (viaDirect.SourceId, viaDirect.ResidualLc, viaDirect.SupplierPartnerId));
+        Assert.Single((await Query(new(t.CompanyId, PurchaseOrderId: po.OrderId))).Value!.Items);
+        Assert.Single((await Query(new(t.CompanyId, SupplierPartnerId: s.Supplier))).Value!.Items);
+        var everything = (await Query(new(t.CompanyId, State: "ALL"))).Value!;
+        Assert.Contains(everything.Items, i => i.SourceKind == "INVOICE" && i.State == "CLEARED" && i.SourceId == inv.PurchaseInvoiceId);
+
+        // written off: the receipt item leaves the open list, is WRITTEN_OFF, and the total open and the ledger still agree
+        var wr = await new PurchaseInvoiceCommands(t.App).WriteOffAsync(t.TenantId, Ctx(s, "w1", "purchase.invoice"),
+            new(t.CompanyId, new DateOnly(2026, 4, 1), "NO_INVOICE", "never invoiced", [new GrIrWriteOffItem(-400m, PurchaseOrderId: po.OrderId, PurchaseOrderLineNo: 1)]));
+        Assert.True(wr.Status == CommandStatus.Ok, Describe(wr));
+        var after = (await Query(new(t.CompanyId))).Value!;
+        Assert.Equal((-50m, -50m, true, 1), (after.TotalOpenLc, after.GlBalanceLc, after.Reconciles, after.Items.Count));
+        var written = (await Query(new(t.CompanyId, State: "WRITTEN_OFF"))).Value!;
+        Assert.Equal((receipt.DocumentId, "WRITTEN_OFF"), (Assert.Single(written.Items).SourceId, written.Items[0].State));
+        Assert.Equal(wr.Value!.JournalDocumentId, (await Query(new(t.CompanyId, State: "ALL"))).Value!.Items.Single(i => i.SourceKind == "WRITE_OFF").DocumentId);
+
+        // reversed: the item is open again
+        Assert.Equal(CommandStatus.Ok, (await ReverseWriteOff(s, "x1", wr.Value.JournalDocumentId)).Status);
+        var back = (await Query(new(t.CompanyId))).Value!;
+        Assert.Equal((-450m, -450m, true, 2), (back.TotalOpenLc, back.GlBalanceLc, back.Reconciles, back.Items.Count));
+
+        // the filters of the read
+        Assert.Equal(["READ.INVALID_FILTER"], Codes(await Query(new(t.CompanyId, State: "SOMETHING"))));
+        Assert.Equal(["READ.INVALID_FILTER"], Codes(await Query(new(t.CompanyId, Limit: 0))));
+        Assert.Equal(["AUTH.PERMISSION_MISSING"], Codes(await Query(new(t.CompanyId), "purchase.invoice")));
+        Assert.Equal(["READ.NOT_FOUND"], Codes(await Query(new(Guid.NewGuid()))));
+        Assert.True((await Query(new(t.CompanyId, Limit: 1))).Value!.Truncated);
+    }
 }

@@ -99,7 +99,9 @@ public class ContractTests
         Assert.Equal("purchase.invoice", catalog.Find("purchase-credit-notes:reverse")?.Permission);
         Assert.Equal("purchase.invoice", catalog.Find("gr-ir:write-off")?.Permission);
         Assert.Equal("purchase.invoice", catalog.Find("gr-ir:reverse-write-off")?.Permission);
-        Assert.Equal(10, catalog.All.Count);
+        Assert.Equal("sales.invoice", catalog.Find("invoices:record-issue")?.Permission);
+        Assert.Equal("ic.invoice", catalog.Find("ic-invoices:create")?.Permission);
+        Assert.Equal(12, catalog.All.Count);
     }
 
     [Fact]
@@ -125,7 +127,8 @@ public class ContractTests
             foreach (string verb in new[] { "get", "list" }) Assert.Equal("read.orders", catalog.Find($"{resource}:{verb}")?.Permission);
         }
         Assert.Equal("write.config", catalog.Find("company-order-settings:create-version")?.Permission);
-        Assert.Equal(2 * 8 + 1, catalog.All.Count);
+        Assert.Equal("ic.order", catalog.Find("ic-orders:create")?.Permission);
+        Assert.Equal(2 * 8 + 2, catalog.All.Count);
     }
 
     [Fact]
@@ -139,6 +142,23 @@ public class ContractTests
             ["migration-batches:list"] = "read.audit", ["migration-records:list"] = "read.audit"
         };
         foreach (var (name, permission) in expected) Assert.Equal(permission, catalog.Find(name)?.Permission);
+    }
+
+    [Fact]
+    public void TheOpenApiDocumentOfTheWholeCatalogIsBuilt()
+    {
+        // `GET /v1/openapi.json` builds the document from every module of the host. Production() above has only two of them, so a type that the builder
+        // has no schema for in another module (a JsonElement of the migration and master reads was one) answered 500 and nothing in the tests saw it.
+        var catalog = new CommandCatalog();
+        foreach (ICommandModule module in new ICommandModule[]
+                 {
+                     new PostingModule(), new VatModule(), new ClosingModule(), new ReadModule(), new FeedModule(), new MigrationModule(), new InventoryModule(),
+                     new OrderModule(), new StockModule(), new FulfilmentModule(), new ReturnModule(), new InvoiceModule(), new ConfigModule()
+                 })
+            module.Register(catalog);
+        JsonObject doc = OpenApiBuilder.Build(catalog);
+        Assert.Equal(catalog.All.Count, doc["paths"]!.AsObject().Count);
+        Assert.All(catalog.All, c => Assert.False(string.IsNullOrWhiteSpace(c.Permission), $"{c.Name} has no permission for P0a"));
     }
 
     [Fact]
@@ -195,7 +215,7 @@ public class ContractTests
             Assert.NotNull(post["security"]);
             Assert.True(post["requestBody"]!["required"]!.GetValue<bool>());
             var responses = post["responses"]!.AsObject().Select(r => r.Key).Order().ToArray();
-            Assert.Equal(new[] { "200", "400", "401", "403", "404", "409", "422", "500", "503" }, responses);
+            Assert.Equal(new[] { "200", "400", "401", "403", "404", "409", "422", "429", "500", "503" }, responses);
             Assert.Equal("OK", post["responses"]!["200"]!["content"]!["application/json"]!["schema"]!["properties"]!["status"]!["const"]!.GetValue<string>());
         }
         Assert.Equal(paths.Count, paths.Select(p => p.Value!["post"]!["operationId"]!.GetValue<string>()).Distinct().Count());
@@ -299,7 +319,7 @@ public class ContractTests
     /// codes of the API layer. Each is recorded in db/README.md, F-IMPL-7, F-IMPL-29 and F-IMPL-31.</summary>
     private static readonly string[] SliceOnly =
     [
-        "API.COMMAND_NOT_FOUND", "AUTH.TENANT_MISMATCH", "AUTH.TENANT_MISSING", "AUTH.TOKEN_INVALID",
+        "API.COMMAND_NOT_FOUND", "API.RATE_LIMITED", "AUTH.CLIENT_CERTIFICATE_MISMATCH", "AUTH.CLIENT_CERTIFICATE_REQUIRED", "AUTH.TENANT_MISMATCH", "AUTH.TENANT_MISSING", "AUTH.TOKEN_INVALID",
         "CHAIN.DOCUMENT_WITHOUT_LINES", "NUMBER.GAP", "SYSTEM.FISCAL_YEAR_MISSING",
         "EVENT.ACK_NOT_FORWARD", "EVENT.REWIND_NOT_BACKWARD",   // 15, 5.3 says "only forward" and "backward" without naming a code (F-IMPL-42)
         "MIGRATION.ROLLBACK_FAILED",                             // 13, 7 has no code for a document of a rollback that does not reverse (F-IMPL-46)

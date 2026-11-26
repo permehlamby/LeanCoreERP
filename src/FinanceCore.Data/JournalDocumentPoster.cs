@@ -65,7 +65,7 @@ public sealed class JournalDocumentPoster(NpgsqlDataSource source)
     // ---------------------------------------------------------------------------------------------------------
     // P1: shape of the request
     // ---------------------------------------------------------------------------------------------------------
-    private static List<CommandError> ValidateShape(CommandContext ctx, PostJournalDocumentRequest r)
+    internal static List<CommandError> ValidateShape(CommandContext ctx, PostJournalDocumentRequest r)
     {
         var errors = new List<CommandError>();
         void Invalid(string path, string reason) => errors.Add(Error("SCHEMA.INVALID_VALUE", "P1", path, ("reason", reason)));
@@ -146,7 +146,11 @@ public sealed class JournalDocumentPoster(NpgsqlDataSource source)
     /// records, ADR-052), whether the poster writes the command log and commits, and what runs once the document is inserted (the link records).
     /// </summary>
     internal sealed record PostEmbedding(
-        string CommandName, string Origin, string? BalancingLineRef, Func<EmbeddedFacts, byte[]?>? DetailDigest, bool WriteLog, bool Commit, Func<TenantTransaction, PostedDocument, EmbeddedFacts, Task>? After, Guid? DocumentId = null, Func<EmbeddedFacts, Task<byte[]?>>? DetailDigestAsync = null);
+        string CommandName, string Origin, string? BalancingLineRef, Func<EmbeddedFacts, byte[]?>? DetailDigest, bool WriteLog, bool Commit, Func<TenantTransaction, PostedDocument, EmbeddedFacts, Task>? After, Guid? DocumentId = null, Func<EmbeddedFacts, Task<byte[]?>>? DetailDigestAsync = null,
+        Guid? IcTransactionId = null, Guid? IcCounterpartCompanyId = null);
+
+    /// <summary>The marker of an intercompany line (23, 6, ADR-226): the counterpart company on the BASE lines (the generated IC account line is one), never on tax, rounding or derived lines.</summary>
+    private static Guid? IcMarker(PostEmbedding? embedding, PostedLine line) => line.LineType == "BASE" ? embedding?.IcCounterpartCompanyId : null;
 
     /// <summary>What the posting worked out that the order command needs for its link records: the request with the balancing amount in, and the tax plan.</summary>
     internal sealed record EmbeddedFacts(PostJournalDocumentRequest Request, TaxPlan Tax);
@@ -385,7 +389,7 @@ public sealed class JournalDocumentPoster(NpgsqlDataSource source)
             ["document_date"] = req.DocumentDate, ["posting_date"] = req.PostingDate, ["posted_at"] = postedAt,
             ["transaction_currency"] = req.TransactionCurrency,
             ["reversal_of_document_id"] = null, ["reversal_reason_code"] = null, ["auto_reversal_date"] = null,
-            ["ic_transaction_id"] = null, ["ic_counterpart_company_id"] = null, ["origin"] = embedding?.Origin ?? "EXTERNAL",
+            ["ic_transaction_id"] = embedding?.IcTransactionId, ["ic_counterpart_company_id"] = embedding?.IcCounterpartCompanyId, ["origin"] = embedding?.Origin ?? "EXTERNAL",
             ["source_system"] = ctx.SourceSystem, ["source_document_ref"] = req.SourceDocumentRef,
             ["idempotency_key"] = ctx.IdempotencyKey, ["command_name"] = embedding?.CommandName ?? CommandName, ["posted_by"] = ctx.Actor,
             ["correlation_id"] = ctx.CorrelationId, ["hash_version"] = LedgerHash2.Version
@@ -469,7 +473,7 @@ public sealed class JournalDocumentPoster(NpgsqlDataSource source)
                 ["rate_lc"] = line.RateLc, ["rate_lc_table"] = null,
                 ["amount_gc"] = line.AmountGc, ["currency_gc"] = line.CurrencyGc, ["rate_gc"] = line.RateGc, ["rate_gc_table"] = null,
                 ["amount_rc"] = line.AmountRc, ["currency_rc"] = line.CurrencyRc, ["rate_rc"] = line.RateRc, ["rate_rc_table"] = null,
-                ["rate_type"] = line.RateType, ["rate_date"] = line.RateDate, ["ic_counterpart_company_id"] = null
+                ["rate_type"] = line.RateType, ["rate_date"] = line.RateDate, ["ic_counterpart_company_id"] = IcMarker(embedding, line)
             })));
         byte[] rowHash = LedgerHash2.RowHash(header, chainSeq, headHash, LedgerHash2.LineDigest(lineHashes));
 
@@ -480,7 +484,7 @@ public sealed class JournalDocumentPoster(NpgsqlDataSource source)
             return Reject(noSnapshot);
         foreach (PostedLine l in lines)
             await InsertLineAsync(tx, tenantId, req, documentId, ledgerId.Value, fiscalYear, recheck.PeriodNo!.Value,
-                baseOfLine.TryGetValue(l.LineNo, out int textOf) ? req.Lines[textOf].LineText : null, baseOfLine.TryGetValue(l.LineNo, out int dimsOf) ? req.Lines[dimsOf].Dimensions : null, l, ct);
+                baseOfLine.TryGetValue(l.LineNo, out int textOf) ? req.Lines[textOf].LineText : null, baseOfLine.TryGetValue(l.LineNo, out int dimsOf) ? req.Lines[dimsOf].Dimensions : null, l, IcMarker(embedding, l), ct);
         foreach (var (taxLineNo, tax) in taxRows.OrderBy(t => t.Key))
         {
             await TaxRows.InsertTaxAsync(tx, tax.Row, ct);
@@ -847,9 +851,11 @@ public sealed class JournalDocumentPoster(NpgsqlDataSource source)
             "insert into core.journal_document (tenant_id, company_id, document_id, ledger_id, document_type, is_system_generated, " +
             "number_series_id, fiscal_year, sequence_no, document_number, fiscal_period, soft_close_override, document_date, posting_date, " +
             "posted_at, transaction_currency, origin, source_system, source_document_ref, idempotency_key, command_name, posted_by, " +
-            "correlation_id, header_text, external_reference, chain_seq, prev_hash, row_hash, hash_version, detail_digest) " +
+            "correlation_id, header_text, external_reference, chain_seq, prev_hash, row_hash, hash_version, detail_digest, ic_transaction_id, ic_counterpart_company_id) " +
             "values (@t, @c, @id, @l, @dt, false, @s, @fy, @seq, @num, @fp, @soft, @dd, @pd, @at, @tc, @origin, @src, @ref, @key, @cmd, " +
-            "@by, @corr, @ht, @ext, @cs, @prev, @row, @hv, @detail)");
+            "@by, @corr, @ht, @ext, @cs, @prev, @row, @hv, @detail, @icx, @icc)");
+        cmd.Parameters.Add(new NpgsqlParameter("icx", NpgsqlDbType.Uuid) { Value = (object?)embedding?.IcTransactionId ?? DBNull.Value });
+        cmd.Parameters.Add(new NpgsqlParameter("icc", NpgsqlDbType.Uuid) { Value = (object?)embedding?.IcCounterpartCompanyId ?? DBNull.Value });
         cmd.Parameters.AddWithValue("origin", embedding?.Origin ?? "EXTERNAL");
         cmd.Parameters.Add(new NpgsqlParameter("detail", NpgsqlDbType.Bytea) { Value = (object?)detailDigest ?? DBNull.Value });
         cmd.Parameters.AddWithValue("t", tenantId);
@@ -1038,13 +1044,14 @@ public sealed class JournalDocumentPoster(NpgsqlDataSource source)
 
     private static async Task InsertLineAsync(
         TenantTransaction tx, Guid tenantId, PostJournalDocumentRequest req, Guid documentId, Guid ledgerId,
-        int fiscalYear, int period, string? lineText, LineDimensions? dims, PostedLine l, CancellationToken ct)
+        int fiscalYear, int period, string? lineText, LineDimensions? dims, PostedLine l, Guid? icCounterpart, CancellationToken ct)
     {
         await using var cmd = tx.Command(
             "insert into core.journal_line (tenant_id, company_id, document_id, line_no, ledger_id, line_type, account_id, posting_date, " +
             "fiscal_year, fiscal_period, line_text, amount_tc, amount_lc, currency_lc, rate_lc, amount_gc, currency_gc, rate_gc, " +
-            "amount_rc, currency_rc, rate_rc, rate_type, rate_date, cost_center_id, project_id, profit_center_id, business_unit_id, tax_code_id) " +
-            "values (@t, @c, @d, @n, @l, @lt, @a, @pd, @fy, @fp, @txt, @tc, @lc, @clc, @rlc, @gc, @cgc, @rgc, @rc, @crc, @rrc, @rt, @rd, @cc, @pr, @pc, @bu, @tax)");
+            "amount_rc, currency_rc, rate_rc, rate_type, rate_date, cost_center_id, project_id, profit_center_id, business_unit_id, tax_code_id, ic_counterpart_company_id) " +
+            "values (@t, @c, @d, @n, @l, @lt, @a, @pd, @fy, @fp, @txt, @tc, @lc, @clc, @rlc, @gc, @cgc, @rgc, @rc, @crc, @rrc, @rt, @rd, @cc, @pr, @pc, @bu, @tax, @ic)");
+        cmd.Parameters.Add(new NpgsqlParameter("ic", NpgsqlDbType.Uuid) { Value = (object?)icCounterpart ?? DBNull.Value });
         cmd.Parameters.Add(new NpgsqlParameter("tax", NpgsqlDbType.Uuid) { Value = (object?)l.TaxCodeId ?? DBNull.Value });
         cmd.Parameters.Add(new NpgsqlParameter("cc", NpgsqlDbType.Uuid) { Value = (object?)dims?.CostCenterId ?? DBNull.Value });
         cmd.Parameters.Add(new NpgsqlParameter("pr", NpgsqlDbType.Uuid) { Value = (object?)dims?.ProjectId ?? DBNull.Value });
