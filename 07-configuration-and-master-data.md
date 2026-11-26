@@ -805,6 +805,15 @@ For the resources `gl-accounts`, `business-partners` (with PII, company relation
 
 These deltas are applied in 02 and 06 with this spec.
 
+### 13.2as The FULFILMENT chain in chains:verify (F-IMPL-86, 2026-11-26)
+
+PROPOSED, written down so that spec and code agree. It builds on 11, 5.5 and 06, 7.4.
+
+1. **Built.** `chains:verify` with `chain_type` FULFILMENT: the one chain over deliveries, receipts, sales returns and purchase returns of a company, whole chain only.
+2. **Checks.** Row hash and line digest from the stored columns, the links across the four tables, the gapless `chain_seq`, the head, the line count, and that the stock document of a document carries its row hash as `detail_digest`.
+3. **Codes.** `FULFILMENT.LINE_COUNT_MISMATCH` (structure), `FULFILMENT.LINE_DIGEST_MISMATCH` and `FULFILMENT.DETAIL_DIGEST_MISMATCH` (digest_mismatch), besides the common CHAIN.* codes.
+4. **Not built.** A range (from_seq, to_seq), a check that a reversal names a document of the same kind.
+
 ### 13.2ar The get and list of the documents of orders (F-IMPL-85, 2026-11-26)
 
 PROPOSED, written down so that spec and code agree. It builds on 11, 8.

@@ -62,6 +62,7 @@ public sealed class ChainVerification(NpgsqlDataSource source)
             "CLEARING" => await verifier.VerifyClearingsAsync(tenantId, req.CompanyId, ct),
             "VAT_RETURN" => await verifier.VerifyVatReturnsAsync(tenantId, req.CompanyId, ct),
             "STOCK" => await verifier.VerifyStockAsync(tenantId, req.CompanyId, ct),
+            "FULFILMENT" => await verifier.VerifyFulfilmentAsync(tenantId, req.CompanyId, ct),
             _ => await verifier.VerifyPeriodEventsAsync(tenantId, req.CompanyId, ct)
         };
         var breaks = result.Problems.Select(p => new ChainBreak(ChainRules.KindOf(p.Code), p.Code, p.ChainSeq, p.Detail)).ToList();

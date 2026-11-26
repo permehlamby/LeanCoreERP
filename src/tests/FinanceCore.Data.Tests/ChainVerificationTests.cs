@@ -74,7 +74,7 @@ public class ChainVerificationTests
         Assert.Equal(["AUTH.PERMISSION_MISSING"], Codes(await verify.VerifyAsync(t.TenantId, t.Context("a", "read.audit"), new(t.CompanyId, "LEDGER"))));
         Assert.Equal(["SCHEMA.INVALID_VALUE"], Codes(await verify.VerifyAsync(t.TenantId, Ctx(t), new(t.CompanyId, "NOT_A_CHAIN"))));
         Assert.Equal(["SCHEMA.INVALID_VALUE"], Codes(await verify.VerifyAsync(t.TenantId, Ctx(t), new(Guid.Empty, "LEDGER"))));
-        Assert.Equal(["LIMIT.CHAIN_TYPE_NOT_BUILT"], Codes(await verify.VerifyAsync(t.TenantId, Ctx(t), new(t.CompanyId, "FULFILMENT"))));
+        Assert.True((await verify.VerifyAsync(t.TenantId, Ctx(t), new(t.CompanyId, "FULFILMENT"))).Value!.Ok);   // every chain type is built, an empty chain is fine
         Assert.Equal(["LIMIT.CHAIN_RANGE_NOT_BUILT"], Codes(await verify.VerifyAsync(t.TenantId, Ctx(t), new(t.CompanyId, "LEDGER", null, 1, 5))));
         Assert.Equal(["SCHEMA.INVALID_VALUE"], Codes(await verify.VerifyAsync(t.TenantId, Ctx(t), new(t.CompanyId, "LEDGER", null, 5, 1))));
         Assert.Equal(["COMPANY.NOT_FOUND"], Codes(await verify.VerifyAsync(t.TenantId, Ctx(t), new(Guid.NewGuid(), "LEDGER"))));

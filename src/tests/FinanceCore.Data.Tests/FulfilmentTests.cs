@@ -1151,6 +1151,42 @@ public class FulfilmentTests
         Assert.Contains(r.Value.Breaks, b => b.Code == "STOCK.COST_KEY_MISMATCH");   // the row hash binds the stored digest, so it is the digest that shows the change
     }
 
+    [Fact]
+    public async Task TheFulfilmentChainIsVerifiedAcrossDeliveriesReceiptsReturnsAndReversals()
+    {
+        var s = await SetupAsync();
+        var t = s.T;
+        var returns = new ReturnCommands(t.App);
+        var verify = new ChainVerification(t.App);
+        var Verify = (string key) => verify.VerifyAsync(t.TenantId, t.Context(key, "chain.verify"), new(t.CompanyId, "FULFILMENT"));
+
+        // an empty chain is fine
+        var empty = await Verify("v-empty");
+        Assert.True(empty.Status == CommandStatus.Ok && empty.Value!.Ok && empty.Value.Checked == 0, Describe(empty));
+
+        var receipt = await ReceiveAsync(s, "r1", await PurchaseOrderAsync(s, "po", 100, 10), 100);
+        var so = await SalesOrderAsync(s, "so", GoodsLine(s, 30, 25));
+        var delivery = (await s.Cmds.PostDeliveryAsync(t.TenantId, Ctx(s, "d1", "sales.deliver"), new(t.CompanyId, new DateOnly(2026, 3, 12), [new("D1", so.OrderId, 1, 30, "C62")]))).Value!;
+        var salesReturn = (await returns.PostSalesReturnAsync(t.TenantId, Ctx(s, "ret1", "sales.return"), new(t.CompanyId, new DateOnly(2026, 3, 14), [new("R1", delivery.DocumentId, 1, 10, "C62", "DAMAGED")], "RMA-1"))).Value!;
+        var purchaseReturn = (await returns.PostPurchaseReturnAsync(t.TenantId, Ctx(s, "pr1", "purchase.return"), new(t.CompanyId, new DateOnly(2026, 3, 15), [new("R1", receipt.DocumentId, 1, 5, "C62", "WRONG_ITEM")]))).Value!;
+        Assert.Equal(CommandStatus.Ok, (await returns.ReverseSalesReturnAsync(t.TenantId, Ctx(s, "rr1", "sales.return"), new(t.CompanyId, salesReturn.DocumentId, "CORRECTION"))).Status);
+        Assert.Equal(CommandStatus.Ok, (await returns.ReversePurchaseReturnAsync(t.TenantId, Ctx(s, "rr2", "purchase.return"), new(t.CompanyId, purchaseReturn.DocumentId, "CORRECTION"))).Status);
+        Assert.Equal(CommandStatus.Ok, (await s.Cmds.ReverseDeliveryAsync(t.TenantId, Ctx(s, "dr1", "sales.deliver"), new(t.CompanyId, delivery.DocumentId, "CORRECTION"))).Status);
+        var ok = await Verify("v0");
+        Assert.True(ok.Status == CommandStatus.Ok && ok.Value!.Ok && ok.Value.Checked == 7, Describe(ok));
+
+        // a changed line of a delivery is found by the line digest, and its mirror is not affected
+        await t.ExecuteAsync($"""
+            alter table core.sales_delivery_line disable trigger all;
+            update core.sales_delivery_line set value_lc = value_lc + 1 where tenant_id = @t and delivery_id = '{delivery.DocumentId}' and line_no = 1;
+            alter table core.sales_delivery_line enable trigger all;
+            """);
+        var r = await Verify("v1");
+        Assert.Equal(CommandStatus.Ok, r.Status);
+        Assert.False(r.Value!.Ok);
+        Assert.Contains(r.Value.Breaks, b => b is { Kind: "digest_mismatch", Code: "FULFILMENT.LINE_DIGEST_MISMATCH" });
+    }
+
     private static Task<CommandResult<PurchaseCreditNoteResult>> PostCredit(S s, string key, string number, Guid invoice, decimal gross, params PurchaseCreditLineInput[] lines) =>
         new PurchaseInvoiceCommands(s.T.App).PostCreditNoteAsync(s.T.TenantId, Ctx(s, key, "purchase.invoice"), new(s.T.CompanyId, invoice, "AMOUNT", number, new DateOnly(2026, 3, 25), gross, "PRICE", lines));
 

@@ -328,7 +328,8 @@ public class ContractTests
         "ORDER.RECEIPT_RETURNED",   // 11, 6.3 names ORDER.DELIVERY_RETURNED for a delivery; the same rule for a receipt has no code (F-IMPL-53)
         "ORDER.INVOICE_EXCEEDS_OPEN", "ORDER.ACCOUNT_DETERMINATION_MISSING",   // 11, 6.4 limits an invoice by open to invoice and uses the REVENUE and AR_CONTROL roles without naming codes (F-IMPL-55)
         "MATCH.QUANTITY_EXCEEDS_ORDERED",   // 11, 7.2 limits a two-way line by ordered plus tolerance without naming a code (F-IMPL-58)
-        "STOCK.COST_KEY_MISMATCH", "STOCK.DETAIL_DIGEST_MISMATCH", "STOCK.MOVEMENT_COUNT_MISMATCH", "STOCK.MOVEMENT_DIGEST_MISMATCH"   // 06, 7.4 names the kinds of a break, not the checks of the STOCK chain (F-IMPL-61)
+        "STOCK.COST_KEY_MISMATCH", "STOCK.DETAIL_DIGEST_MISMATCH", "STOCK.MOVEMENT_COUNT_MISMATCH", "STOCK.MOVEMENT_DIGEST_MISMATCH",
+        "FULFILMENT.DETAIL_DIGEST_MISMATCH", "FULFILMENT.LINE_COUNT_MISMATCH", "FULFILMENT.LINE_DIGEST_MISMATCH"   // 06, 7.4 names the kinds of a break, not the checks of the STOCK chain (F-IMPL-61)
     ];
 
     /// <summary>The index of 06 writes a code in full (`AREA.NAME`) or, inside the row of its area, as the bare name (`NAME`).</summary>

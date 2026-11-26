@@ -78,8 +78,8 @@ public class PostingApiTests(ApiFixture api) : IClassFixture<ApiFixture>
         Assert.Equal(1, result.GetProperty("first_break_seq").GetInt32());
         Assert.Contains(result.GetProperty("breaks").EnumerateArray(), b => b.GetProperty("kind").GetString() == "hash" && b.GetProperty("code").GetString() == "CHAIN.ROW_HASH_MISMATCH");
 
-        var notBuilt = await Send(t, "chains:verify", new Dictionary<string, object?> { ["company_id"] = t.CompanyId, ["chain_type"] = "FULFILMENT" }, "v3", "chain.verify");
-        Assert.Equal("LIMIT.CHAIN_TYPE_NOT_BUILT", Code(notBuilt.Body));
+        var fulfilment = await Send(t, "chains:verify", new Dictionary<string, object?> { ["company_id"] = t.CompanyId, ["chain_type"] = "FULFILMENT" }, "v3", "chain.verify");
+        Assert.True(fulfilment.Body.GetProperty("result").GetProperty("ok").GetBoolean());   // an empty FULFILMENT chain
     }
 
     [Fact]
