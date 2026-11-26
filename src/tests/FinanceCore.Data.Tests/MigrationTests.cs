@@ -429,4 +429,81 @@ public class MigrationTests
         Assert.Equal(["AUTH.PERMISSION_MISSING"], Codes(await reads.GetBatchAsync(t.TenantId, t.Context("g3", "read.ledger"), new(batch))));
         Assert.Equal(["READ.CURSOR_INVALID"], Codes(await reads.ListRecordsAsync(t.TenantId, Audit("r6"), new(batch, Cursor: "garbage"))));
     }
+
+    private static StageRecordInput LegacyTax(string @ref, object payload) => new(RecordTypes.LegacyTaxSummary, @ref, J(payload));
+
+    private static object LegacyBox(string box, decimal @base, decimal tax, string? account = null, decimal? ledger = null, int period = 2, string vatId = "DK12345678") => new
+    {
+        registration_vat_id = vatId, fiscal_year = 2026, vat_period_no = period, return_type = "STANDARD", box_code = box, base_amount = @base, tax_amount = tax,
+        vat_account_no = account, ledger_lc = ledger, ledger_gc = ledger is null ? (decimal?)null : Math.Round(ledger.Value * 0.134m, 2), ledger_rc = ledger is null ? (decimal?)null : Math.Round(ledger.Value * 0.134m, 2)
+    };
+
+    [Fact]
+    public async Task TheLegacyTaxOfAPartialVatPeriodIsStagedReconciledCommittedAndRolledBack()
+    {
+        var s = await SetupAsync();
+        var t = s.T;
+        await t.ExecuteAsync("insert into core.gl_account (tenant_id, company_id, account_id, account_no, name, account_type, tax_code_rule, open_item_mode) values (@t, @c, gen_random_uuid(), '2700', 'VAT payable', 'LIABILITY', 'FORBIDDEN', 'NONE'), " +
+            "(@t, @c, gen_random_uuid(), '1000', 'Bank', 'ASSET', 'FORBIDDEN', 'NONE') on conflict do nothing");
+        var reg = await new TaxCommands(t.App).CreateRegistrationAsync(t.TenantId, t.Context("reg", "write.config"), new(new Dictionary<string, object?>
+        {
+            ["company_id"] = t.CompanyId, ["country_code"] = "DK", ["vat_id"] = "DK12345678", ["scheme"] = "STANDARD", ["filing_frequency"] = "QUARTERLY",
+            ["correction_method"] = "ADJUST_NEXT", ["return_currency"] = "DKK", ["valid_from"] = "2026-01-01"
+        }));
+        Assert.True(reg.Status == CommandStatus.Ok, Describe(reg));
+
+        // the cutover is the first of May: inside the second quarter, which is the VAT period of the legacy tax
+        var open = await s.Cmds.OpenAsync(t.TenantId, Manage(t, "open"), OpenReq(t, "2026-05-01"));
+        Assert.True(open.Status == CommandStatus.Ok, Describe(open));
+        Guid batch = open.Value!.BatchId;
+        Assert.Equal(CommandStatus.Ok, (await s.Cmds.DeclareTotalsAsync(t.TenantId, Manage(t, "totals"), new(batch, [Tb("1000", 250m, 33.5m), Tb("2700", -250m, -33.5m)]))).Status);
+
+        // the checks of a record: the registration, the period, the keys of the return type
+        var bad = await s.Cmds.StageAsync(t.TenantId, Stage(t, "stage-bad"), new(batch,
+        [
+            LegacyTax("L-REG", LegacyBox("B2", -1000m, -250m, vatId: "DK99999999")),
+            LegacyTax("L-PERIOD", LegacyBox("B2", -1000m, -250m, period: 1)),
+            LegacyTax("L-NOBOX", new { registration_vat_id = "DK12345678", fiscal_year = 2026, vat_period_no = 2, return_type = "STANDARD", base_amount = 1m, tax_amount = 1m }),
+            LegacyTax("L-ACCOUNT", LegacyBox("B2", -1000m, -250m, account: "NOPE", ledger: -250m))
+        ]));
+        Assert.True(bad.Status == CommandStatus.Ok, Describe(bad));
+        string[][] codes = bad.Value!.Records!.Select(r => r.Errors.Select(e => e.Code).ToArray()).ToArray();
+        Assert.Equal(["VAT.NO_REGISTRATION"], codes[0]);
+        Assert.Equal(["MIGRATION.LEGACY_TAX_PERIOD_INVALID"], codes[1]);
+        Assert.Equal(["SCHEMA.INVALID_VALUE"], codes[2]);
+        Assert.Equal(["ACCOUNT.NOT_FOUND"], codes[3]);
+
+        // a ledger amount that differs from the declared balance of the VAT account fails the reconciliation; the same record again supersedes it
+        Assert.Equal(CommandStatus.Ok, (await s.Cmds.StageAsync(t.TenantId, Stage(t, "stage-1"), new(batch,
+        [
+            Bal("1000", 250m, 33.5m), Bal("2700", -250m, -33.5m),
+            LegacyTax("L-B1", LegacyBox("B1", 1000m, 0m)), LegacyTax("L-B2", LegacyBox("B2", -1000m, -250m, "2700", -200m))
+        ]))).Status);
+        Assert.Equal(CommandStatus.Ok, (await s.Cmds.StageAsync(t.TenantId, Stage(t, "stage-2"), new(batch, [LegacyTax("L-REG", LegacyBox("B2", 0m, 0m)), LegacyTax("L-PERIOD", LegacyBox("B2", 0m, 0m)), LegacyTax("L-NOBOX", LegacyBox("B3", 0m, 0m)), LegacyTax("L-ACCOUNT", LegacyBox("B4", 0m, 0m))]))).Status);
+        Assert.Equal(CommandStatus.Ok, (await s.Cmds.ValidateAsync(t.TenantId, Manage(t, "validate"), new(batch))).Status);
+        var failed = await s.Cmds.ReconcileAsync(t.TenantId, Manage(t, "rec-1"), new(batch));
+        Assert.Equal("VALIDATED", failed.Value!.Status);
+        Assert.Contains(failed.Value.Reconciliation!, r => r is { CheckCode: "VAT_VS_TB", Key: "2700", Result: "FAIL" });
+        Assert.Equal(CommandStatus.Ok, (await s.Cmds.StageAsync(t.TenantId, Stage(t, "stage-3"), new(batch, [LegacyTax("L-B2", LegacyBox("B2", -1000m, -250m, "2700", -250m))]))).Status);
+        Assert.Equal(CommandStatus.Ok, (await s.Cmds.ValidateAsync(t.TenantId, Manage(t, "validate-2"), new(batch))).Status);
+        var good = await s.Cmds.ReconcileAsync(t.TenantId, Manage(t, "rec-2"), new(batch));
+        Assert.True(good.Value!.Status == "RECONCILED", Describe(good) + " " + string.Join("; ", good.Value.Reconciliation!.Where(r => r.Result == "FAIL").Select(r => r.CheckCode + " " + r.Key)));
+        Assert.DoesNotContain(good.Value.Reconciliation!, r => r.CheckCode == "VAT_VS_TB");
+
+        // the commit has a chunk for the legacy tax and writes one row per current record, not yet reported
+        var committed = await s.Cmds.CommitAsync(t.TenantId, Commit(t, "commit"), new(batch));
+        Assert.True(committed.Status == CommandStatus.Ok, Describe(committed));
+        Assert.Equal(["OPENING_GL", "OPEN_ITEMS", "LEGACY_TAX"], committed.Value!.Chunks!.Select(c => c.Area).ToArray());
+        Assert.Equal(6, await t.ScalarAsync<int>("select count(*) from core.legacy_tax_summary where tenant_id = @t and batch_id = @b and reported_in_return_id is null", ("b", batch)));   // the two real rows and the four zero rows that replaced the invalid records
+        Assert.Equal(-250m, await t.ScalarAsync<decimal>("select ledger_lc from core.legacy_tax_summary where tenant_id = @t and batch_id = @b and legacy_ref = 'L-B2'", ("b", batch)));
+        Assert.Equal(("STANDARD", "BOX", 2, "DKK"), (
+            await t.ScalarAsync<string>("select return_type from core.legacy_tax_summary where tenant_id = @t and box_code = 'B1'"), await t.ScalarAsync<string>("select row_type from core.legacy_tax_summary where tenant_id = @t and box_code = 'B1'"),
+            await t.ScalarAsync<int>("select vat_period_no from core.legacy_tax_summary where tenant_id = @t and box_code = 'B1'"), (await t.ScalarAsync<string>("select currency_code from core.legacy_tax_summary where tenant_id = @t and box_code = 'B1'")).Trim()));
+
+        // a row keeps its values; the rollback removes the rows of the batch with its documents
+        await Assert.ThrowsAnyAsync<Exception>(() => t.ExecuteAsync("update core.legacy_tax_summary set base_amount = 1 where tenant_id = @t and box_code = 'B1'"));
+        var rolled = await s.Cmds.RollbackAsync(t.TenantId, Commit(t, "rollback"), new(batch));
+        Assert.True(rolled.Status == CommandStatus.Ok && rolled.Value!.Status == "ROLLED_BACK", Describe(rolled));
+        Assert.Equal(0, await t.ScalarAsync<int>("select count(*) from core.legacy_tax_summary where tenant_id = @t"));
+    }
 }

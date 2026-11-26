@@ -329,6 +329,7 @@ public class ContractTests
         "ORDER.INVOICE_EXCEEDS_OPEN", "ORDER.ACCOUNT_DETERMINATION_MISSING",   // 11, 6.4 limits an invoice by open to invoice and uses the REVENUE and AR_CONTROL roles without naming codes (F-IMPL-55)
         "MATCH.QUANTITY_EXCEEDS_ORDERED",   // 11, 7.2 limits a two-way line by ordered plus tolerance without naming a code (F-IMPL-58)
         "STOCK.COST_KEY_MISMATCH", "STOCK.DETAIL_DIGEST_MISMATCH", "STOCK.MOVEMENT_COUNT_MISMATCH", "STOCK.MOVEMENT_DIGEST_MISMATCH",
+        "MIGRATION.LEGACY_TAX_PERIOD_INVALID",   // 13, 3.6 says a legacy tax summary belongs to the VAT period that holds the cutover without naming a code (F-IMPL-88)
         "FULFILMENT.DETAIL_DIGEST_MISMATCH", "FULFILMENT.LINE_COUNT_MISMATCH", "FULFILMENT.LINE_DIGEST_MISMATCH"   // 06, 7.4 names the kinds of a break, not the checks of the STOCK chain (F-IMPL-61)
     ];
 

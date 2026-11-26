@@ -805,6 +805,16 @@ For the resources `gl-accounts`, `business-partners` (with PII, company relation
 
 These deltas are applied in 02 and 06 with this spec.
 
+### 13.2au The legacy tax summary, first slice (F-IMPL-88, 2026-11-26)
+
+PROPOSED, written down so that spec and code agree. It builds on 13, 3.6, Q1, 5 and 8 and on 08, 7.1.
+
+1. **Built.** Migration 0055: `legacy_tax_summary` (E + S; one row per result row of a return, `reported_in_return_id` is the S column). The record type `LEGACY_TAX_SUMMARY` is staged, validated, reconciled and committed in the chunk LEGACY_TAX.
+2. **Record.** `registration_vat_id`, `fiscal_year`, `vat_period_no`, `return_type`, the row keys of the return type, `base_amount`, `tax_amount`, and with a VAT account `vat_account_no`, `ledger_lc`, `ledger_gc`, `ledger_rc`.
+3. **Checks.** The registration of the company by VAT id and its scheme, the VAT account, the partner, the VAT period that holds the cutover date. `VAT_VS_TB`: ledger amounts per VAT account against the declared balance, no tolerance.
+4. **Commit and rollback.** A chunk LEGACY_TAX is planned only when the batch has such records. Rollback deletes the unreported rows of the batch.
+5. **Not built.** Inclusion in `vat-returns:prepare` (and `reported_in_return_id`), the legacy ledger amounts in the settlement, `VAT_PERIOD_COMPLETE`.
+
 ### 13.2at The read vat-positions:get (F-IMPL-87, 2026-11-26)
 
 PROPOSED, written down so that spec and code agree. It builds on 09, 4.10 and 08, 7.4.

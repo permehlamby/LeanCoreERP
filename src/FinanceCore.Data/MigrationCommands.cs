@@ -14,7 +14,7 @@ namespace FinanceCore.Data;
 /// batch id on each) as the migration role into a company that is still DRAFT, at the cutover date, with the amounts as supplied and DERIVED rates (13, 6). Every status change of
 /// a batch writes one outbox event and the seal writes migration.sealed, none per record (E6).
 /// </summary>
-public sealed class MigrationCommands(NpgsqlDataSource source)
+public sealed partial class MigrationCommands(NpgsqlDataSource source)
 {
     public const string ManagePermission = "migration.manage", StagePermission = "migration.stage", CommitPermission = "migration.commit";
     private const int MaxStageRecords = 5000;
@@ -268,6 +268,7 @@ public sealed class MigrationCommands(NpgsqlDataSource source)
     {
         var errors = new List<CommandError>();
         void Bad(string path, string code, string reason) => errors.Add(Error(code, "P2", path, ("reason", reason)));
+        if (payload is LegacyTaxSummaryPayload) return errors;   // checked against the registrations by CheckLegacyTaxAsync
         string? accountNo = payload is OpeningBalancePayload ob ? ob.AccountNo : ((OpenItemPayload)payload).AccountNo;
         if (!accounts.TryGetValue(accountNo!, out AccountInfo? account)) { Bad("/account_no", "ACCOUNT.NOT_FOUND", "no account with this number"); return errors; }
         if (!account.Active) Bad("/account_no", "ACCOUNT.INACTIVE", "the account is inactive");
@@ -326,10 +327,13 @@ public sealed class MigrationCommands(NpgsqlDataSource source)
             }
             long recordNo = await CountAsync(tx, "select coalesce(max(record_no), 0) from core.migration_record where tenant_id = @t and batch_id = @b", tenantId, batch.BatchId, ct);
             var results = new List<StagedRecordResult>();
+            Dictionary<string, LegacyRegistration>? legacyRegistrations = null;
             foreach (StageRecordInput rec in req.Records!)
             {
                 var (payload, errors) = MigrationRecords.Parse(rec.RecordType, rec.Payload);
-                if (payload is not null) errors.AddRange(CheckRecord(rec.RecordType, payload, accounts, currencies, partners));
+                if (payload is LegacyTaxSummaryPayload legacy)
+                    errors.AddRange(await CheckLegacyTaxAsync(tx, tenantId, batch, legacy, legacyRegistrations ??= await ReadLegacyRegistrationsAsync(tx, tenantId, batch.CompanyId, ct), accounts, partners, ct));
+                else if (payload is not null) errors.AddRange(CheckRecord(rec.RecordType, payload, accounts, currencies, partners));
                 string status = errors.Count == 0 ? "VALID" : "INVALID";
                 recordNo++;
                 await using (var cmd = tx.Command(
@@ -437,9 +441,11 @@ public sealed class MigrationCommands(NpgsqlDataSource source)
                 .GroupBy(p => p.AccountNo!).Select(g => new AccountAmounts(g.Key, g.Sum(p => p.BalanceLc!.Value), g.Sum(p => p.BalanceGc!.Value), g.Sum(p => p.BalanceRc ?? 0m))).ToList();
             var items = records.Where(r => r.Type is RecordTypes.OpenItem or RecordTypes.GlOpenItem).Select(r => (OpenItemPayload)r.Payload)
                 .Select(p => new AccountAmounts(p.AccountNo!, p.AmountLc!.Value, p.AmountGc!.Value, p.AmountRc)).ToList();
+            var legacyVat = records.Where(r => r.Type == RecordTypes.LegacyTaxSummary).Select(r => (LegacyTaxSummaryPayload)r.Payload).Where(p => p.VatAccountNo is not null)
+                .GroupBy(p => p.VatAccountNo!).Select(g => new AccountAmounts(g.Key, g.Sum(p => p.LedgerLc!.Value), g.Sum(p => p.LedgerGc!.Value), g.Sum(p => p.LedgerRc ?? 0m))).ToList();
             var rows = MigrationReconciliation.Run(
                 (int)invalid, declared.Where(d => d.Key.Item1 == ControlKinds.TbByAccount).Select(d => d.Value).ToList(),
-                declared.Where(d => d.Key.Item1 == ControlKinds.OpenItemsByAccount).Select(d => d.Value).ToList(), balances, items, subledger, hasRc);
+                declared.Where(d => d.Key.Item1 == ControlKinds.OpenItemsByAccount).Select(d => d.Value).ToList(), balances, items, subledger, hasRc, legacyVat);
 
             Guid runId = Guid.NewGuid();
             foreach (ReconciliationRow row in rows)
@@ -503,7 +509,7 @@ public sealed class MigrationCommands(NpgsqlDataSource source)
     // ---------------------------------------------------------------------------------------------------------
     // migration-batches:commit (13, 7): chunks, each one atomic transaction
     // ---------------------------------------------------------------------------------------------------------
-    private static readonly string[] Areas = ["OPENING_GL", "OPEN_ITEMS"];
+    private static readonly string[] Areas = ["OPENING_GL", "OPEN_ITEMS", "LEGACY_TAX"];
 
     public async Task<CommandResult<MigrationBatchResult>> CommitAsync(Guid tenantId, CommandContext ctx, BatchRef req, CancellationToken ct = default)
     {
@@ -558,7 +564,8 @@ public sealed class MigrationCommands(NpgsqlDataSource source)
                         await cmd.ExecuteNonQueryAsync(ct);
                     }
                 int n = 0;
-                foreach (string area in Areas)
+                bool legacyTax = await CountAsync(tx, "select count(*) from core.migration_record where tenant_id = @t and batch_id = @b and not superseded and status = 'VALID' and record_type = 'LEGACY_TAX_SUMMARY'", tenantId, batch.BatchId, ct) > 0;
+                foreach (string area in Areas.Where(a => a != "LEGACY_TAX" || legacyTax))
                 {
                     await using var cmd = tx.Command("insert into core.migration_commit_chunk (tenant_id, batch_id, chunk_no, area) values (@t, @b, @n, @a)");
                     cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("b", batch.BatchId); cmd.Parameters.AddWithValue("n", ++n); cmd.Parameters.AddWithValue("a", area);
@@ -625,6 +632,7 @@ public sealed class MigrationCommands(NpgsqlDataSource source)
             Guid companyId = batch.CompanyId;
             var company = (await JournalDocumentPoster.ReadCompanyAsync(tx, tenantId, companyId, ct))!;
             if (company.Status != "DRAFT") return new ChunkFailure("MIGRATION.COMPANY_NOT_DRAFT");
+            if (area == "LEGACY_TAX") return await RunLegacyTaxChunkAsync(tx, tenantId, ctx, batch, chunkNo, ct);
             Guid? ledgerId = await ClearingPoster.ReadDefaultLedgerAsync(tx, tenantId, companyId, ct);
             if (ledgerId is null) return new ChunkFailure("LEDGER.NOT_FOUND");
             string? groupCurrency = await ClearingPoster.ReadGroupCurrencyAsync(tx, tenantId, companyId, batch.CutoverDate, ct);
@@ -938,6 +946,14 @@ public sealed class MigrationCommands(NpgsqlDataSource source)
             {
                 long left = await CountAsync(tx, "select count(*) from core.journal_document where tenant_id = @t and migration_batch_id = @b and status = 'posted' and reversal_of_document_id is null", tenantId, batch.BatchId, ct);
                 if (left > 0) return Reject(Error("MIGRATION.ROLLBACK_FAILED", "P7", "batch_id", ("failure_codes", "documents of the batch are still posted"), ("count", left)));
+                // the legacy tax summary of the batch goes with it, unless a return has reported a row (the guard of the table)
+                await using (var cmd = tx.Command("delete from core.legacy_tax_summary where tenant_id = @t and batch_id = @b and reported_in_return_id is null"))
+                {
+                    cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("b", batch.BatchId);
+                    await cmd.ExecuteNonQueryAsync(ct);
+                }
+                long reported = await CountAsync(tx, "select count(*) from core.legacy_tax_summary where tenant_id = @t and batch_id = @b", tenantId, batch.BatchId, ct);
+                if (reported > 0) return Reject(Error("MIGRATION.ROLLBACK_FAILED", "P7", "batch_id", ("failure_codes", "a VAT return has reported legacy tax summary rows of the batch"), ("count", reported)));
                 await SetStatusAsync(tx, tenantId, ctx, batch, "ROLLED_BACK", true, false, false, ct);
             }
             Guid logId = await CommandSupport.WriteLogAsync(tx, tenantId, companyId, ctx, "migration-batches:rollback", fingerprint, BatchEntity, batch.BatchId, ct);

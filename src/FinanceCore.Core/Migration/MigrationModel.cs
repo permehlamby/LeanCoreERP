@@ -64,8 +64,8 @@ public sealed record MigrationRecordList(IReadOnlyList<MigrationRecordRead> Item
 // ---- canonical records (13, 5): the first slice has the opening balance and the open items
 public static class RecordTypes
 {
-    public const string OpeningBalance = "OPENING_BALANCE", OpenItem = "OPEN_ITEM", GlOpenItem = "GLOPEN_ITEM";
-    public static readonly IReadOnlyList<string> Built = [OpeningBalance, OpenItem, GlOpenItem];
+    public const string OpeningBalance = "OPENING_BALANCE", OpenItem = "OPEN_ITEM", GlOpenItem = "GLOPEN_ITEM", LegacyTaxSummary = "LEGACY_TAX_SUMMARY";
+    public static readonly IReadOnlyList<string> Built = [OpeningBalance, OpenItem, GlOpenItem, LegacyTaxSummary];
     public static readonly IReadOnlyList<string> Known =
         [OpeningBalance, OpenItem, GlOpenItem, "HISTORY_PL_LINE", "STOCK_OPENING_LINE", "OPEN_SALES_ORDER_LINE", "OPEN_PURCHASE_ORDER_LINE", "DELIVERED_NOT_INVOICED",
          "RECEIVED_NOT_INVOICED", "DROPSHIP_PENDING", "LEGACY_TAX_SUMMARY"];
@@ -89,6 +89,18 @@ public sealed record OpenItemPayload(
     [property: JsonPropertyName("currency")] string? Currency, [property: JsonPropertyName("amount_tc")] decimal? AmountTc,
     [property: JsonPropertyName("amount_lc")] decimal? AmountLc, [property: JsonPropertyName("amount_gc")] decimal? AmountGc, [property: JsonPropertyName("amount_rc")] decimal? AmountRc,
     [property: JsonPropertyName("legacy_document_ref")] string? LegacyDocumentRef, [property: JsonPropertyName("legacy_line_ref")] string? LegacyLineRef);
+
+/// <summary>The legacy VAT of one result row of the part of a VAT period before the cutover (13, 3.6, Q1): the registration by its VAT id, the VAT period, the return type, the row keys (a box, an EC list
+/// row by partner, or an OSS row), the base and tax amounts and, for the settlement, the VAT account with its legacy ledger amounts.</summary>
+public sealed record LegacyTaxSummaryPayload(
+    [property: JsonPropertyName("registration_vat_id")] string? RegistrationVatId, [property: JsonPropertyName("fiscal_year")] int? FiscalYear,
+    [property: JsonPropertyName("vat_period_no")] int? VatPeriodNo, [property: JsonPropertyName("return_type")] string? ReturnType,
+    [property: JsonPropertyName("box_code")] string? BoxCode, [property: JsonPropertyName("partner_code")] string? PartnerCode,
+    [property: JsonPropertyName("partner_vat_id")] string? PartnerVatId, [property: JsonPropertyName("country_code")] string? CountryCode,
+    [property: JsonPropertyName("category")] string? Category, [property: JsonPropertyName("rate")] decimal? Rate, [property: JsonPropertyName("supply_kind")] string? SupplyKind,
+    [property: JsonPropertyName("base_amount")] decimal? BaseAmount, [property: JsonPropertyName("tax_amount")] decimal? TaxAmount,
+    [property: JsonPropertyName("vat_account_no")] string? VatAccountNo, [property: JsonPropertyName("ledger_lc")] decimal? LedgerLc,
+    [property: JsonPropertyName("ledger_gc")] decimal? LedgerGc, [property: JsonPropertyName("ledger_rc")] decimal? LedgerRc);
 
 public static class MigrationRecords
 {
@@ -124,6 +136,36 @@ public static class MigrationRecords
                     if (p.AmountTc is null || p.AmountLc is null || p.AmountGc is null) errors.Add(Bad("/amount_tc", "amount_tc, amount_lc and amount_gc are required"));
                     else if (p.AmountTc == 0m && p.AmountLc == 0m && p.AmountGc == 0m) errors.Add(Bad("/amount_tc", "an open item with nothing open is not staged"));
                     else if (p.AmountTc != 0m && p.AmountLc != 0m && Math.Sign(p.AmountTc!.Value) != Math.Sign(p.AmountLc!.Value)) errors.Add(Bad("/amount_lc", "the sign of the amounts must agree"));
+                    return (errors.Count == 0 ? p : null, errors);
+                }
+                case RecordTypes.LegacyTaxSummary:
+                {
+                    var p = payload.Deserialize<LegacyTaxSummaryPayload>(Options)!;
+                    if (string.IsNullOrWhiteSpace(p.RegistrationVatId)) errors.Add(Bad("/registration_vat_id", "required"));
+                    if (p.FiscalYear is null or < 1) errors.Add(Bad("/fiscal_year", "required, at least 1"));
+                    if (p.VatPeriodNo is null or < 1 or > short.MaxValue) errors.Add(Bad("/vat_period_no", "required, at least 1"));
+                    if (p.ReturnType is not ("STANDARD" or "EC_LIST" or "OSS" or "IOSS")) errors.Add(Bad("/return_type", "STANDARD, EC_LIST, OSS or IOSS"));
+                    if (p.BaseAmount is null || p.TaxAmount is null) errors.Add(Bad("/base_amount", "base_amount and tax_amount are required"));
+                    void Only(string field, bool present, bool wanted) { if (present != wanted) errors.Add(Bad("/" + field, wanted ? "required for this return type" : "not allowed for this return type")); }
+                    bool standard = p.ReturnType == "STANDARD", ec = p.ReturnType == "EC_LIST", oss = p.ReturnType is "OSS" or "IOSS";
+                    if (p.ReturnType is "STANDARD" or "EC_LIST" or "OSS" or "IOSS")
+                    {
+                        Only("box_code", !string.IsNullOrWhiteSpace(p.BoxCode), standard);
+                        Only("partner_code", !string.IsNullOrWhiteSpace(p.PartnerCode), ec);
+                        Only("category", !string.IsNullOrWhiteSpace(p.Category), ec);
+                        Only("country_code", !string.IsNullOrWhiteSpace(p.CountryCode), ec || oss);
+                        Only("rate", p.Rate is not null, oss);
+                        Only("supply_kind", !string.IsNullOrWhiteSpace(p.SupplyKind), oss);
+                        if (!ec && !string.IsNullOrWhiteSpace(p.PartnerVatId)) errors.Add(Bad("/partner_vat_id", "only an EC list row has a partner VAT id"));
+                        if (ec && p.Category is not (null or "GOODS" or "SERVICES" or "TRIANGULATION")) errors.Add(Bad("/category", "GOODS, SERVICES or TRIANGULATION"));
+                        if (oss && p.SupplyKind is not (null or "GOODS" or "SERVICES")) errors.Add(Bad("/supply_kind", "GOODS or SERVICES"));
+                        if (p.CountryCode is { } cc && cc.Length != 2) errors.Add(Bad("/country_code", "a two-letter code"));
+                    }
+                    if (string.IsNullOrWhiteSpace(p.VatAccountNo))
+                    {
+                        if (p.LedgerLc is not null || p.LedgerGc is not null || p.LedgerRc is not null) errors.Add(Bad("/vat_account_no", "required when ledger amounts are given"));
+                    }
+                    else if (p.LedgerLc is null || p.LedgerGc is null) errors.Add(Bad("/ledger_lc", "ledger_lc and ledger_gc are required with a VAT account"));
                     return (errors.Count == 0 ? p : null, errors);
                 }
                 default:
@@ -221,7 +263,8 @@ public static class MigrationReconciliation
     /// <summary>The checks of 13, 8 that the staged records of this slice allow. There is no tolerance: any difference is a FAIL. Each total is a signed amount per account.</summary>
     public static IReadOnlyList<ReconciliationRow> Run(
         int invalidRecords, IReadOnlyList<AccountAmounts> declaredTb, IReadOnlyList<AccountAmounts> declaredOpenItems,
-        IReadOnlyList<AccountAmounts> openingBalances, IReadOnlyList<AccountAmounts> openItems, IReadOnlySet<string> subledgerAccounts, bool hasRc)
+        IReadOnlyList<AccountAmounts> openingBalances, IReadOnlyList<AccountAmounts> openItems, IReadOnlySet<string> subledgerAccounts, bool hasRc,
+        IReadOnlyList<AccountAmounts>? legacyVatLedger = null)
     {
         var rows = new List<ReconciliationRow>();
         void Add(string code, string? key, decimal? dl, decimal? dg, decimal? dr, decimal? cl, decimal? cg, decimal? cr, string result, string? detail = null) =>
@@ -262,6 +305,14 @@ public static class MigrationReconciliation
                 if (d.Lc != s.Lc || d.Gc != s.Gc || (hasRc && Rc(d) != Rc(s)))
                     Add("OPEN_ITEMS_VS_TB", account, d.Lc, d.Gc, d.Rc, s.Lc, s.Gc, s.Rc, Fail, "The open items differ from the declared balance of the account");
             }
+        }
+
+        // the legacy ledger amounts of the legacy tax summary per VAT account equal the declared balance of that account (13, 8, VAT_VS_TB)
+        foreach (AccountAmounts v in (legacyVatLedger ?? []).OrderBy(a => a.AccountNo, StringComparer.Ordinal))
+        {
+            AccountAmounts d = tb.GetValueOrDefault(v.AccountNo) ?? new AccountAmounts(v.AccountNo, 0m, 0m, 0m);
+            if (d.Lc != v.Lc || d.Gc != v.Gc || (hasRc && Rc(d) != Rc(v)))
+                Add("VAT_VS_TB", v.AccountNo, d.Lc, d.Gc, d.Rc, v.Lc, v.Gc, v.Rc, Fail, "The legacy tax summary differs from the declared balance of the VAT account");
         }
 
         // what MIGRATION_CLEARING would hold after the commit: minus the sum of everything that is posted
