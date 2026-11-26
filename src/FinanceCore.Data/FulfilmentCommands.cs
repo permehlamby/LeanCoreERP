@@ -355,7 +355,8 @@ public sealed partial class FulfilmentCommands(NpgsqlDataSource source)
                 decimal orderedNet = purchase ? Num(w.OrderLine, "net_amount") : 0m, orderedBase = purchase ? Num(w.OrderLine, "base_quantity") : 0m;
                 if (!covers.TryGetValue(w.Index, out var pieces))
                 {
-                    stockInputs.Add(new StockLineInput(w.Input.LineRef, w.ItemId, w.Warehouse!.Value, w.Input.Quantity, w.Input.UnitCode, w.Input.LocationId));
+                    stockInputs.Add(new StockLineInput(w.Input.LineRef, w.ItemId, w.Warehouse!.Value, w.Input.Quantity, w.Input.UnitCode, w.Input.LocationId,
+                        ReservationId: purchase ? null : await OrderCommands.ActiveReservationOfLineAsync(tx, tenantId, companyId, w.Input.OrderId, w.Input.OrderLineNo, w.Warehouse!.Value, ct)));
                     requestWork.Add(w.Index);
                     if (purchase) values[first] = FulfilmentRules.ReceiptValue(orderedNet, orderedBase, w.BaseQuantity, lcScale);
                     stockMap[w.Index] = (first, 1);

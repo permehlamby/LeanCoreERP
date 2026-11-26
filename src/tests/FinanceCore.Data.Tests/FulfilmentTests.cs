@@ -1071,6 +1071,60 @@ public class FulfilmentTests
     }
 
     [Fact]
+    public async Task AutoReservationReservesBestEffortAtPlacementADeliveryConsumesItAndShortCloseAndChangesFollow()
+    {
+        var s = await SetupAsync();
+        var t = s.T;
+        await t.ExecuteAsync("insert into core.company_order_setting_version (tenant_id, company_id, effective_from, auto_reserve, created_by) values (@t, @c, date '2026-01-01', true, 'test')");
+        var availability = new ReservationCommands(t.App);
+        async Task<decimal> Available() => (await availability.AvailabilityAsync(t.TenantId, t.Context("av" + Guid.NewGuid().ToString("N")[..6], "read.inventory"), new(t.CompanyId, s.Item, s.Warehouse))).Value!.Available;
+        async Task<decimal> ReservedOf(Guid order, int line) => await t.ScalarAsync<decimal>(
+            $"select coalesce(sum(e.base_quantity), 0) from core.stock_reservation r join core.stock_reservation_event e on e.tenant_id = r.tenant_id and e.reservation_id = r.reservation_id where r.tenant_id = @t and r.demand_ref = '{order}/{line}'");
+
+        // 6 pieces in stock, 10 ordered: 6 are reserved, 4 are the shortfall
+        await DirectReceiptAsync(s, "stock1", 6, 10);
+        var so = await s.Orders.CreateAsync(OrderKind.Sales, t.TenantId, Ctx(s, "so1", "sales.order"), new(
+            D(("company_id", t.CompanyId), ("order_date", "2026-03-10"), ("order_currency", "DKK"), ("customer_partner_id", s.Customer)), [GoodsLine(s, 10, 50)]));
+        Assert.True(so.Status == CommandStatus.Ok, Describe(so));
+        var r1 = so.Value!.Reservations!.Single();
+        Assert.Equal((1, 6m, 4m), (r1.LineNo, r1.ReservedBaseQuantity, r1.ShortfallBaseQuantity));
+        Assert.Equal((6m, 0m), (await ReservedOf(so.Value.OrderId, 1), await Available()));
+
+        // the delivery of 6 consumes the reservation (it could not issue reserved stock otherwise), and nothing is reserved after it
+        var d = await s.Cmds.PostDeliveryAsync(t.TenantId, Ctx(s, "d1", "sales.deliver"), new(t.CompanyId, new DateOnly(2026, 3, 12), [new("L1", so.Value.OrderId, 1, 6, "C62", s.Warehouse)]));
+        Assert.True(d.Status == CommandStatus.Ok, Describe(d));
+        Assert.Equal((0m, 1L), (await ReservedOf(so.Value.OrderId, 1), await t.ScalarAsync<long>("select count(*) from core.stock_reservation_event where tenant_id = @t and event_type = 'CONSUME'")));
+
+        // a short-close releases the reservation of a line
+        await DirectReceiptAsync(s, "stock2", 5, 10);
+        var second = await s.Orders.CreateAsync(OrderKind.Sales, t.TenantId, Ctx(s, "so2", "sales.order"), new(
+            D(("company_id", t.CompanyId), ("order_date", "2026-03-10"), ("order_currency", "DKK"), ("customer_partner_id", s.Customer)), [GoodsLine(s, 5, 50)]));
+        Assert.Equal((5m, 0m), (second.Value!.Reservations!.Single().ReservedBaseQuantity, await Available()));
+        var closed = await s.Orders.CloseLineAsync(OrderKind.Sales, t.TenantId, Ctx(s, "c1", "sales.order"), new(second.Value.OrderId, second.Value.RowVersion, 1, "NOT_NEEDED"));
+        Assert.True(closed.Status == CommandStatus.Ok, Describe(closed));
+        Assert.Equal((0m, 5m), (await ReservedOf(second.Value.OrderId, 1), await Available()));
+
+        // a smaller quantity reduces the reservation to what is still to be delivered, a change of warehouse releases it
+        var third = await s.Orders.CreateAsync(OrderKind.Sales, t.TenantId, Ctx(s, "so3", "sales.order"), new(
+            D(("company_id", t.CompanyId), ("order_date", "2026-03-10"), ("order_currency", "DKK"), ("customer_partner_id", s.Customer)), [GoodsLine(s, 5, 50)]));
+        Assert.Equal(5m, await ReservedOf(third.Value!.OrderId, 1));
+        var smaller = await s.Orders.ChangeAsync(OrderKind.Sales, t.TenantId, Ctx(s, "ch1", "sales.order"), new(third.Value.OrderId, third.Value.RowVersion, null, [new(1, D(("quantity", 3)))]));
+        Assert.True(smaller.Status == CommandStatus.Ok, Describe(smaller));
+        Assert.Equal((3m, 2m), (await ReservedOf(third.Value.OrderId, 1), await Available()));
+        Guid other = await MasterAsync(s.T, "warehouses", "wh2", D(("company_id", t.CompanyId), ("code", "SEC"), ("name", "Second"), ("country_code", "DK")));
+        var moved = await s.Orders.ChangeAsync(OrderKind.Sales, t.TenantId, Ctx(s, "ch2", "sales.order"), new(third.Value.OrderId, smaller.Value!.RowVersion, null, [new(1, D(("warehouse_id", other)))]));
+        Assert.True(moved.Status == CommandStatus.Ok, Describe(moved));
+        Assert.Equal((0m, 5m), (await ReservedOf(third.Value.OrderId, 1), await Available()));
+
+        // without the setting nothing is reserved
+        await t.ExecuteAsync("insert into core.company_order_setting_version (tenant_id, company_id, effective_from, auto_reserve, created_by) values (@t, @c, date '2026-03-11', false, 'test')");
+        var plain = await s.Orders.CreateAsync(OrderKind.Sales, t.TenantId, Ctx(s, "so4", "sales.order"), new(
+            D(("company_id", t.CompanyId), ("order_date", "2026-03-12"), ("order_currency", "DKK"), ("customer_partner_id", s.Customer)), [GoodsLine(s, 2, 50)]));
+        Assert.Null(plain.Value!.Reservations);
+        Assert.Equal(0m, await ReservedOf(plain.Value.OrderId, 1));
+    }
+
+    [Fact]
     public async Task ACreditNoteCanCreditLinesOfSeveralInvoicesOfOneSupplier()
     {
         var s = await SetupAsync();

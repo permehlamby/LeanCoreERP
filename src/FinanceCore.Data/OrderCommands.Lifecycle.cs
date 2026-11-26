@@ -172,7 +172,9 @@ public sealed partial class OrderCommands
         Guid logId = owned ? await CommandSupport.WriteLogAsync(tx, tenantId, companyId, ctx, kind.Resource + ":create", fingerprint, kind.Kind + "_ORDER", orderId, ct) : Guid.Empty;
         await OutboxAsync(tx, kind, tenantId, companyId, orderId, ctx, "order.created", "CREATED", at,
             new() { ["order_number"] = number, ["partner_id"] = party, ["currency"] = currency, ["lines"] = lines.Count }, ct);
+        List<LineReservationResult>? reserved = kind.Kind == "SALES" && hc.Settings.AutoReserve ? await AutoReserveAsync(tx, tenantId, companyId, ctx, orderId, lines, ct) : null;
         OrderResult result = await ResultAsync(tx, kind, tenantId, orderId, [], refs, ct);
+        if (reserved is not null) result = result with { Reservations = reserved };
         if (owned) await tx.CommitAsync(ct);
         return CommandResult<OrderResult>.Ok(result, logId);
     }
@@ -333,6 +335,12 @@ public sealed partial class OrderCommands
             foreach (var (lineNo, sets, logs) in lineWork)
             {
                 await UpdateAsync(tx, kind.LineTable, LineWhere(kind), sets, LineKey(kind, tenantId, h.CompanyId, req.Id, lineNo), ct);
+                if (kind.Kind == "SALES")
+                {
+                    if (sets.Any(x => x.Item1 == "warehouse_id")) await ReleaseLineReservationsAsync(tx, tenantId, h.CompanyId, ctx, req.Id, lineNo, "WAREHOUSE_CHANGED", ct);
+                    else if (sets.FirstOrDefault(x => x.Item1 == "base_quantity") is { Item1: not null } bq)
+                        await ReduceLineReservationsAsync(tx, tenantId, h.CompanyId, ctx, req.Id, lineNo, (decimal)bq.Item3! - await FulfilledBaseAsync(tx, kind, tenantId, h.CompanyId, req.Id, lineNo, ct), ct);
+                }
                 foreach (var (field, old, @new) in logs)
                 {
                     await LogChangeAsync(tx, kind, tenantId, h.CompanyId, req.Id, changeSet, lineNo, field, old, @new, null, ctx, at, ct);
@@ -442,6 +450,7 @@ public sealed partial class OrderCommands
             {
                 await UpdateAsync(tx, kind.LineTable, LineWhere(kind), [("line_status", NpgsqlDbType.Text, target)], LineKey(kind, tenantId, h.CompanyId, id, endedLine), ct);
                 await LogChangeAsync(tx, kind, tenantId, h.CompanyId, id, changeSet, endedLine, field, "OPEN", target, reason, ctx, at, ct);
+                if (kind.Kind == "SALES") await ReleaseLineReservationsAsync(tx, tenantId, h.CompanyId, ctx, id, endedLine, reason, ct);
             }
             if (lineNo is null)
             {

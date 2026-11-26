@@ -111,8 +111,11 @@ public static class OrderSettingFields
 // ---- results
 public sealed record OrderLineResult(int LineNo, string? LineRef, Guid ItemId, decimal Quantity, string UnitCode, decimal BaseQuantity, decimal NetAmount, string LineStatus);
 
+/// <summary>What auto-reservation did for a stock line of a new sales order (11, 6.2): the reservation, the base quantity reserved and the shortfall, which is the backorder that apps plan.</summary>
+public sealed record LineReservationResult(int LineNo, Guid? ReservationId, decimal ReservedBaseQuantity, decimal ShortfallBaseQuantity);
+
 public sealed record OrderResult(
-    Guid OrderId, string OrderNumber, long RowVersion, string LifecycleStatus, decimal TotalNetAmount, IReadOnlyList<OrderLineResult> Lines, IReadOnlyList<string> ChangedFields);
+    Guid OrderId, string OrderNumber, long RowVersion, string LifecycleStatus, decimal TotalNetAmount, IReadOnlyList<OrderLineResult> Lines, IReadOnlyList<string> ChangedFields, IReadOnlyList<LineReservationResult>? Reservations = null);
 
 // ---- reads (11, 8): sales-orders:get, :list, purchase-orders:get, :list, permission read.orders
 public sealed record GetOrderRequest(Guid Id, IReadOnlyList<string>? Include = null);

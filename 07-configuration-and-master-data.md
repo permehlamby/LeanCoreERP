@@ -805,6 +805,14 @@ For the resources `gl-accounts`, `business-partners` (with PII, company relation
 
 These deltas are applied in 02 and 06 with this spec.
 
+### 13.2bm Reservations in the order flows (F-IMPL-107, 2026-11-26)
+
+PROPOSED, written down so that spec and code agree. It builds on 11, 3.1, 4.4, 6.2, 6.3, 10, 4.5 and 13.2bf.
+
+1. **Built.** Migration 0066: `core.lock_item_company` and the insert rights of the order role on the reservation tables. Best effort auto-reservation at placement, consumption by deliveries, release by short-close, cancellation and a change of warehouse, reduction when the quantity falls.
+2. **Choices.** The result of `sales-orders:create` has `reservations` only when the setting is on. A tracked item is not reserved. The counter of the order is locked before the item rows.
+3. **Not built.** Growth of a reservation with the quantity, lines added later, tracked stock, a reversed delivery giving its reservation back.
+
 ### 13.2bl Address snapshots of orders (F-IMPL-106, 2026-11-26)
 
 PROPOSED, written down so that spec and code agree. It builds on 11, 4.5, 4.7, 09, 5.2 and 12, 4.1.

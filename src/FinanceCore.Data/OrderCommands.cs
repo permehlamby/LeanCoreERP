@@ -101,16 +101,16 @@ public sealed partial class OrderCommands(NpgsqlDataSource source)
     // ---------------------------------------------------------------------------------------------------------
     // the data of the company that a line is checked against
     // ---------------------------------------------------------------------------------------------------------
-    private sealed record OrderSettings(string MatchMode, decimal Over, decimal Under, bool AllowBeforeReceipt);
+    private sealed record OrderSettings(string MatchMode, decimal Over, decimal Under, bool AllowBeforeReceipt, bool AutoReserve = false);
 
     private static async Task<OrderSettings> ReadSettingsAsync(TenantTransaction tx, Guid tenantId, Guid companyId, DateOnly date, CancellationToken ct)
     {
         await using var cmd = tx.Command(
-            "select match_mode_default, default_over_tolerance_pct, default_under_tolerance_pct, allow_invoice_before_receipt from core.company_order_setting_version " +
+            "select match_mode_default, default_over_tolerance_pct, default_under_tolerance_pct, allow_invoice_before_receipt, auto_reserve from core.company_order_setting_version " +
             "where tenant_id = @t and company_id = @c and effective_from <= @d order by effective_from desc limit 1");
         cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("c", companyId); cmd.Parameters.AddWithValue("d", date);
         await using var r = await cmd.ExecuteReaderAsync(ct);
-        return await r.ReadAsync(ct) ? new OrderSettings(r.GetString(0), r.GetDecimal(1), r.GetDecimal(2), r.GetBoolean(3)) : new OrderSettings("THREE_WAY", 0m, 0m, false);
+        return await r.ReadAsync(ct) ? new OrderSettings(r.GetString(0), r.GetDecimal(1), r.GetDecimal(2), r.GetBoolean(3), r.GetBoolean(4)) : new OrderSettings("THREE_WAY", 0m, 0m, false);
     }
 
     private sealed record ItemInfo(Guid ItemId, string ItemType, string BaseUnit, int Scale, string Status, bool Active, Guid? TaxClass, bool Activated);
