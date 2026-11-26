@@ -980,6 +980,128 @@ select pg_temp.expect_count('applied package: tenant B sees none of A''s records
     $t$select pg_temp.count_as('cmd_read', 'select count(*) from core.applied_config_package')$t$, 0);
 select set_config('app.tenant_id', '11111111-1111-4111-8111-111111111111', false);
 
+-- ---------------------------------------------------------------------------------------------------------
+-- Invoicing, consolidation and intercompany tables (0049 to 0054): row-level security, grants, append-only guards, shape checks
+-- ---------------------------------------------------------------------------------------------------------
+select pg_temp.expect_count('new tables: row level security is enabled and forced on all five',
+    $t$select count(*) from pg_class where oid in ('core.invoice_issue_record'::regclass, 'core.company_consolidation_setting_version'::regclass, 'core.group_chart_account'::regclass,
+        'core.account_group_mapping'::regclass, 'core.ic_order_link'::regclass) and relrowsecurity and relforcerowsecurity$t$, 5);
+
+-- invoice_issue_record (0049, 12, 11): written by the posting role, insert-only, exactly one target
+select pg_temp.expect_ok('issue record: the posting role inserts a record of a link record',
+    $t$set local role cmd_post; insert into core.invoice_issue_record (tenant_id, company_id, issue_id, invoice_kind, invoice_id, format, document_reference, document_sha256, issued_at, delivery_channel, recorded_by, source_system, correlation_id, idempotency_key)
+       values ('11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222201', 'ee000000-0000-4000-8000-000000000001', 'SALES', 'ee000000-0000-4000-8000-0000000000a1', 'XML', 'archive://a', decode(repeat('ab', 32), 'hex'), now(), 'PEPPOL', 't', 'TEST', 'c', 'issue-1')$t$);
+select pg_temp.expect_error('issue record: a record names exactly one target (none)',
+    $t$set local role cmd_post; insert into core.invoice_issue_record (tenant_id, company_id, invoice_kind, format, document_reference, document_sha256, issued_at, delivery_channel, recorded_by, source_system, correlation_id, idempotency_key)
+       values ('11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222201', 'SALES', 'XML', 'archive://a', decode(repeat('ab', 32), 'hex'), now(), 'PEPPOL', 't', 'TEST', 'c', 'issue-2')$t$, '%violates check constraint%');
+select pg_temp.expect_error('issue record: the channel is one of five',
+    $t$set local role cmd_post; insert into core.invoice_issue_record (tenant_id, company_id, invoice_kind, invoice_id, format, document_reference, document_sha256, issued_at, delivery_channel, recorded_by, source_system, correlation_id, idempotency_key)
+       values ('11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222201', 'SALES', gen_random_uuid(), 'XML', 'archive://a', decode(repeat('ab', 32), 'hex'), now(), 'FAX', 't', 'TEST', 'c', 'issue-3')$t$, '%violates check constraint%');
+select pg_temp.expect_error('issue record: the hash is 32 bytes',
+    $t$set local role cmd_post; insert into core.invoice_issue_record (tenant_id, company_id, invoice_kind, invoice_id, format, document_reference, document_sha256, issued_at, delivery_channel, recorded_by, source_system, correlation_id, idempotency_key)
+       values ('11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222201', 'SALES', gen_random_uuid(), 'XML', 'archive://a', decode('abab', 'hex'), now(), 'EMAIL', 't', 'TEST', 'c', 'issue-4')$t$, '%violates check constraint%');
+select pg_temp.expect_error('issue record: a record is never changed', $t$update core.invoice_issue_record set format = 'PDF'$t$, '%append-only%');
+select pg_temp.expect_error('issue record: a record is never deleted', $t$delete from core.invoice_issue_record$t$, '%no hard delete%');
+select pg_temp.expect_error('issue record: truncate is rejected', $t$truncate core.invoice_issue_record$t$, '%no hard delete%');
+select pg_temp.expect_error('issue record: the configuration role cannot write a record',
+    $t$set local role cmd_config; insert into core.invoice_issue_record (tenant_id, company_id, invoice_kind, invoice_id, format, document_reference, document_sha256, issued_at, delivery_channel, recorded_by, source_system, correlation_id, idempotency_key)
+       values ('11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222201', 'SALES', gen_random_uuid(), 'XML', 'archive://a', decode(repeat('ab', 32), 'hex'), now(), 'EMAIL', 't', 'TEST', 'c', 'issue-5')$t$, '%permission denied%');
+select pg_temp.expect_count('issue record: the read role sees the record of its tenant',
+    $t$select pg_temp.count_as('cmd_read', 'select count(*) from core.invoice_issue_record')$t$, 1);
+
+-- company_consolidation_setting_version (0050, 23, 3.1): written by the configuration role, insert-only, ownership checks
+select pg_temp.expect_ok('consolidation setting: the configuration role inserts a version',
+    $t$set local role cmd_config; insert into core.company_consolidation_setting_version (tenant_id, company_id, effective_from, consolidation_method, translation_method, created_by)
+       values ('11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222201', date '2026-01-01', 'FULL', 'CURRENT_RATE', 't')$t$);
+select pg_temp.expect_error('consolidation setting: the method is one of four',
+    $t$insert into core.company_consolidation_setting_version (tenant_id, company_id, effective_from, consolidation_method, translation_method, created_by)
+       values ('11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222201', date '2026-02-01', 'GUESSED', 'NONE', 't')$t$, '%violates check constraint%');
+select pg_temp.expect_error('consolidation setting: a company is not its own parent',
+    $t$insert into core.company_consolidation_setting_version (tenant_id, company_id, effective_from, parent_company_id, ownership_pct, consolidation_method, translation_method, created_by)
+       values ('11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222201', date '2026-02-01', '22222222-2222-4222-8222-222222222201', 50, 'FULL', 'NONE', 't')$t$, '%violates check constraint%');
+select pg_temp.expect_error('consolidation setting: a percentage needs a parent',
+    $t$insert into core.company_consolidation_setting_version (tenant_id, company_id, effective_from, ownership_pct, consolidation_method, translation_method, created_by)
+       values ('11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222201', date '2026-02-01', 50, 'FULL', 'NONE', 't')$t$, '%violates check constraint%');
+select pg_temp.expect_error('consolidation setting: a version cannot be updated', $t$update core.company_consolidation_setting_version set consolidation_method = 'EQUITY'$t$, '%append-only%');
+select pg_temp.expect_error('consolidation setting: a version cannot be deleted', $t$delete from core.company_consolidation_setting_version$t$, '%no hard delete%');
+select pg_temp.expect_error('consolidation setting: truncate is rejected', $t$truncate core.company_consolidation_setting_version$t$, '%no hard delete%');
+select pg_temp.expect_error('consolidation setting: the posting role cannot write a version',
+    $t$set local role cmd_post; insert into core.company_consolidation_setting_version (tenant_id, company_id, effective_from, consolidation_method, translation_method, created_by)
+       values ('11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222201', date '2026-03-01', 'FULL', 'NONE', 't')$t$, '%permission denied%');
+
+-- group_chart_account (0052, 23, 4): pattern M, the configuration role changes name, code and basis only
+select pg_temp.expect_ok('group chart: the configuration role inserts an account',
+    $t$set local role cmd_config; insert into core.group_chart_account (tenant_id, group_account_id, group_id, code, name, account_type, created_by, updated_by)
+       values ('11111111-1111-4111-8111-111111111111', 'ff000000-0000-4000-8000-000000000001', '33333333-3333-4333-8333-333333333302', 'G100', 'Cash', 'ASSET', 't', 't')$t$);
+select pg_temp.expect_ok('group chart: the name and the basis can change',
+    $t$set local role cmd_config; update core.group_chart_account set name = 'Cash and bank', translation_rate_basis = 'HISTORICAL', row_version = row_version + 1 where group_account_id = 'ff000000-0000-4000-8000-000000000001'$t$);
+select pg_temp.expect_error('group chart: the group cannot change',
+    $t$set local role cmd_config; update core.group_chart_account set group_id = gen_random_uuid() where group_account_id = 'ff000000-0000-4000-8000-000000000001'$t$, '%permission denied%');
+select pg_temp.expect_error('group chart: the account type cannot change',
+    $t$set local role cmd_config; update core.group_chart_account set account_type = 'EQUITY' where group_account_id = 'ff000000-0000-4000-8000-000000000001'$t$, '%permission denied%');
+select pg_temp.expect_error('group chart: the code is unique in the group',
+    $t$insert into core.group_chart_account (tenant_id, group_id, code, name, account_type, created_by, updated_by)
+       values ('11111111-1111-4111-8111-111111111111', '33333333-3333-4333-8333-333333333302', 'G100', 'Again', 'ASSET', 't', 't')$t$, '%duplicate key%');
+select pg_temp.expect_error('group chart: the rate basis is one of three',
+    $t$insert into core.group_chart_account (tenant_id, group_id, code, name, account_type, translation_rate_basis, created_by, updated_by)
+       values ('11111111-1111-4111-8111-111111111111', '33333333-3333-4333-8333-333333333302', 'G200', 'Bad', 'ASSET', 'SPOT', 't', 't')$t$, '%violates check constraint%');
+select pg_temp.expect_error('group chart: the group must exist',
+    $t$insert into core.group_chart_account (tenant_id, group_id, code, name, account_type, created_by, updated_by)
+       values ('11111111-1111-4111-8111-111111111111', gen_random_uuid(), 'G300', 'Orphan', 'ASSET', 't', 't')$t$, '%foreign key%');
+select pg_temp.expect_error('group chart: an account is never deleted', $t$delete from core.group_chart_account$t$, '%no hard delete%');
+select pg_temp.expect_error('group chart: truncate is rejected', $t$truncate core.group_chart_account$t$, '%truncate a table referenced%');
+select pg_temp.expect_error('group chart: the posting role cannot write an account',
+    $t$set local role cmd_post; insert into core.group_chart_account (tenant_id, group_id, code, name, account_type, created_by, updated_by)
+       values ('11111111-1111-4111-8111-111111111111', '33333333-3333-4333-8333-333333333302', 'G400', 'No', 'ASSET', 't', 't')$t$, '%permission denied%');
+
+-- account_group_mapping (0053, 23, 4): pattern V, no overlap, only valid_to of an open row changes
+select pg_temp.expect_ok('mapping: the configuration role inserts a mapping',
+    $t$set local role cmd_config; insert into core.account_group_mapping (tenant_id, company_id, account_id, valid_from, group_account_id, created_by)
+       values ('11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222201', '55555555-5555-4555-8555-555555555501', date '2026-01-01', 'ff000000-0000-4000-8000-000000000001', 't')$t$);
+select pg_temp.expect_error('mapping: an account has one group account at a time',
+    $t$insert into core.account_group_mapping (tenant_id, company_id, account_id, valid_from, group_account_id, created_by)
+       values ('11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222201', '55555555-5555-4555-8555-555555555501', date '2026-06-01', 'ff000000-0000-4000-8000-000000000001', 't')$t$, '%exclusion constraint%');
+select pg_temp.expect_error('mapping: the group account must exist',
+    $t$insert into core.account_group_mapping (tenant_id, company_id, account_id, valid_from, group_account_id, created_by)
+       values ('11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222201', '55555555-5555-4555-8555-555555555502', date '2026-01-01', gen_random_uuid(), 't')$t$, '%foreign key%');
+select pg_temp.expect_error('mapping: the account must belong to the company',
+    $t$insert into core.account_group_mapping (tenant_id, company_id, account_id, valid_from, group_account_id, created_by)
+       values ('11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222201', gen_random_uuid(), date '2026-01-01', 'ff000000-0000-4000-8000-000000000001', 't')$t$, '%foreign key%');
+select pg_temp.expect_error('mapping: the group account cannot be changed',
+    $t$set local role cmd_config; update core.account_group_mapping set group_account_id = gen_random_uuid()$t$, '%permission denied%');
+select pg_temp.expect_ok('mapping: the open row gets its valid_to',
+    $t$set local role cmd_config; update core.account_group_mapping set valid_to = date '2026-07-01' where valid_from = date '2026-01-01'$t$);
+select pg_temp.expect_error('mapping: a closed row cannot change again',
+    $t$set local role cmd_config; update core.account_group_mapping set valid_to = date '2026-12-31' where valid_from = date '2026-01-01'$t$, '%only an open row%');
+select pg_temp.expect_error('mapping: a mapping is never deleted', $t$delete from core.account_group_mapping$t$, '%no hard delete%');
+select pg_temp.expect_error('mapping: truncate is rejected', $t$truncate core.account_group_mapping$t$, '%no hard delete%');
+select pg_temp.expect_error('mapping: the posting role cannot write a mapping',
+    $t$set local role cmd_post; insert into core.account_group_mapping (tenant_id, company_id, account_id, valid_from, group_account_id, created_by)
+       values ('11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222201', '55555555-5555-4555-8555-555555555502', date '2026-01-01', 'ff000000-0000-4000-8000-000000000001', 't')$t$, '%permission denied%');
+
+-- ic_order_link (0054, 11, 6.7): written by the order role, insert-only; the foreign keys to the orders are exercised by the application tests
+select pg_temp.expect_error('ic link: the order role may insert (the check of the two companies answers, not the grant)',
+    $t$set local role cmd_order; insert into core.ic_order_link (tenant_id, ic_transaction_id, sales_company_id, sales_order_id, purchase_company_id, purchase_order_id, created_by, correlation_id, idempotency_key)
+       values ('11111111-1111-4111-8111-111111111111', gen_random_uuid(), '22222222-2222-4222-8222-222222222201', gen_random_uuid(), '22222222-2222-4222-8222-222222222201', gen_random_uuid(), 't', 'c', 'link-1')$t$, '%violates check constraint%');
+select pg_temp.expect_error('ic link: the configuration role cannot write a link',
+    $t$set local role cmd_config; insert into core.ic_order_link (tenant_id, ic_transaction_id, sales_company_id, sales_order_id, purchase_company_id, purchase_order_id, created_by, correlation_id, idempotency_key)
+       values ('11111111-1111-4111-8111-111111111111', gen_random_uuid(), '22222222-2222-4222-8222-222222222201', gen_random_uuid(), '22222222-2222-4222-8222-222222222202', gen_random_uuid(), 't', 'c', 'link-2')$t$, '%permission denied%');
+select pg_temp.expect_error('ic link: the orders of a link must exist',
+    $t$set local role cmd_order; insert into core.ic_order_link (tenant_id, ic_transaction_id, sales_company_id, sales_order_id, purchase_company_id, purchase_order_id, created_by, correlation_id, idempotency_key)
+       values ('11111111-1111-4111-8111-111111111111', gen_random_uuid(), '22222222-2222-4222-8222-222222222201', gen_random_uuid(), '22222222-2222-4222-8222-222222222202', gen_random_uuid(), 't', 'c', 'link-3')$t$, '%foreign key%');
+select pg_temp.expect_error('ic link: truncate is rejected', $t$truncate core.ic_order_link$t$, '%no hard delete%');
+select pg_temp.expect_count('ic link: the update and the delete guards exist',
+    $t$select count(*) from pg_trigger where tgrelid = 'core.ic_order_link'::regclass and not tgisinternal and tgname in ('ic_order_link_append_only', 'ic_order_link_no_delete')$t$, 2);
+
+-- isolation: tenant B sees none of the rows of tenant A in the five tables
+select set_config('app.tenant_id', '99999999-9999-4999-8999-999999999999', false);
+select pg_temp.expect_count('new tables: tenant B sees none of A''s rows',
+    $t$select pg_temp.count_as('cmd_read', 'select (select count(*) from core.invoice_issue_record) + (select count(*) from core.company_consolidation_setting_version) + (select count(*) from core.group_chart_account) + (select count(*) from core.account_group_mapping) + (select count(*) from core.ic_order_link)')$t$, 0);
+select pg_temp.expect_error('new tables: tenant B cannot insert a group account for tenant A',
+    $t$set local role cmd_config; insert into core.group_chart_account (tenant_id, group_id, code, name, account_type, created_by, updated_by)
+       values ('11111111-1111-4111-8111-111111111111', '33333333-3333-4333-8333-333333333302', 'GX', 'Other', 'ASSET', 't', 't')$t$, '%row-level security%');
+select set_config('app.tenant_id', '11111111-1111-4111-8111-111111111111', false);
+
         -- Result
         -- ---------------------------------------------------------------------------------------------------------
         select name, case when ok then 'PASS' else 'FAIL' end as result, detail from test_result order by seq;
