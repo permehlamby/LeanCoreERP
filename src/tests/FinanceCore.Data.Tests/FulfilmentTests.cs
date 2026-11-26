@@ -1179,6 +1179,50 @@ public class FulfilmentTests
     }
 
     [Fact]
+    public async Task ADropshipLineIsInvoicedByTheQuantityItsConfirmationsCountAsDeliveredAndProtectsThem()
+    {
+        var s = await SetupAsync();
+        var t = s.T;
+        await t.ExecuteAsync("""
+            insert into core.number_series_assignment (tenant_id, company_id, document_type, series_id, effective_from, created_by)
+              select @t, @c, m.ty, (select series_id from core.number_series where tenant_id = @t and series_code = m.sc), date '2026-01-01', 'test'
+                from (values ('DROPSHIP_CONFIRMATION', 'FUL'), ('DROPSHIP_COST', 'STJ')) m(ty, sc)
+            """);
+        var inv = await InvoiceSetupAsync(s);
+        var (_, so) = await DropshipOrdersAsync(s, 10, 30, 50);
+        var commands = new DropshipCommands(t.App);
+        async Task<DropshipConfirmationResult> Confirm(string key, decimal qty)
+        {
+            var c = await commands.PostAsync(t.TenantId, Ctx(s, key, "dropship.confirm"), new(t.CompanyId, new DateOnly(2026, 3, 12), [new("D1", so.OrderId, 1, qty, "C62")]));
+            Assert.True(c.Status == CommandStatus.Ok, Describe(c));
+            return c.Value!;
+        }
+
+        // nothing is confirmed yet, so nothing is open to invoice
+        Assert.Equal(["ORDER.INVOICE_EXCEEDS_OPEN"], Codes(await Invoice(s, "i0", new SalesInvoiceLineInput("L1", so.OrderId, 1))));
+        var first = await Confirm("c1", 4);
+
+        // 4 are confirmed: 4 at 50 = 200 net, tax 50
+        Assert.Equal(["SCHEMA.INVALID_VALUE"], Codes(await Invoice(s, "i1", new SalesInvoiceLineInput("L1", so.OrderId, 1, DeliveryLineRefs: [new(Guid.NewGuid(), 1)]))));
+        var r = await Invoice(s, "i2", new SalesInvoiceLineInput("L1", so.OrderId, 1));
+        Assert.True(r.Status == CommandStatus.Ok, Describe(r));
+        Assert.Equal((200m, 50m, 250m), (r.Value!.NetAmount, r.Value.TaxAmount, r.Value.GrossAmount));
+        Assert.Equal(["ORDER.INVOICE_EXCEEDS_OPEN"], Codes(await Invoice(s, "i3", new SalesInvoiceLineInput("L1", so.OrderId, 1))));
+
+        // the confirmed quantity is invoiced: the confirmation cannot be reversed until the invoice is
+        Assert.Equal(["ORDER.DELIVERY_INVOICED"], Codes(await commands.ReverseAsync(t.TenantId, Ctx(s, "x1", "dropship.confirm"), new(t.CompanyId, first.Confirmations[0].ConfirmationId, "CORRECTION"))));
+        var rev = await new SalesInvoiceCommands(t.App).ReverseAsync(t.TenantId, Ctx(s, "ri", "sales.invoice"), new(t.CompanyId, r.Value.SalesInvoiceId, "CORRECTION"));
+        Assert.True(rev.Status == CommandStatus.Ok, Describe(rev));
+        var reversed = await commands.ReverseAsync(t.TenantId, Ctx(s, "x2", "dropship.confirm"), new(t.CompanyId, first.Confirmations[0].ConfirmationId, "CORRECTION"));
+        Assert.True(reversed.Status == CommandStatus.Ok, Describe(reversed));
+        foreach (string chain in new[] { "LEDGER", "FULFILMENT" })
+        {
+            var verify = await new ChainVerification(t.App).VerifyAsync(t.TenantId, t.Context("v" + chain, "chain.verify"), new(t.CompanyId, chain));
+            Assert.True(verify.Status == CommandStatus.Ok && verify.Value!.Ok, chain + " " + Describe(verify));
+        }
+    }
+
+    [Fact]
     public async Task ACreditNoteCanCreditLinesOfSeveralInvoicesOfOneSupplier()
     {
         var s = await SetupAsync();

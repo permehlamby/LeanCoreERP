@@ -116,6 +116,20 @@ public sealed partial class DropshipCommands
             if ((bool)(await cmd.ExecuteScalarAsync(ct))!) return Fail(Error("ORDER.DELIVERY_INVOICED", "P6", "/confirmation_id"));
         }
 
+        // 6.6: not below what is invoiced on a DELIVERED line (the sales invoice counts the confirmations as delivered)
+        string policy;
+        await using (var cmd = tx.Command("select invoice_policy from core.sales_order_line where tenant_id = @t and company_id = @c and sales_order_id = @o and line_no = @n"))
+        {
+            cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("c", companyId); cmd.Parameters.AddWithValue("o", salesOrder); cmd.Parameters.AddWithValue("n", salesLine);
+            policy = ((string)(await cmd.ExecuteScalarAsync(ct))!).Trim();
+        }
+        if (policy == "DELIVERED")
+        {
+            decimal done = await DoneAsync(tx, tenantId, companyId, true, salesOrder, salesLine, ct);
+            decimal invoiced = await SalesInvoiceCommands.InvoicedAsync(tx, tenantId, companyId, (salesOrder, salesLine), ct);
+            if (done - baseQuantity < invoiced) return Fail(Error("ORDER.DELIVERY_INVOICED", "P4", "/confirmation_id", ("delivered_after", done - baseQuantity), ("invoiced", invoiced)));
+        }
+
         // the number of the mirror confirmation
         int fiscalYear;
         await using (var cmd = tx.Command("select fiscal_year from core.fiscal_year where tenant_id = @t and company_id = @c and start_date <= @d and end_date >= @d"))

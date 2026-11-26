@@ -805,6 +805,14 @@ For the resources `gl-accounts`, `business-partners` (with PII, company relation
 
 These deltas are applied in 02 and 06 with this spec.
 
+### 13.2bo Sales invoice of a dropship line (F-IMPL-109, 2026-11-26)
+
+PROPOSED, written down so that spec and code agree. It builds on 11, 6.4, 6.6 and 13.2bk. No migration.
+
+1. **Built.** A DROPSHIP sales line is invoiced by the quantity that its confirmations count as delivered; a confirmation cannot be reversed below what is invoiced.
+2. **Choices.** The invoice names no confirmation: the protection is by quantity, `dropship_confirmation_id` of the invoice line is not set. A dropship line takes no delivery references.
+3. **Not built.** The supplier invoice matching of the DROPSHIP_CLEARING credit, returns of a confirmation.
+
 ### 13.2bn Foreign currency on supplier invoices and credit notes, first slice (F-IMPL-108, 2026-11-26)
 
 PROPOSED, written down so that spec and code agree. It builds on 11, 7.2, 7.3, A2 and ADR-019. No migration.

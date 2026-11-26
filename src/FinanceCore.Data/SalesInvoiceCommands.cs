@@ -151,7 +151,8 @@ public sealed partial class SalesInvoiceCommands(NpgsqlDataSource source)
             OrderLine? ol = await ReadOrderLineAsync(tx, tenantId, companyId, l.SalesOrderId, l.SalesOrderLineNo, ct);
             if (ol is null) { errors.Add(Error("CONFIG.INVALID_REFERENCE", "P2", p + "/sales_order_line_no", ("line_no", l.SalesOrderLineNo))); continue; }
             if (ol.LineStatus == "CANCELLED") { errors.Add(Error("ORDER.LINE_NOT_OPEN", "P2", p + "/sales_order_line_no", ("line_no", l.SalesOrderLineNo), ("status", ol.LineStatus))); continue; }
-            if (ol.FulfilmentType == "DROPSHIP") { errors.Add(Error("LIMIT.INVOICE_DROPSHIP_NOT_BUILT", "P2", p + "/sales_order_line_no", ("line_no", l.SalesOrderLineNo))); continue; }
+            // 6.6: a DROPSHIP line is invoiced by the quantity that its confirmations count as delivered, with no delivery line to name
+            if (ol.FulfilmentType == "DROPSHIP" && l.DeliveryLineRefs is { Count: > 0 }) { errors.Add(Error("SCHEMA.INVALID_VALUE", "P1", p + "/delivery_line_refs", ("reason", "a dropship line has no delivery lines, its confirmations count as delivered"))); continue; }
             bool goods = ol.FulfilmentType == "STOCK";
             decimal price = ol.UnitPrice, discount = ol.DiscountPct;
             if (mode == "APP_SUPPLIES")
@@ -179,7 +180,7 @@ public sealed partial class SalesInvoiceCommands(NpgsqlDataSource source)
             decimal? factor = unit == ol.UnitCode ? ol.BaseQuantity / ol.Quantity : await OrderCommands.FactorAsync(tx, tenantId, ol.ItemId, unit, baseUnit, ct);
             if (factor is null) { errors.Add(Error("INVENTORY.UNIT_CONVERSION_MISSING", "P2", p + "/unit_code", ("item_id", ol.ItemId), ("unit_code", unit))); continue; }
             var key = (l.SalesOrderId, l.SalesOrderLineNo);
-            decimal delivered = await SumAsync(tx, "select coalesce(sum(base_quantity), 0) from core.sales_delivery_line where tenant_id = @t and company_id = @c and sales_order_id = @o and sales_order_line_no = @n", tenantId, companyId, key, ct);
+            decimal delivered = await SumAsync(tx, "select coalesce(sum(base_quantity), 0) from core.sales_fulfilment_line where tenant_id = @t and company_id = @c and sales_order_id = @o and sales_order_line_no = @n", tenantId, companyId, key, ct);
             decimal invoiced = await InvoicedAsync(tx, tenantId, companyId, key, ct) + running.GetValueOrDefault(key);
             decimal open = InvoiceRules.OpenToInvoice(ol.Policy, ol.BaseQuantity, ol.OverTolerancePct, delivered, invoiced);
             // without a quantity the default is the delivered less the invoiced (DELIVERED) or the ordered less the invoiced (ORDERED); the over tolerance is only the ceiling (4.3)
@@ -356,7 +357,7 @@ public sealed partial class SalesInvoiceCommands(NpgsqlDataSource source)
     }
 
     /// <summary>What is invoiced of an order line (11, 4.3): the invoice rows less the rows of their reversals. Credit notes are not in it.</summary>
-    private static Task<decimal> InvoicedAsync(TenantTransaction tx, Guid tenantId, Guid companyId, (Guid Order, int Line) key, CancellationToken ct) =>
+    internal static Task<decimal> InvoicedAsync(TenantTransaction tx, Guid tenantId, Guid companyId, (Guid Order, int Line) key, CancellationToken ct) =>
         SumAsync(tx,
             "select coalesce(sum(l.base_quantity), 0) from core.sales_invoice_line l join core.sales_invoice h on h.tenant_id = l.tenant_id and h.company_id = l.company_id and h.sales_invoice_id = l.sales_invoice_id " +
             "left join core.sales_invoice o on o.tenant_id = h.tenant_id and o.company_id = h.company_id and o.sales_invoice_id = h.reversal_of_sales_invoice_id " +
