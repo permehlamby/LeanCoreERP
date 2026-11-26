@@ -52,6 +52,8 @@ builder.Services.AddSingleton(sp => new RateUsageCommands(sp.GetRequiredService<
 builder.Services.AddSingleton(sp => new GroupChartCommands(sp.GetRequiredService<NpgsqlDataSource>()));
 builder.Services.AddSingleton(sp => new AccountGroupMappingCommands(sp.GetRequiredService<NpgsqlDataSource>()));
 builder.Services.AddSingleton(sp => new OrderReads(sp.GetRequiredService<NpgsqlDataSource>()));
+builder.Services.AddSingleton(sp => new OrderQueries(sp.GetRequiredService<NpgsqlDataSource>()));
+builder.Services.AddSingleton(sp => new DocumentReads(sp.GetRequiredService<NpgsqlDataSource>()));
 builder.Services.AddSingleton(sp => new MasterReads(sp.GetRequiredService<NpgsqlDataSource>()));
 builder.Services.AddSingleton(sp => new TaxDeterminationCommands(sp.GetRequiredService<NpgsqlDataSource>()));
 builder.Services.AddSingleton(sp => new VatReturnCommands(sp.GetRequiredService<NpgsqlDataSource>()));
@@ -85,6 +87,8 @@ builder.Services.AddSingleton<ICommandModule, FulfilmentModule>();
 builder.Services.AddSingleton<ICommandModule, ReturnModule>();
 builder.Services.AddSingleton<ICommandModule, InvoiceModule>();
 builder.Services.AddSingleton<ICommandModule, GrIrReadModule>();
+builder.Services.AddSingleton<ICommandModule, OrderQueryModule>();
+builder.Services.AddSingleton<ICommandModule, DocumentReadModule>();
 builder.Services.AddSingleton<ICommandModule, ConfigModule>();
 builder.Services.AddSingleton<CommandCatalog>(sp =>
 {

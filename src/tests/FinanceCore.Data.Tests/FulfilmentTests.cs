@@ -1643,4 +1643,95 @@ public class FulfilmentTests
         Assert.Equal(["READ.NOT_FOUND"], Codes(await Query(new(Guid.NewGuid()))));
         Assert.True((await Query(new(t.CompanyId, Limit: 1))).Value!.Truncated);
     }
+
+    [Fact]
+    public async Task TheOpenLinesAndTheUninvoicedLinesOfSalesAndPurchaseOrdersAreRead()
+    {
+        var s = await SetupAsync();
+        var t = s.T;
+        var pur = await PurchaseSetupAsync(s);
+        var po = await DomesticPurchaseOrderAsync(s, "po", 100, 10);
+        await ReceiveAsync(s, "r1", po, 40);
+        var so = await SalesOrderAsync(s, "so", GoodsLine(s, 30, 25));
+        Assert.Equal(CommandStatus.Ok, (await s.Cmds.PostDeliveryAsync(t.TenantId, Ctx(s, "d1", "sales.deliver"), new(t.CompanyId, new DateOnly(2026, 3, 12), [new("D1", so.OrderId, 1, 10, "C62")]))).Status);
+        var queries = new OrderQueries(t.App);
+        Task<CommandResult<OpenOrdersQueryResult>> Open(OpenOrdersQueryRequest req, string permission = "read.orders") => queries.OpenOrdersAsync(t.TenantId, Ctx(s, "o" + Guid.NewGuid().ToString("N")[..8], permission), req);
+        Task<CommandResult<UninvoicedQueryResult>> Uninvoiced(UninvoicedQueryRequest req, string permission = "read.orders") => queries.UninvoicedAsync(t.TenantId, Ctx(s, "u" + Guid.NewGuid().ToString("N")[..8], permission), req);
+
+        // open: 60 of the purchase line and 20 of the sales line are left, with the quantities that make them
+        var p = Assert.Single((await Open(new(t.CompanyId, "PURCHASE"))).Value!.Items);
+        Assert.Equal((po.OrderId, 1, s.Supplier, s.Item, s.Warehouse, 100m, 40m, 60m), (p.OrderId, p.LineNo, p.PartnerId, p.ItemId, p.WarehouseId, p.OrderedBaseQuantity, p.FulfilledBaseQuantity, p.OpenBaseQuantity));
+        var d = Assert.Single((await Open(new(t.CompanyId, "SALES"))).Value!.Items);
+        Assert.Equal((so.OrderId, s.Customer, 30m, 10m, 20m), (d.OrderId, d.PartnerId, d.OrderedBaseQuantity, d.FulfilledBaseQuantity, d.OpenBaseQuantity));
+        Assert.Empty((await Open(new(t.CompanyId, "PURCHASE", PartnerId: Guid.NewGuid()))).Value!.Items);
+        Assert.Empty((await Open(new(t.CompanyId, "PURCHASE", ItemId: s.Service))).Value!.Items);
+        Assert.Single((await Open(new(t.CompanyId, "PURCHASE", WarehouseId: s.Warehouse))).Value!.Items);
+
+        // uninvoiced: 40 received at 10 are 400, and 30 invoiced of them leave 10 and 100; 10 delivered at 25 are 250
+        var u = Assert.Single((await Uninvoiced(new(t.CompanyId, "PURCHASE"))).Value!.Items);
+        Assert.Equal((40m, 0m, 40m, 10m, 400m, "DKK"), (u.FulfilledBaseQuantity, u.InvoicedBaseQuantity, u.UninvoicedBaseQuantity, u.UnitPrice, u.Value, u.Currency));
+        Assert.Equal(CommandStatus.Ok, (await PostPurchaseInvoice(s, "i1", "SI-1", 375, new PurchaseInvoiceLineInput("L1", po.OrderId, 1, 30, 10, 300, pur.Code, 75))).Status);
+        var u2 = Assert.Single((await Uninvoiced(new(t.CompanyId, "PURCHASE"))).Value!.Items);
+        Assert.Equal((30m, 10m, 100m), (u2.InvoicedBaseQuantity, u2.UninvoicedBaseQuantity, u2.Value));
+        var us = Assert.Single((await Uninvoiced(new(t.CompanyId, "SALES"))).Value!.Items);
+        Assert.Equal((10m, 25m, 250m), (us.UninvoicedBaseQuantity, us.UnitPrice, us.Value));
+
+        // the filters of the reads
+        Assert.Equal(["READ.INVALID_FILTER"], Codes(await Open(new(t.CompanyId, "OTHER"))));
+        Assert.Equal(["READ.INVALID_FILTER"], Codes(await Uninvoiced(new(t.CompanyId, "SALES", Limit: 5000))));
+        Assert.Equal(["AUTH.PERMISSION_MISSING"], Codes(await Open(new(t.CompanyId, "SALES"), "purchase.invoice")));
+        Assert.Equal(["READ.NOT_FOUND"], Codes(await Uninvoiced(new(Guid.NewGuid(), "SALES"))));
+    }
+
+    [Fact]
+    public async Task TheDocumentsOfOrdersAreReadByGetAndList()
+    {
+        var s = await SetupAsync();
+        var t = s.T;
+        var pur = await PurchaseSetupAsync(s);
+        var po = await DomesticPurchaseOrderAsync(s, "po", 100, 10);
+        await ReceiveAsync(s, "r1", po, 40);
+        var so = await SalesOrderAsync(s, "so", GoodsLine(s, 30, 25));
+        Assert.Equal(CommandStatus.Ok, (await s.Cmds.PostDeliveryAsync(t.TenantId, Ctx(s, "d1", "sales.deliver"), new(t.CompanyId, new DateOnly(2026, 3, 12), [new("D1", so.OrderId, 1, 10, "C62")]))).Status);
+        Assert.Equal(CommandStatus.Ok, (await PostPurchaseInvoice(s, "i1", "SI-1", 375, new PurchaseInvoiceLineInput("L1", po.OrderId, 1, 30, 10, 300, pur.Code, 75))).Status);
+        var reads = new DocumentReads(t.App);
+        DocumentKind K(string resource) => DocumentKind.All.Single(k => k.Resource == resource);
+        Task<CommandResult<DocumentList>> List(string resource, ListDocumentsRequest req, string permission = "read.orders") => reads.ListAsync(K(resource), t.TenantId, Ctx(s, "l" + Guid.NewGuid().ToString("N")[..8], permission), req);
+        Task<CommandResult<DocumentDetail>> Get(string resource, Guid id, string[]? include = null, string permission = "read.orders") => reads.GetAsync(K(resource), t.TenantId, Ctx(s, "g" + Guid.NewGuid().ToString("N")[..8], permission), new(id, include));
+
+        // a list gives the header; a get gives the lines, and for an invoice the journal document and the issue records
+        var receipt = Assert.Single((await List("purchase-receipts", new(t.CompanyId))).Value!.Items);
+        Guid receiptId = receipt.GetProperty("receipt_id").GetGuid();
+        Assert.Equal("posted", receipt.GetProperty("status").GetString());
+        Assert.False(receipt.TryGetProperty("tenant_id", out _));
+        Assert.Equal(64, receipt.GetProperty("row_hash").GetString()!.Length);
+        var got = (await Get("purchase-receipts", receiptId, ["lines"])).Value!;
+        Assert.Equal(1, got.Lines!.Value.GetArrayLength());
+        Assert.Null(got.JournalDocument);
+        var delivery = Assert.Single((await List("sales-deliveries", new(t.CompanyId, PartnerId: s.Customer, Status: "posted"))).Value!.Items);
+        Assert.Equal(1, (await Get("sales-deliveries", delivery.GetProperty("delivery_id").GetGuid(), ["lines"])).Value!.Lines!.Value.GetArrayLength());
+        var invoice = Assert.Single((await List("purchase-invoices", new(t.CompanyId, Status: "INVOICE"))).Value!.Items);
+        Guid invoiceId = invoice.GetProperty("purchase_invoice_id").GetGuid();
+        var inv = (await Get("purchase-invoices", invoiceId, ["lines", "journal_document", "issue_records"])).Value!;
+        Assert.Equal(1, inv.Lines!.Value.GetArrayLength());
+        Assert.Equal("AP_INVOICE", inv.JournalDocument!.Value.GetProperty("document_type").GetString());
+        Assert.Equal(0, inv.IssueRecords!.Value.GetArrayLength());
+        Assert.Empty((await List("sales-invoices", new(t.CompanyId))).Value!.Items);
+
+        // the filters of the list
+        Assert.Empty((await List("purchase-receipts", new(t.CompanyId, PartnerId: Guid.NewGuid()))).Value!.Items);
+        Assert.Empty((await List("purchase-receipts", new(t.CompanyId, DateFrom: new DateOnly(2030, 1, 1)))).Value!.Items);
+        Assert.Empty((await List("purchase-receipts", new(t.CompanyId, Status: "reversed"))).Value!.Items);
+
+        // the errors
+        Assert.Equal(["READ.INVALID_FILTER"], Codes(await List("purchase-receipts", new(t.CompanyId, Status: "INVOICE"))));
+        Assert.Equal(["READ.INVALID_FILTER"], Codes(await List("purchase-invoices", new(t.CompanyId, Limit: 0))));
+        Assert.Equal(["READ.INVALID_FILTER"], Codes(await List("purchase-invoices", new(t.CompanyId, DateFrom: new DateOnly(2027, 1, 1), DateTo: new DateOnly(2026, 1, 1)))));
+        Assert.Equal(["READ.INVALID_FILTER"], Codes(await Get("purchase-receipts", receiptId, ["journal_document"])));
+        Assert.Equal(["READ.INVALID_FILTER"], Codes(await Get("purchase-invoices", invoiceId, ["stock"])));
+        Assert.Equal(["READ.NOT_FOUND"], Codes(await Get("purchase-invoices", Guid.NewGuid())));
+        Assert.Equal(["READ.NOT_FOUND"], Codes(await List("purchase-invoices", new(Guid.NewGuid()))));
+        Assert.Equal(["AUTH.PERMISSION_MISSING"], Codes(await List("purchase-invoices", new(t.CompanyId), "purchase.invoice")));
+        Assert.Equal(["AUTH.PERMISSION_MISSING"], Codes(await Get("purchase-invoices", invoiceId, null, "purchase.invoice")));
+    }
 }

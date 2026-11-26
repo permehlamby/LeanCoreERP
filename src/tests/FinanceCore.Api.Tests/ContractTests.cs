@@ -153,7 +153,7 @@ public class ContractTests
         foreach (ICommandModule module in new ICommandModule[]
                  {
                      new PostingModule(), new VatModule(), new ClosingModule(), new ReadModule(), new FeedModule(), new MigrationModule(), new InventoryModule(),
-                     new OrderModule(), new StockModule(), new FulfilmentModule(), new ReturnModule(), new InvoiceModule(), new ConfigModule()
+                     new OrderModule(), new StockModule(), new FulfilmentModule(), new ReturnModule(), new InvoiceModule(), new GrIrReadModule(), new OrderQueryModule(), new DocumentReadModule(), new ConfigModule()
                  })
             module.Register(catalog);
         JsonObject doc = OpenApiBuilder.Build(catalog);

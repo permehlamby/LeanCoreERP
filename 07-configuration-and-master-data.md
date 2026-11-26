@@ -805,6 +805,23 @@ For the resources `gl-accounts`, `business-partners` (with PII, company relation
 
 These deltas are applied in 02 and 06 with this spec.
 
+### 13.2ar The get and list of the documents of orders (F-IMPL-85, 2026-11-26)
+
+PROPOSED, written down so that spec and code agree. It builds on 11, 8.
+
+1. **Built.** `<resource>:get` and `<resource>:list` (`read.orders`) for `sales-deliveries`, `purchase-receipts`, `sales-returns`, `purchase-returns`, `sales-invoices` and `purchase-invoices`.
+2. **Get.** `id` and `include`: the header without tenant and chain columns (row hash as hex), `lines`, and for an invoice `journal_document` and `issue_records`. Another include is READ.INVALID_FILTER, an unknown id READ.NOT_FOUND.
+3. **List.** `company_id`, `partner_id`, `date_from`, `date_to`, `status` (posted or reversed; for an invoice INVOICE, CREDIT_NOTE or REVERSAL) and `limit` (default 200, max 1000); newest first, `truncated` when cut.
+4. **Not built.** A cursor, the filter by issue state, the include of the stock document, `dropship-confirmations`.
+
+### 13.2aq The reads open-orders:query and uninvoiced:query (F-IMPL-84, 2026-11-26)
+
+PROPOSED, written down so that spec and code agree. It builds on 11, 8.
+
+1. **Built.** `open-orders:query` (`company_id`, `kind` SALES or PURCHASE, `partner_id`, `item_id`, `warehouse_id`, `limit`): the lines of open orders with a quantity left, with ordered, fulfilled and open base quantity and the line dates.
+2. **Uninvoiced.** `uninvoiced:query` (`company_id`, `kind`, `partner_id`, `item_id`, `limit`): SALES delivered less invoiced; PURCHASE received less returned less invoiced; the value is the quantity at the net price of the order line.
+3. **Not built.** A cursor, a date range, the as-of reconstruction, the purchase value at the GR/IR value of the receipt.
+
 ### 13.2ap The read gr-ir:query (F-IMPL-71, 2026-11-25)
 
 PROPOSED, written down so that spec and code agree. It builds on 11, 8 and 7.5.
