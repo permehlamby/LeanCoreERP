@@ -104,18 +104,6 @@ begin
 end $$;
 grant update (status) on core.dropship_confirmation to cmd_stock;
 
--- what a side has done of an order line (11, 4.3): deliveries and confirmations on the sales side, receipts and confirmations on the purchase side, mirror rows with their negative quantities included
-create or replace view core.sales_fulfilment_line with (security_invoker = true) as
-    select tenant_id, company_id, sales_order_id, sales_order_line_no, base_quantity from core.sales_delivery_line
-    union all select tenant_id, company_id, sales_order_id, sales_order_line_no, base_quantity from core.dropship_confirmation;
-create or replace view core.purchase_fulfilment_line with (security_invoker = true) as
-    select tenant_id, company_id, purchase_order_id, purchase_order_line_no, base_quantity from core.purchase_receipt_line
-    union all select tenant_id, company_id, purchase_order_id, purchase_order_line_no, base_quantity from core.dropship_confirmation;
-grant select on core.sales_fulfilment_line, core.purchase_fulfilment_line to cmd_read, cmd_config, cmd_period, cmd_post, cmd_clearing, cmd_retention, cmd_stock, cmd_order;
--- the confirmation posts its journal through the general poster, which marks the rates it used (ADR-019)
-grant update (first_used_at) on core.exchange_rate to cmd_stock;
-
-
 insert into platform.schema_migration (version, description)
 values ('0063', 'dropship confirmations, a node of the FULFILMENT chain')
 on conflict (version) do nothing;
