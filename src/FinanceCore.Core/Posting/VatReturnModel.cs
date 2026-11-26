@@ -18,7 +18,7 @@ public sealed record SettleVatReturnRequest(Guid ReturnId, DateOnly? PostingDate
 public sealed record ReverseVatSettlementRequest(Guid ReturnId, DateOnly ReversalDate, string ReasonCode, string ReasonText);
 
 public sealed record VatReturnLineResult(
-    int LineNo, string RowType, string? BoxCode, string CurrencyCode, decimal BaseAmount, decimal TaxAmount, int LineCount);
+    int LineNo, string RowType, string? BoxCode, string CurrencyCode, decimal BaseAmount, decimal TaxAmount, int LineCount, decimal LegacyBaseAmount = 0m, decimal LegacyTaxAmount = 0m);
 
 public sealed record VatReturnTaxLineResult(
     Guid DocumentId, int LineNo, DateOnly TaxDate, bool IsLate, Guid TaxCodeVersionId, decimal VatBaseAmount, decimal VatTaxAmount, bool IsCurrent);

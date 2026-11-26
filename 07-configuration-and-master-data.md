@@ -805,6 +805,16 @@ For the resources `gl-accounts`, `business-partners` (with PII, company relation
 
 These deltas are applied in 02 and 06 with this spec.
 
+### 13.2av The legacy tax summary in returns and settlement (F-IMPL-89, 2026-11-26)
+
+PROPOSED, written down so that spec and code agree. It builds on 08, 7.1 and 7.3 and on 13.2au.
+
+1. **Built.** `vat-returns:prepare` (and `:preview`) takes the legacy rows of the VAT period of its registration and return type: an original return the rows that no return reported, a replacement the rows of the returns it replaces, a supplementary return none.
+2. **Rows.** Legacy and tax-line amounts add up in `base_amount` and `tax_amount`; `legacy_base_amount` and `legacy_tax_amount` show the legacy part. A legacy row counts as one line of its row.
+3. **Marker.** An original return sets `reported_in_return_id` in its own transaction; the marker never moves.
+4. **Settlement.** `vat-returns:settle` adds the legacy ledger amounts per VAT account of the return and of the returns it replaces, so the opening balance of the VAT account is cleared once.
+5. **Not built.** `VAT_PERIOD_COMPLETE`, legacy rows in `vat-positions:get`.
+
 ### 13.2au The legacy tax summary, first slice (F-IMPL-88, 2026-11-26)
 
 PROPOSED, written down so that spec and code agree. It builds on 13, 3.6, Q1, 5 and 8 and on 08, 7.1.

@@ -32,6 +32,9 @@ public sealed partial class VatReturnCommands(NpgsqlDataSource source)
 
     private sealed record BoxMapping(string LineSide, string BoxCode, string AmountKind, int Sign);
 
+    private sealed record LegacyRow(
+        Guid SummaryId, string RowType, string? BoxCode, Guid? PartnerId, string? PartnerVatId, string? Country, string? Category, decimal? Rate, string? SupplyKind, decimal Base, decimal Tax, bool Unreported);
+
     internal static List<CommandError> ShapeErrors(CommandContext ctx)
     {
         var errors = new List<CommandError>();
@@ -230,6 +233,25 @@ public sealed partial class VatReturnCommands(NpgsqlDataSource source)
         var warnings = rows.Where(r => !r.HasEvidence).Select(r => JournalDocumentPoster.Error("VAT.EVIDENCE_MISSING", "P5", "vat_period_no",
             ("document_id", r.DocumentId), ("line_no", r.LineNo), ("evidence_type", r.EvidenceRequired)) with { Severity = "WARNING" }).ToList();
 
+        // The legacy tax summary of a migration (13, 3.6; 08, 7.1): an original return of the period takes the rows that no return has reported and marks them; a replacement shows the rows of the
+        // returns it replaces (they stay reported by the first); a supplementary return takes none, they are reported
+        var legacy = new List<LegacyRow>();
+        if (kind is "ORIGINAL" or "REPLACEMENT")
+        {
+            await using var cmd = tx.Command(
+                "select summary_id, row_type, box_code, partner_id, partner_vat_id, country_code, category, rate, supply_kind, base_amount, tax_amount, reported_in_return_id is null " +
+                "from core.legacy_tax_summary where tenant_id = @t and company_id = @c and registration_id = @r and return_type = @rt and fiscal_year = @fy and vat_period_no = @no and " +
+                "(reported_in_return_id is null or reported_in_return_id = any(@ids)) order by summary_id");
+            cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("c", companyId); cmd.Parameters.AddWithValue("r", req.RegistrationId); cmd.Parameters.AddWithValue("rt", req.ReturnType);
+            cmd.Parameters.AddWithValue("fy", req.FiscalYear); cmd.Parameters.AddWithValue("no", (short)req.VatPeriodNo);
+            cmd.Parameters.Add(new NpgsqlParameter("ids", NpgsqlDbType.Array | NpgsqlDbType.Uuid) { Value = kind == "REPLACEMENT" ? existing.Select(e => e.Id).ToArray() : Array.Empty<Guid>() });
+            await using var r = await cmd.ExecuteReaderAsync(ct);
+            while (await r.ReadAsync(ct))
+                legacy.Add(new LegacyRow(r.GetGuid(0), r.GetString(1), r.IsDBNull(2) ? null : r.GetString(2), r.IsDBNull(3) ? null : r.GetGuid(3), r.IsDBNull(4) ? null : r.GetString(4),
+                    r.IsDBNull(5) ? null : r.GetString(5).Trim(), r.IsDBNull(6) ? null : r.GetString(6), r.IsDBNull(7) ? null : r.GetDecimal(7), r.IsDBNull(8) ? null : r.GetString(8),
+                    r.GetDecimal(9), r.GetDecimal(10), r.GetBoolean(11)));
+        }
+
         // Aggregation by the box mapping of the version, with the side of the line (08, 5.2, 6.2)
         var mappings = new Dictionary<(Guid, DateOnly), List<BoxMapping>>();
         await using (var cmd = tx.Command(
@@ -265,15 +287,24 @@ public sealed partial class VatReturnCommands(NpgsqlDataSource source)
         DateTime preparedAt = new(now.Ticks - now.Ticks % 10, DateTimeKind.Utc);
         var lineRows = new List<Dictionary<string, object?>>();
         Dictionary<string, object?> Row(string type, string? box, Guid? partner, string? partnerVat, string? country, string? category, decimal? rate, string? supplyKind,
-            decimal baseAmount, decimal taxAmount, int count) => new()
+            decimal baseAmount, decimal taxAmount, int count, decimal legacyBase = 0m, decimal legacyTax = 0m) => new()
         {
             ["tenant_id"] = tenantId, ["company_id"] = companyId, ["return_id"] = returnId, ["line_no"] = lineRows.Count + 1, ["row_type"] = type,
             ["box_code"] = box, ["partner_id"] = partner, ["partner_vat_id"] = partnerVat, ["country_code"] = country, ["category"] = category, ["rate"] = rate,
-            ["supply_kind"] = supplyKind, ["currency_code"] = reg.ReturnCurrency, ["base_amount"] = baseAmount, ["tax_amount"] = taxAmount, ["line_count"] = count,
-            ["legacy_base_amount"] = 0m, ["legacy_tax_amount"] = 0m
+            ["supply_kind"] = supplyKind, ["currency_code"] = reg.ReturnCurrency, ["base_amount"] = baseAmount + legacyBase, ["tax_amount"] = taxAmount + legacyTax, ["line_count"] = count,
+            ["legacy_base_amount"] = legacyBase, ["legacy_tax_amount"] = legacyTax
         };
         if (req.ReturnType == "STANDARD")
-            foreach (var (box, v) in boxes) lineRows.Add(Row("BOX", box, null, null, null, null, null, null, v.Base, v.Tax, v.Lines.Count));
+        {
+            // a legacy row adds to its box and counts as one line of it; a box that only legacy rows reach is a row of its own
+            var legacyBoxes = legacy.Where(l => l.RowType == "BOX").GroupBy(l => l.BoxCode!).ToDictionary(g => g.Key, g => (Base: g.Sum(x => x.Base), Tax: g.Sum(x => x.Tax), Count: g.Count()));
+            foreach (string box in boxes.Keys.Union(legacyBoxes.Keys).OrderBy(b => b, StringComparer.Ordinal))
+            {
+                var (b, t, n) = boxes.TryGetValue(box, out var v) ? (v.Base, v.Tax, v.Lines.Count) : (0m, 0m, 0);
+                var lg = legacyBoxes.GetValueOrDefault(box);
+                lineRows.Add(Row("BOX", box, null, null, null, null, null, null, b, t, n + lg.Count, lg.Base, lg.Tax));
+            }
+        }
         else if (req.ReturnType == "EC_LIST")
         {
             // one row per partner, country and category: the supplies of the period as positive amounts (a sale is a credit, a credit note nets it)
@@ -281,12 +312,15 @@ public sealed partial class VatReturnCommands(NpgsqlDataSource source)
             foreach (TaxRow row in rows)
                 if (!partners.TryGetValue(row.DocumentId, out Guid? p) || p is null)
                     return Reject(JournalDocumentPoster.Error("VAT.PARTNER_MISSING", "P5", "vat_period_no", ("document_id", row.DocumentId), ("line_no", row.LineNo)));
-            var groups = rows.GroupBy(r => (Country: r.DestinationCountry, Partner: partners[r.DocumentId]!.Value, Category: r.EcListCategory!))
-                .OrderBy(g => g.Key.Country, StringComparer.Ordinal).ThenBy(g => g.Key.Partner.ToString("D"), StringComparer.Ordinal).ThenBy(g => g.Key.Category, StringComparer.Ordinal);
-            foreach (var g in groups)
+            var groups = rows.GroupBy(r => (Country: r.DestinationCountry, Partner: partners[r.DocumentId]!.Value, Category: r.EcListCategory!)).ToDictionary(g => g.Key, g => g.ToList());
+            var legacyEc = legacy.Where(l => l.RowType == "EC_LIST").GroupBy(l => (Country: l.Country!, Partner: l.PartnerId!.Value, Category: l.Category!)).ToDictionary(g => g.Key, g => g.ToList());
+            foreach (var key in groups.Keys.Union(legacyEc.Keys).OrderBy(k => k.Country, StringComparer.Ordinal).ThenBy(k => k.Partner.ToString("D"), StringComparer.Ordinal).ThenBy(k => k.Category, StringComparer.Ordinal))
             {
-                string? vatId = await ReadPartnerVatIdAsync(tx, tenantId, g.Key.Partner, g.Key.Country, g.Max(r => r.TaxDate), ct);
-                lineRows.Add(Row("EC_LIST", null, g.Key.Partner, vatId, g.Key.Country, g.Key.Category, null, null, -g.Sum(r => r.VatBase), -g.Sum(r => r.VatTax), g.Count()));
+                var g = groups.GetValueOrDefault(key) ?? [];
+                var lg = legacyEc.GetValueOrDefault(key) ?? [];
+                string? vatId = g.Count > 0 ? await ReadPartnerVatIdAsync(tx, tenantId, key.Partner, key.Country, g.Max(r => r.TaxDate), ct)
+                    : lg.Select(x => x.PartnerVatId).FirstOrDefault(v => v is not null) ?? await ReadPartnerVatIdAsync(tx, tenantId, key.Partner, key.Country, period.End, ct);
+                lineRows.Add(Row("EC_LIST", null, key.Partner, vatId, key.Country, key.Category, null, null, -g.Sum(r => r.VatBase), -g.Sum(r => r.VatTax), g.Count + lg.Count, lg.Sum(x => x.Base), lg.Sum(x => x.Tax)));
             }
         }
         else
@@ -295,9 +329,14 @@ public sealed partial class VatReturnCommands(NpgsqlDataSource source)
             foreach (TaxRow row in rows)
                 if (row.SupplyKind is null)
                     return Reject(JournalDocumentPoster.Error("VAT.SUPPLY_KIND_MISSING", "P5", "vat_period_no", ("document_id", row.DocumentId), ("line_no", row.LineNo)));
-            foreach (var g in rows.GroupBy(r => (Country: r.DestinationCountry, Rate: r.TaxRate, Kind: r.SupplyKind!))
-                         .OrderBy(g => g.Key.Country, StringComparer.Ordinal).ThenBy(g => g.Key.Rate).ThenBy(g => g.Key.Kind, StringComparer.Ordinal))
-                lineRows.Add(Row("OSS", null, null, null, g.Key.Country, null, g.Key.Rate, g.Key.Kind, -g.Sum(r => r.VatBase), -g.Sum(r => r.VatTax), g.Count()));
+            var groups = rows.GroupBy(r => (Country: r.DestinationCountry, Rate: r.TaxRate, Kind: r.SupplyKind!)).ToDictionary(g => g.Key, g => g.ToList());
+            var legacyOss = legacy.Where(l => l.RowType == "OSS").GroupBy(l => (Country: l.Country!, Rate: l.Rate!.Value, Kind: l.SupplyKind!)).ToDictionary(g => g.Key, g => g.ToList());
+            foreach (var key in groups.Keys.Union(legacyOss.Keys).OrderBy(k => k.Country, StringComparer.Ordinal).ThenBy(k => k.Rate).ThenBy(k => k.Kind, StringComparer.Ordinal))
+            {
+                var g = groups.GetValueOrDefault(key) ?? [];
+                var lg = legacyOss.GetValueOrDefault(key) ?? [];
+                lineRows.Add(Row("OSS", null, null, null, key.Country, null, key.Rate, key.Kind, -g.Sum(r => r.VatBase), -g.Sum(r => r.VatTax), g.Count + lg.Count, lg.Sum(x => x.Base), lg.Sum(x => x.Tax)));
+            }
         }
         var taxRows = rows.Select(r => new Dictionary<string, object?>
         {
@@ -337,7 +376,8 @@ public sealed partial class VatReturnCommands(NpgsqlDataSource source)
         {
             await using var cmd = tx.Command(
                 "insert into core.vat_return_line (tenant_id, company_id, return_id, line_no, row_type, box_code, partner_id, partner_vat_id, country_code, category, rate, supply_kind, " +
-                "currency_code, base_amount, tax_amount, line_count) values (@t, @c, @id, @n, @type, @box, @partner, @pvat, @country, @cat, @rate, @kind, @ccy, @b, @x, @lc)");
+                "currency_code, base_amount, tax_amount, line_count, legacy_base_amount, legacy_tax_amount) values (@t, @c, @id, @n, @type, @box, @partner, @pvat, @country, @cat, @rate, @kind, @ccy, @b, @x, @lc, @lb, @lx)");
+            cmd.Parameters.AddWithValue("lb", (decimal)l["legacy_base_amount"]!); cmd.Parameters.AddWithValue("lx", (decimal)l["legacy_tax_amount"]!);
             cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("c", companyId); cmd.Parameters.AddWithValue("id", returnId);
             cmd.Parameters.AddWithValue("n", (int)l["line_no"]!); cmd.Parameters.AddWithValue("type", (string)l["row_type"]!);
             cmd.Parameters.Add(new NpgsqlParameter("box", NpgsqlDbType.Text) { Value = (object?)l["box_code"] ?? DBNull.Value });
@@ -349,6 +389,14 @@ public sealed partial class VatReturnCommands(NpgsqlDataSource source)
             cmd.Parameters.Add(new NpgsqlParameter("kind", NpgsqlDbType.Text) { Value = (object?)l["supply_kind"] ?? DBNull.Value });
             cmd.Parameters.AddWithValue("ccy", reg.ReturnCurrency); cmd.Parameters.AddWithValue("b", (decimal)l["base_amount"]!);
             cmd.Parameters.AddWithValue("x", (decimal)l["tax_amount"]!); cmd.Parameters.AddWithValue("lc", (int)l["line_count"]!);
+            await cmd.ExecuteNonQueryAsync(ct);
+        }
+        if (legacy.Any(l => l.Unreported))
+        {
+            // the legacy rows that this return reports are marked in the same transaction (13, 3.6)
+            await using var cmd = tx.Command("update core.legacy_tax_summary set reported_in_return_id = @id where tenant_id = @t and company_id = @c and summary_id = any(@ids) and reported_in_return_id is null");
+            cmd.Parameters.AddWithValue("id", returnId); cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("c", companyId);
+            cmd.Parameters.Add(new NpgsqlParameter("ids", NpgsqlDbType.Array | NpgsqlDbType.Uuid) { Value = legacy.Where(l => l.Unreported).Select(l => l.SummaryId).ToArray() });
             await cmd.ExecuteNonQueryAsync(ct);
         }
         if (replaces is { } replaced)
@@ -534,13 +582,13 @@ public sealed partial class VatReturnCommands(NpgsqlDataSource source)
         if (head is null || (companyId is not null && head.CompanyId != companyId)) return null;
         var lines = new List<VatReturnLineResult>();
         await using (var cmd = tx.Command(
-            "select line_no, row_type, box_code, currency_code, base_amount, tax_amount, line_count from core.vat_return_line " +
+            "select line_no, row_type, box_code, currency_code, base_amount, tax_amount, line_count, legacy_base_amount, legacy_tax_amount from core.vat_return_line " +
             "where tenant_id = @t and company_id = @c and return_id = @id order by line_no"))
         {
             cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("c", head.CompanyId); cmd.Parameters.AddWithValue("id", returnId);
             await using var r = await cmd.ExecuteReaderAsync(ct);
             while (await r.ReadAsync(ct))
-                lines.Add(new VatReturnLineResult(r.GetInt32(0), r.GetString(1), r.IsDBNull(2) ? null : r.GetString(2), r.GetString(3), r.GetDecimal(4), r.GetDecimal(5), r.GetInt32(6)));
+                lines.Add(new VatReturnLineResult(r.GetInt32(0), r.GetString(1), r.IsDBNull(2) ? null : r.GetString(2), r.GetString(3), r.GetDecimal(4), r.GetDecimal(5), r.GetInt32(6), r.GetDecimal(7), r.GetDecimal(8)));
         }
         var taxLines = new List<VatReturnTaxLineResult>();
         await using (var cmd = tx.Command(

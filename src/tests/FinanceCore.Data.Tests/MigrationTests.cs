@@ -506,4 +506,64 @@ public class MigrationTests
         Assert.True(rolled.Status == CommandStatus.Ok && rolled.Value!.Status == "ROLLED_BACK", Describe(rolled));
         Assert.Equal(0, await t.ScalarAsync<int>("select count(*) from core.legacy_tax_summary where tenant_id = @t"));
     }
+
+    [Fact]
+    public async Task TheFirstReturnReportsTheLegacyTaxRowsAndTheSettlementClearsTheLegacyVatBalance()
+    {
+        var s = await SetupAsync();
+        var t = s.T;
+        await t.ExecuteAsync("insert into core.gl_account (tenant_id, company_id, account_id, account_no, name, account_type, tax_code_rule, open_item_mode) values " +
+            "(@t, @c, gen_random_uuid(), '2700', 'VAT payable', 'LIABILITY', 'FORBIDDEN', 'NONE'), (@t, @c, gen_random_uuid(), '2790', 'VAT settlement', 'LIABILITY', 'FORBIDDEN', 'NONE'), " +
+            "(@t, @c, gen_random_uuid(), '1000', 'Bank', 'ASSET', 'FORBIDDEN', 'NONE') on conflict do nothing; " +
+            "insert into core.number_series (tenant_id, company_id, series_id, series_code, prefix, include_fiscal_year, separator, number_length, is_legal) values (@t, @c, '00000000-0000-0000-0000-0000000000a1', 'VS', 'VS', true, '-', 6, true); " +
+            "insert into core.number_series_assignment (tenant_id, company_id, document_type, series_id, effective_from, created_by) values (@t, @c, 'VAT_SETTLE', '00000000-0000-0000-0000-0000000000a1', date '2026-01-01', 'test'); " +
+            "insert into core.number_range_counter (tenant_id, company_id, series_id, fiscal_year, last_number) values (@t, @c, '00000000-0000-0000-0000-0000000000a1', 2026, 0)");
+        var tax = new TaxCommands(t.App);
+        foreach (string box in new[] { "B1", "B2" })
+            Assert.Equal(CommandStatus.Ok, (await tax.CreateBoxAsync(t.TenantId, t.Context("box-" + box, "write.config"), new("DK", "STANDARD", box, new Dictionary<string, object?> { ["name"] = "Box " + box }))).Status);
+        var reg = await tax.CreateRegistrationAsync(t.TenantId, t.Context("reg", "write.config"), new(new Dictionary<string, object?>
+        {
+            ["company_id"] = t.CompanyId, ["country_code"] = "DK", ["vat_id"] = "DK12345678", ["scheme"] = "STANDARD", ["filing_frequency"] = "QUARTERLY",
+            ["correction_method"] = "ADJUST_NEXT", ["return_currency"] = "DKK", ["valid_from"] = "2026-04-01"
+        }));
+        Assert.True(reg.Status == CommandStatus.Ok, Describe(reg));
+        Guid settlement = await t.ScalarAsync<Guid>("select account_id from core.gl_account where tenant_id = @t and company_id = @c and account_no = '2790'", ("c", t.CompanyId));
+        var role = await new AccountRoleAssigner(t.App).AssignAsync(t.TenantId, t.Context("role", "write.config"), new(t.CompanyId, "VAT_SETTLEMENT", settlement, VatRegistrationId: reg.Value!.EntityId));
+        Assert.True(role.Status == CommandStatus.Ok, Describe(role));
+
+        var open = await s.Cmds.OpenAsync(t.TenantId, Manage(t, "open"), OpenReq(t, "2026-05-01"));
+        Guid batch = open.Value!.BatchId;
+        Assert.Equal(CommandStatus.Ok, (await s.Cmds.DeclareTotalsAsync(t.TenantId, Manage(t, "totals"), new(batch, [Tb("1000", 250m, 33.5m), Tb("2700", -250m, -33.5m)]))).Status);
+        var staged = await s.Cmds.StageAsync(t.TenantId, Stage(t, "stage"), new(batch,
+            [Bal("1000", 250m, 33.5m), Bal("2700", -250m, -33.5m), LegacyTax("L-B1", LegacyBox("B1", 1000m, 0m)), LegacyTax("L-B2", LegacyBox("B2", -1000m, -250m, "2700", -250m))]));
+        Assert.True(staged.Value!.Records!.All(r => r.Status == "VALID"), Describe(staged));
+        Assert.Equal(CommandStatus.Ok, (await s.Cmds.ValidateAsync(t.TenantId, Manage(t, "validate"), new(batch))).Status);
+        Assert.Equal("RECONCILED", (await s.Cmds.ReconcileAsync(t.TenantId, Manage(t, "reconcile"), new(batch))).Value!.Status);
+        Assert.Equal(CommandStatus.Ok, (await s.Cmds.CommitAsync(t.TenantId, Commit(t, "commit"), new(batch))).Status);
+        Assert.Equal(CommandStatus.Ok, (await s.Cmds.SealAsync(t.TenantId, Commit(t, "seal"), new(batch))).Status);
+        Assert.Equal(-250m, await Balance(t, "2700"));
+        await t.ExecuteAsync("alter table core.company disable trigger all; update core.company set status = 'ACTIVE' where tenant_id = @t and company_id = @c; alter table core.company enable trigger all");
+        foreach (int m in new[] { 4, 5, 6 }) await t.SetPeriodStatusAsync(m, "SOFT_CLOSED");
+
+        // the return of the quarter shows the legacy rows, apart from the tax lines, and marks them as reported
+        var vat = new VatReturnCommands(t.App);
+        var prepared = await vat.PrepareAsync(t.TenantId, t.Context("prep", "vat.prepare"), new(reg.Value.EntityId, "STANDARD", 2026, 2));
+        Assert.True(prepared.Status == CommandStatus.Ok, Describe(prepared));
+        var b1 = prepared.Value!.Lines.Single(l => l.BoxCode == "B1");
+        var b2 = prepared.Value.Lines.Single(l => l.BoxCode == "B2");
+        Assert.Equal((1000m, 0m, 1000m, 0m, 1), (b1.BaseAmount, b1.TaxAmount, b1.LegacyBaseAmount, b1.LegacyTaxAmount, b1.LineCount));
+        Assert.Equal((-1000m, -250m, -1000m, -250m), (b2.BaseAmount, b2.TaxAmount, b2.LegacyBaseAmount, b2.LegacyTaxAmount));
+        Assert.Equal(0, prepared.Value.TaxLineCount);
+        Assert.Equal(2, await t.ScalarAsync<int>("select count(*) from core.legacy_tax_summary where tenant_id = @t and reported_in_return_id = @r", ("r", prepared.Value.ReturnId)));
+        var read = await vat.GetAsync(t.TenantId, t.Context("get", "vat.read"), prepared.Value.ReturnId);
+        Assert.Equal(-250m, read.Value!.Lines.Single(l => l.BoxCode == "B2").LegacyTaxAmount);
+        var chain = await new ChainVerification(t.App).VerifyAsync(t.TenantId, t.Context("verify-vat", "chain.verify"), new(t.CompanyId, "VAT_RETURN"));
+        Assert.True(chain.Status == CommandStatus.Ok && chain.Value!.Ok, Describe(chain) + " " + string.Join("; ", chain.Value?.Breaks.Select(b => b.Code + " " + b.Detail) ?? []));
+
+        // the settlement clears the VAT account of the legacy tax against the settlement account
+        var settled = await new VatSettlement(t.App).SettleAsync(t.TenantId, t.Context("settle", "vat.settle"), new(prepared.Value.ReturnId, null));
+        Assert.True(settled.Status == CommandStatus.Ok, Describe(settled));
+        Assert.Equal(0m, await Balance(t, "2700"));
+        Assert.Equal(-250m, await Balance(t, "2790"));
+    }
 }

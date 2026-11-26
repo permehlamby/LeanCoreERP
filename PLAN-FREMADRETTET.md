@@ -7,7 +7,7 @@ Oprettet 2026-11-12, efter at momsområdet (V1–V5) og DK-pakkens momsindhold e
 | Område | Status |
 |---|---|
 | Hovedbog, clearing, perioder, partner, retention, API-skal | Bygget (første slice) |
-| Moms/VAT (08, 19), skatte- og fradragstabeller | Bygget (V1–V5) og `vat-positions:get` (F-IMPL-87). `legacy_tax_summary`: tabel, staging, afstemning, commit og rollback bygget (F-IMPL-88, migration 0055). Mangler medtagelse i `vat-returns:prepare` og i afregningen |
+| Moms/VAT (08, 19), skatte- og fradragstabeller | Bygget (V1–V5) og `vat-positions:get` (F-IMPL-87). `legacy_tax_summary`: tabel, staging, afstemning, commit og rollback (F-IMPL-88, migration 0055) og medtagelse i `vat-returns:prepare` og afregningen (F-IMPL-89) bygget. Mangler `VAT_PERIOD_COMPLETE` og SQL-checks for 0055 |
 | Dimensioner (typede og frie) | Bygget (migration 0022) |
 | Landepakkeformat (18) | Signering bygget (F-IMPL-43: signeret arkiv, tillidssæt, verifikation, PRODUCTION kun signeret). Delvist: DK-pakkens momsindhold installeres med `package apply-vat`, og kørslerne registreres. VALIDATE-tilstand og `config-packages:diff` mangler |
 | Revaluering og årsafslutning (05) | Bygget (0029, F-IMPL-40): revaluering med rerun, årsafslutning og genåbning, forældelsestjek ved hard-close. Mangler: SQL-checks, kørsel mod Supabase, historik-variant (migration), tidsstempeljob for anchors |

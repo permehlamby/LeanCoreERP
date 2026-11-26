@@ -377,6 +377,21 @@ public sealed class VatSettlement(NpgsqlDataSource source)
         cmd.Parameters.AddWithValue("t", tenantId); cmd.Parameters.AddWithValue("c", companyId); cmd.Parameters.AddWithValue("r", returnId);
         await using var r = await cmd.ExecuteReaderAsync(ct);
         while (await r.ReadAsync(ct)) result[r.GetGuid(0)] = new Sum(r.GetDecimal(1), r.GetDecimal(2), r.GetDecimal(3));
+        await r.DisposeAsync();
+        // the legacy ledger amounts (13, 3.6): the rows that the return or a return it replaces reported, per VAT account. A replacement shows the same rows as the return it replaces, so they
+        // settle once, with the first return
+        await using var legacy = tx.Command(
+            "with recursive chain(id) as (select return_id from core.vat_return where tenant_id = @t and company_id = @c and return_id = @r " +
+            "union all select v.replaces_return_id from core.vat_return v join chain on v.return_id = chain.id where v.tenant_id = @t and v.company_id = @c and v.replaces_return_id is not null) " +
+            "select vat_account_id, sum(ledger_lc), sum(ledger_gc), coalesce(sum(ledger_rc), 0) from core.legacy_tax_summary where tenant_id = @t and company_id = @c " +
+            "and vat_account_id is not null and reported_in_return_id in (select id from chain) group by vat_account_id");
+        legacy.Parameters.AddWithValue("t", tenantId); legacy.Parameters.AddWithValue("c", companyId); legacy.Parameters.AddWithValue("r", returnId);
+        await using var lr = await legacy.ExecuteReaderAsync(ct);
+        while (await lr.ReadAsync(ct))
+        {
+            Sum add = result.GetValueOrDefault(lr.GetGuid(0)) ?? new Sum(0, 0, 0);
+            result[lr.GetGuid(0)] = new Sum(add.Lc + lr.GetDecimal(1), add.Gc + lr.GetDecimal(2), add.Rc + lr.GetDecimal(3));
+        }
         return result;
     }
 
